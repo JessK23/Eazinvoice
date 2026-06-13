@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">EazInvoice logo option B</title>
+  <desc id="desc">Deep blue E monogram on navy background with a bold golden prosperity tick.</desc>
+  <defs>
+    <linearGradient id="bgB" x1="60" y1="60" x2="456" y2="456" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#101828"/>
+      <stop offset="0.62" stop-color="#1E3A8A"/>
+      <stop offset="1" stop-color="#0F766E"/>
+    </linearGradient>
+    <linearGradient id="eB" x1="150" y1="132" x2="360" y2="402" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#60A5FA"/>
+      <stop offset="1" stop-color="#2563EB"/>
+    </linearGradient>
+    <filter id="shadowB" x="36" y="36" width="440" height="440" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="24" stdDeviation="24" flood-color="#101828" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+  <rect x="46" y="46" width="420" height="420" rx="116" fill="url(#bgB)" filter="url(#shadowB)"/>
+  <path d="M150 128h224v68H226v40h122v58H226v42h150v68H150V128Z" fill="url(#eB)"/>
+  <path d="M188 294l62 62 130-154" fill="none" stroke="#F59E0B" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M188 294l62 62 130-154" fill="none" stroke="#FFE08A" stroke-width="17" stroke-linecap="round" stroke-linejoin="round" opacity="0.48"/>
+</svg>

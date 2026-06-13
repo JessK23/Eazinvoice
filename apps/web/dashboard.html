@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eazinvoice Reports Dashboard</title>
+  <link rel="stylesheet" href="./styles.css?v=20260603-report-charts" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark"><img src="./assets/logo-mark.png?v=20260605-logo-refresh" alt="EazInvoice" /></div>
+    </div>
+    <nav class="topnav">
+      <a class="ghost" href="/apps/web/index.html">Home</a>
+      <a class="ghost" href="/apps/web/subscription.html">Subscription</a>
+      <a id="adminNavLink" class="ghost" href="/apps/web/admin.html" hidden>Admin</a>
+      <div class="profile-menu">
+        <button id="profileMenuButton" class="profile-button" type="button" aria-expanded="false">
+          <span id="profileInitials" class="profile-avatar">U</span>
+          <span>
+            <strong id="profileDisplayName">User</strong>
+            <small id="profileDisplayMeta">Signed in</small>
+          </span>
+        </button>
+        <div id="profileDropdown" class="profile-dropdown" hidden>
+          <div class="profile-summary">
+            <strong id="profileDropdownName">User</strong>
+            <span id="profileDropdownEmail">user@example.com</span>
+          </div>
+          <a href="/apps/web/subscription.html">Account Settings</a>
+          <a id="profileAdminLink" href="/apps/web/admin.html" hidden>Admin Access</a>
+          <button id="profileLogoutBtn" type="button">Sign-out</button>
+        </div>
+      </div>
+    </nav>
+  </header>
+  <div id="appShell" class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="mark"><img src="./assets/logo-mark.png?v=20260605-logo-refresh" alt="EazInvoice" /></div>
+        <div>
+          <div class="brand-name">Eazinvoice</div>
+          <div class="brand-sub">Reports</div>
+        </div>
+      </div>
+      <nav class="nav">
+        <a class="nav-item active" href="/apps/web/dashboard.html#reports" data-page-link="reports">Reports</a>
+        <a class="nav-item" href="/apps/web/dashboard.html#invoices" data-page-link="invoices">Invoices</a>
+        <a class="nav-item" href="/apps/web/dashboard.html#purchase-orders" data-page-link="purchase-orders">Purchase / Work Order</a>
+        <a class="nav-item" href="/apps/web/dashboard.html#business-profiles" data-page-link="business-profiles">Business Profiles</a>
+        <a class="nav-item" href="/apps/web/dashboard.html#customers" data-page-link="customers">Customers</a>
+        <a class="nav-item" href="/apps/web/dashboard.html#vendors" data-page-link="vendors">Vendors</a>
+        <a class="nav-item" href="/apps/web/dashboard.html#subscription" data-page-link="subscription">Subscription Upgrade</a>
+      </nav>
+      <div class="plan-card">
+        <div class="plan-label">Free Plan</div>
+        <div id="planSummary" class="plan-summary"></div>
+      </div>
+      <div class="actions" style="margin-top:12px;flex-direction:column">
+        <a class="ghost" href="/apps/web/index.html" style="text-decoration:none;display:inline-block;width:100%">Home</a>
+        <a class="ghost" href="/apps/web/subscription.html" style="text-decoration:none;display:inline-block;width:100%">Subscription</a>
+        <a id="adminSideLink" class="ghost" href="/apps/web/admin.html" style="text-decoration:none;display:inline-block;width:100%" hidden>Admin</a>
+      </div>
+    </aside>
+    <main class="main">
+      <section id="reports" class="panel dashboard-page" data-dashboard-page="reports">
+        <div class="dashboard-head">
+          <div>
+            <span class="pill blue">MSME workspace</span>
+            <h1>Reports</h1>
+          </div>
+          <div class="dashboard-search">
+            <input id="dashboardSearch" placeholder="Search invoices, customers, payments" />
+          <a class="primary" href="/apps/web/invoice.html">Create New Invoice</a>
+          </div>
+        </div>
+        <div class="report-period-bar">
+          <label>Report Month
+            <select id="reportMonth">
+              <option value="">All months</option>
+            </select>
+          </label>
+          <label>Report Year
+            <select id="reportYear">
+              <option value="">All years</option>
+            </select>
+          </label>
+        </div>
+        <div class="metric-grid">
+          <article class="metric-card"><span>Total invoices</span><strong id="totalInvoices">0</strong></article>
+          <article class="metric-card"><span>Paid amount</span><strong id="paidAmount">INR 0.00</strong></article>
+          <article class="metric-card"><span>Unpaid amount</span><strong id="unpaidAmount">INR 0.00</strong></article>
+          <article class="metric-card"><span>Overdue</span><strong id="overdueCount">0</strong></article>
+          <article class="metric-card"><span>Revenue this month</span><strong id="monthlyRevenue">INR 0.00</strong></article>
+          <article class="metric-card"><span>Pending payments</span><strong id="pendingPayments">0</strong></article>
+        </div>
+        <div class="quick-actions">
+          <a href="/apps/web/invoice.html">Create Invoice</a>
+          <a href="/apps/web/invoice.html?type=gst">Create GST Invoice</a>
+          <a href="/apps/web/invoice.html?type=quotation">Create Quotation</a>
+          <a href="/apps/web/invoice.html?type=po">Create Purchase Order</a>
+          <a href="/apps/web/invoice.html#customerStep">Add Customer</a>
+          <a href="/apps/web/invoice.html#itemsStep">Add Item</a>
+        </div>
+      </section>
+      <section class="panel dashboard-page" data-dashboard-page="reports">
+        <div class="panel-head">
+          <h2>Report Categories</h2>
+          <span class="pill gold">Business reports</span>
+        </div>
+        <div class="quick-grid">
+          <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-revenue"><strong>Revenue</strong><span>Paid amount, monthly revenue, yearly revenue and customer-wise income.</span></a>
+          <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-invoices"><strong>Invoices</strong><span>Drafts, created invoices, overdue invoices, unpaid and paid invoices.</span></a>
+          <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-expenses"><strong>Expenses</strong><span>Expense tracking from created PO/WO records and vendor spend.</span></a>
+          <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-po"><strong>PO / WO</strong><span>Purchase order and work order activity, value, drafts and created records.</span></a>
+          <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-profit-loss"><strong>Profit and Loss</strong><span>Revenue minus expenses with monthly and yearly filters.</span></a>
+          <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-paid"><strong>Paid Reports</strong><span>Balance sheet, GST reports, growth graphs, customer aging and advanced analytics.</span></a>
+        </div>
+        <div class="report-command compact">
+          <div class="report-filter">
+            <button class="ghost small" type="button">Monthly</button>
+            <button class="ghost small" type="button">Yearly</button>
+            <button class="ghost small" type="button">Custom Period</button>
+          </div>
+          <div class="report-mini-summary">
+            <span>Income</span><strong id="reportIncomeTotal">INR 0.00</strong>
+            <span>Expenses</span><strong id="reportExpenseTotal">INR 0.00</strong>
+            <span>Profit</span><strong id="reportProfitTotal">INR 0.00</strong>
+          </div>
+        </div>
+        <div class="growth-board dashboard-growth">
+          <section class="growth-panel">
+            <div class="panel-head"><h3>Monthly Growth</h3><span class="pill blue">Revenue</span></div>
+            <div id="mainRevenueChart" class="live-bar-chart"></div>
+          </section>
+          <section class="growth-panel">
+            <div class="panel-head"><h3>Profit Trend</h3><span class="pill gold">Net</span></div>
+            <div id="mainProfitChart" class="live-bar-chart compact"></div>
+          </section>
+        </div>
+        <div id="reportsList" class="list"></div>
+      </section>
+      <section id="report-detail" class="panel dashboard-page" data-dashboard-page="report-detail">
+        <div class="panel-head">
+          <div>
+            <span id="reportDetailBadge" class="pill blue">Report</span>
+            <h2 id="reportDetailTitle">Detailed Report</h2>
+          </div>
+          <a class="ghost" href="/apps/web/dashboard.html#reports">Back to Reports</a>
+        </div>
+        <div class="report-detail-controls">
+          <label data-report-filter="period">Report Period
+            <select id="detailReportPeriod">
+              <option value="all">All time</option>
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+              <option value="yearly">Yearly</option>
+              <option value="financial-year">Financial Year</option>
+              <option value="custom">Custom Period</option>
+            </select>
+          </label>
+          <label data-report-filter="month">Month
+            <select id="detailReportMonth">
+              <option value="">All months</option>
+            </select>
+          </label>
+          <label data-report-filter="year">Year
+            <select id="detailReportYear">
+              <option value="">All years</option>
+            </select>
+          </label>
+          <label data-report-filter="financial-year">Financial Year
+            <select id="detailFinancialYear">
+              <option value="">Select FY</option>
+            </select>
+          </label>
+          <label data-report-filter="custom">From
+            <input id="detailStartDate" type="date" />
+          </label>
+          <label data-report-filter="custom">To
+            <input id="detailEndDate" type="date" />
+          </label>
+        </div>
+        <div id="reportDetailMetrics" class="metric-grid"></div>
+        <section class="report-chart-panel">
+          <div class="panel-head">
+            <h3 id="reportDetailChartTitle">Realtime Report Graph</h3>
+            <span id="reportDetailChartBadge" class="pill blue">Live</span>
+          </div>
+          <div id="reportDetailChart" class="live-bar-chart large"></div>
+        </section>
+        <div class="report-table-wrap">
+          <table class="report-table">
+            <thead id="reportDetailHead"></thead>
+            <tbody id="reportDetailBody"></tbody>
+          </table>
+        </div>
+      </section>
+      <section id="invoices" class="panel dashboard-page" data-dashboard-page="invoices">
+        <div class="panel-head">
+          <div>
+            <span class="pill blue">Invoice workspace</span>
+            <h2>Invoice Summary</h2>
+          </div>
+          <a class="primary" href="/apps/web/invoice.html">Generate New Invoice</a>
+        </div>
+        <div class="quick-grid">
+          <article class="quick-card">
+            <strong>Generate New Invoice</strong>
+            <span>Start a new invoice with customer, currency, items, tax and auto invoice number.</span>
+            <a class="ghost small" href="/apps/web/invoice.html">Create Invoice</a>
+          </article>
+          <article class="quick-card">
+            <strong>Draft Invoices</strong>
+            <span>Invoices saved from the form before payment or final follow-up.</span>
+            <strong id="draftInvoiceCount">0</strong>
+          </article>
+          <article class="quick-card">
+            <strong>Invoice Generated So Far</strong>
+            <span>Created invoice records that are counted in reports.</span>
+            <strong id="createdInvoiceCount">0</strong>
+          </article>
+          <article class="quick-card">
+            <strong>Revenue Report</strong>
+            <span>Invoice value for monthly, yearly and custom report views.</span>
+            <strong id="invoiceRevenueTotal">INR 0.00</strong>
+          </article>
+        </div>
+        <div class="invoice-board">
+          <section>
+            <div class="panel-head compact">
+              <h3>Drafts</h3>
+              <span class="pill gold">Saved drafts</span>
+            </div>
+            <div id="draftInvoicesList" class="list"></div>
+          </section>
+          <section>
+            <div class="panel-head compact">
+              <h3>Invoice Records</h3>
+              <span class="pill blue">Created</span>
+            </div>
+            <div id="createdInvoicesList" class="list"></div>
+          </section>
+        </div>
+      </section>
+      <section id="purchase-orders" class="panel dashboard-page" data-dashboard-page="purchase-orders">
+        <div class="panel-head">
+          <div>
+            <span class="pill blue">PO workspace</span>
+            <h2>PO Summary</h2>
+          </div>
+          <a class="primary" href="/apps/web/invoice.html?type=po">Generate New PO</a>
+        </div>
+        <div class="quick-grid">
+          <article class="quick-card">
+            <strong>Generate New PO</strong>
+            <span>Start a purchase order with vendor, items, totals, print and draft saving.</span>
+            <a class="ghost small" href="/apps/web/invoice.html?type=po">Create PO</a>
+          </article>
+          <article class="quick-card">
+            <strong>Draft POs</strong>
+            <span>Purchase orders saved before completion.</span>
+            <strong id="draftPoCount">0</strong>
+          </article>
+          <article class="quick-card">
+            <strong>PO Generated So Far</strong>
+            <span>Created purchase order records for this login.</span>
+            <strong id="createdPoCount">0</strong>
+          </article>
+          <article class="quick-card">
+            <strong>PO Value</strong>
+            <span>Total value of created purchase orders.</span>
+            <strong id="poValueTotal">INR 0.00</strong>
+          </article>
+        </div>
+        <div class="invoice-board">
+          <section>
+            <div class="panel-head compact">
+              <h3>PO Drafts</h3>
+              <span class="pill gold">Saved drafts</span>
+            </div>
+            <div id="draftPoList" class="list"></div>
+          </section>
+          <section>
+            <div class="panel-head compact">
+              <h3>PO Records</h3>
+              <span class="pill blue">Created</span>
+            </div>
+            <div id="createdPoList" class="list"></div>
+          </section>
+        </div>
+      </section>
+      <section id="business-profiles" class="panel dashboard-page" data-dashboard-page="business-profiles">
+        <div class="panel-head">
+          <div>
+            <span class="pill blue">Business profiles</span>
+            <h2>Business Profiles</h2>
+          </div>
+          <a class="primary" href="/apps/web/onboarding.html">Add Company / Profile</a>
+        </div>
+        <div class="org-card">
+          <img id="orgLogo" alt="Organization logo" class="org-logo" hidden />
+          <div>
+            <strong id="orgName">Loading...</strong>
+            <div id="orgMeta" class="hint">Fetching account profile</div>
+            <div id="orgKyc" class="hint"></div>
+          </div>
+        </div>
+        <div id="businessProfilesList" class="management-list"></div>
+      </section>
+      <section id="customers" class="panel dashboard-page" data-dashboard-page="customers">
+        <div class="panel-head">
+          <div>
+            <span class="pill blue">Customer directory</span>
+            <h2>Customers</h2>
+          </div>
+          <a class="primary" href="/apps/web/invoice.html#customerStep">Add Customer</a>
+        </div>
+        <div class="notice">Customer edit/delete screens will connect to backend customer-management routes when those routes are added. Invoice dues are calculated from created invoices.</div>
+        <div id="customersList" class="management-list"></div>
+      </section>
+      <section id="vendors" class="panel dashboard-page" data-dashboard-page="vendors">
+        <div class="panel-head">
+          <div>
+            <span class="pill blue">Vendor directory</span>
+            <h2>Vendors</h2>
+          </div>
+          <a class="primary" href="/apps/web/invoice.html?type=po">Add Vendor Through PO/WO</a>
+        </div>
+        <div class="notice">Vendors are currently derived from saved PO/WO records. A dedicated vendor master can be added once backend vendor routes are created.</div>
+        <div id="vendorsList" class="management-list"></div>
+      </section>
+      <section class="panel dashboard-page" data-dashboard-page="reports">
+        <div class="panel-head">
+          <h2>Recent Activity</h2>
+          <span class="pill blue">Live account data</span>
+        </div>
+        <div id="recentActivity" class="list"></div>
+      </section>
+      <section id="subscription" class="panel dashboard-page" data-dashboard-page="subscription">
+        <div class="panel-head">
+          <h2>Manage Subscription</h2>
+          <span id="currentPlanBadge" class="pill blue">Current: free</span>
+        </div>
+        <div class="notice">
+          You can upgrade or move back down to the free tier from here. Paid plans require submitted documents; admin approval follows through the review queue.
+        </div>
+        <div id="subscriptionArea" class="grid two"></div>
+        <div id="subscriptionHistory" class="list" style="margin-top:14px"></div>
+        <div id="subscriptionStatus" class="status" style="margin-top:10px"></div>
+      </section>
+    </main>
+  </div>
+  <div id="paymentModal" class="payment-modal" hidden>
+    <div class="payment-modal-card">
+      <div class="panel-head">
+        <div>
+          <span class="pill blue">Record payment</span>
+          <h2 id="paymentModalTitle">Add Invoice Payment</h2>
+        </div>
+        <button id="paymentModalClose" class="ghost small" type="button">Close</button>
+      </div>
+      <p id="paymentModalInvoiceMeta" class="hint"></p>
+      <div id="paymentModalSummary" class="payment-status-grid"></div>
+      <div id="paymentHistoryList" class="payment-history-list"></div>
+      <form id="paymentForm" class="grid two">
+        <input id="paymentInvoiceId" name="invoiceId" type="hidden" />
+        <label>Amount Received
+          <input id="paymentAmountInput" name="amount" type="number" min="0" step="0.01" required />
+        </label>
+        <label>Payment Date
+          <input id="paymentDateInput" name="paymentDate" type="date" required />
+        </label>
+        <label>Mode of Payment
+          <select id="paymentModeInput" name="mode">
+            <option value="UPI">UPI</option>
+            <option value="bank_transfer">Bank transfer</option>
+            <option value="cash">Cash</option>
+            <option value="card">Card</option>
+            <option value="cheque">Cheque</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label>Reference / UTR
+          <input id="paymentReferenceInput" name="reference" placeholder="Optional payment reference" />
+        </label>
+        <label class="full">Notes
+          <textarea id="paymentNotesInput" name="notes" rows="3" placeholder="Optional internal note"></textarea>
+        </label>
+        <div class="actions full">
+          <button id="paymentSubmitButton" class="primary" type="submit">Add Payment</button>
+          <button id="paymentModalCancel" class="ghost" type="button">Cancel</button>
+        </div>
+      </form>
+      <div id="paymentModalStatus" class="inline-status" aria-live="polite"></div>
+    </div>
+  </div>
+  <script type="module" src="./dashboard.js?v=20260603-report-charts"></script>
+</body>
+</html>

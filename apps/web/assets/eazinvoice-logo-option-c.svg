@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">EazInvoice logo option C</title>
+  <desc id="desc">Rounded blue E monogram with gold tick cutting through the center and lower arm.</desc>
+  <defs>
+    <linearGradient id="bgC" x1="74" y1="74" x2="432" y2="432" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#EAF2FF"/>
+      <stop offset="0.52" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#FFF4D6"/>
+    </linearGradient>
+    <linearGradient id="eC" x1="134" y1="116" x2="340" y2="388" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <filter id="shadowC" x="36" y="36" width="440" height="440" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="20" stdDeviation="20" flood-color="#1D4ED8" flood-opacity="0.16"/>
+    </filter>
+  </defs>
+  <rect x="48" y="48" width="416" height="416" rx="104" fill="url(#bgC)" filter="url(#shadowC)"/>
+  <path d="M155 124h226c11 0 19 8 19 19v29c0 11-8 19-19 19H226v45h128c11 0 19 8 19 19v25c0 11-8 19-19 19H226v48h158c11 0 19 8 19 19v29c0 11-8 19-19 19H155V124Z" fill="url(#eC)"/>
+  <path d="M188 292l65 65 126-151" fill="none" stroke="#D99A00" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M188 292l65 65 126-151" fill="none" stroke="#FFD36A" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" opacity="0.58"/>
+</svg>

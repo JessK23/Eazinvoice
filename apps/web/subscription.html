@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eazinvoice Subscription</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark"><img src="./assets/logo-mark.png?v=20260605-logo-refresh" alt="EazInvoice" /></div>
+    </div>
+    <nav class="topnav">
+      <a class="ghost" href="/apps/web/index.html">Home</a>
+      <a class="ghost" href="/apps/web/dashboard.html">Dashboard</a>
+    </nav>
+  </header>
+  <main id="protectedContent" class="home" hidden>
+    <section class="panel">
+      <h1>Organization Profile</h1>
+      <p>Free users can continue without KYC approval. Paid plans require submitted documents, and admin approval happens after review.</p>
+      <div class="wordpress-product-card">
+        <div>
+          <span class="pill blue">Paid plugin product</span>
+          <h2>EazInvoice WordPress Pro</h2>
+          <p>Sell and activate the paid WordPress plugin from the EazInvoice website. Pro can include WooCommerce order-to-invoice sync, customer mapping, payment status automation, invoice PDF links, and priority support.</p>
+        </div>
+        <a class="primary" href="/apps/web/index.html#pricing">View Paid Plans</a>
+      </div>
+      <form id="subscriptionForm" class="stack">
+        <div class="subscription-box">
+          <div class="subscription-head">
+            <strong>Document details</strong>
+            <span class="hint">Required for paid plans</span>
+          </div>
+          <div class="notice">
+            Individuals provide PAN, Aadhaar, and address proof for document review. Companies and groups provide company PAN or GST details.
+          </div>
+          <div class="grid two">
+            <label>Company or Name <input name="entityName" placeholder="Company or your full name" required /></label>
+            <label>Entity Type
+              <select name="entityType">
+                <option value="company">Company</option>
+                <option value="group">Group</option>
+                <option value="freelancer">Freelancer</option>
+                <option value="consultant">Consultant</option>
+              </select>
+            </label>
+            <label>Address <input name="address" placeholder="Registered / billing address" required /></label>
+            <label>GST Number <input name="gstNumber" placeholder="GST number" /></label>
+            <label>PAN Number <input name="panNumber" placeholder="PAN number" /></label>
+            <label>Aadhaar Number <input name="aadhaarNumber" placeholder="Only last 4 needed here" /></label>
+            <label>Address Proof <input name="addressProof" placeholder="Utility bill, rent agreement, etc." /></label>
+            <label>PAN Document <input name="panDocument" type="file" /></label>
+            <label>Aadhaar Document <input name="aadhaarDocument" type="file" /></label>
+            <label>GST Document <input name="gstDocument" type="file" /></label>
+            <label>Logo URL <input name="logoUrl" placeholder="Optional logo URL" /></label>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="submit" class="primary">Save Profile</button>
+          <a class="ghost" href="/apps/web/dashboard.html" style="text-decoration:none;display:inline-block">Back to Dashboard</a>
+        </div>
+        <span id="subscriptionStatus" class="status"></span>
+      </form>
+    </section>
+  </main>
+  <script type="module" src="./subscription.js"></script>
+</body>
+</html>

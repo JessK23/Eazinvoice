@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eazinvoice Onboarding</title>
+  <meta http-equiv="refresh" content="0; url=/apps/web/access.html" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark"><img src="./assets/logo-mark.png?v=20260605-logo-refresh" alt="EazInvoice" /></div>
+    </div>
+    <nav class="topnav">
+      <a class="ghost" href="/apps/web/dashboard.html">Dashboard</a>
+    </nav>
+  </header>
+
+  <main id="onboardingApp" class="onboarding-shell" hidden>
+    <section class="onboarding-hero">
+      <div>
+        <span class="pill blue">Step <span id="stepNumber">1</span> of 3</span>
+        <h1 id="stepTitle">Welcome to Eazinvoice</h1>
+        <p id="stepIntro">Set up your business once so invoices, GST details, and payment instructions are ready when you start billing.</p>
+      </div>
+      <div class="onboarding-preview" aria-hidden="true">
+        <div class="preview-paper">
+          <div class="paper-line wide"></div>
+          <div class="paper-line"></div>
+          <div class="paper-grid">
+            <span></span><span></span><span></span>
+          </div>
+          <div class="paper-total"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel onboarding-step" data-step="1">
+      <div class="panel-head">
+        <h2>Start With Your Business</h2>
+        <span class="pill gold">Mobile first</span>
+      </div>
+      <p class="hero-text">Eazinvoice is being shaped for freelancers, small shops, creators, consultants, agencies, and service businesses who need billing to feel fast, calm, and professional.</p>
+      <div class="actions">
+        <button id="startSetup" class="primary" type="button">Create Business Profile</button>
+      </div>
+    </section>
+
+    <section class="panel onboarding-step" data-step="2" hidden>
+      <div class="panel-head">
+        <h2>Business Profile</h2>
+        <span class="pill blue">Used on invoices</span>
+      </div>
+      <form id="businessProfileForm" class="stack">
+        <div class="grid two">
+          <label>Business Name <input name="name" placeholder="Eaz Design Studio" required /></label>
+          <label>Logo URL <input name="logoUrl" placeholder="https://..." /></label>
+          <label>Business Type <input name="businessType" placeholder="Freelancer, agency, trader" required /></label>
+          <label>Entity Type
+            <select name="entityType">
+              <option value="company">Company</option>
+              <option value="freelancer">Freelancer</option>
+              <option value="consultant">Consultant</option>
+              <option value="group">Group / Nonprofit</option>
+            </select>
+          </label>
+          <label class="toggle-line"><input name="gstRegistered" type="checkbox" /> GST registered</label>
+          <label>GSTIN <input name="gstNumber" placeholder="Optional for free tier" /></label>
+          <label>PAN <input name="panNumber" placeholder="Optional" /></label>
+          <label>Phone <input name="phone" inputmode="tel" placeholder="Business phone" /></label>
+          <label>Email <input name="email" type="email" placeholder="billing@example.com" /></label>
+          <label>State <input name="state" placeholder="Maharashtra" /></label>
+          <label>Pincode <input name="pincode" inputmode="numeric" placeholder="400001" /></label>
+          <label>UPI ID <input name="upiId" placeholder="name@bank" /></label>
+          <label class="full">Address <textarea name="address" rows="3" placeholder="Billing address"></textarea></label>
+          <label class="full">Bank Details <textarea name="bankDetails" rows="3" placeholder="Account name, bank, IFSC"></textarea></label>
+        </div>
+        <div class="actions">
+          <button class="primary" type="submit">Save Profile</button>
+          <button id="skipProfile" class="ghost" type="button">Skip for now</button>
+        </div>
+        <span id="onboardingStatus" class="status"></span>
+      </form>
+    </section>
+
+    <section class="panel onboarding-step" data-step="3" hidden>
+      <div class="panel-head">
+        <h2>Your Dashboard Is Ready</h2>
+        <span class="pill gold">Intro</span>
+      </div>
+      <div class="quick-grid">
+        <article class="quick-card"><strong>Create invoices</strong><span>Start with a guided invoice workflow.</span></article>
+        <article class="quick-card"><strong>Add customers</strong><span>Reuse customers across invoices and POs.</span></article>
+        <article class="quick-card"><strong>Track payments</strong><span>Dashboard cards show what needs attention.</span></article>
+      </div>
+      <div class="actions">
+        <a class="primary" href="/apps/web/dashboard.html">Go to Dashboard</a>
+        <a class="ghost" href="/apps/web/invoice.html">Create First Invoice</a>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="./onboarding.js"></script>
+</body>
+</html>

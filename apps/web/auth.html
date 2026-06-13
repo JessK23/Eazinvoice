@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eazinvoice Auth</title>
+  <link rel="stylesheet" href="./styles.css?v=20260528-auth-otp-4" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark"><img src="./assets/logo-mark.png?v=20260605-logo-refresh" alt="EazInvoice" /></div>
+    </div>
+    <nav class="topnav">
+      <a class="ghost" href="/apps/web/index.html">Home</a>
+    </nav>
+  </header>
+  <div id="authView" class="auth-view">
+    <section class="auth-card">
+      <div class="auth-tabs" role="tablist" aria-label="Authentication options">
+        <button type="button" class="auth-tab active" data-tab="signup" id="signupTab">Signup</button>
+        <button type="button" class="auth-tab" data-tab="login" id="loginTab">Login</button>
+      </div>
+      <h1 id="authTitle">Create your free account</h1>
+      <form id="authForm" class="stack">
+        <div id="nameFieldWrap">
+          <label>Name <input name="name" placeholder="Your name" required /></label>
+        </div>
+        <label>Email <input name="email" type="email" placeholder="you@example.com" required /></label>
+        <div class="grid two">
+          <label>Email OTP Code <input name="otp" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" placeholder="6-digit email code" required /></label>
+          <button type="button" id="requestOtp" class="ghost">Send Email OTP</button>
+        </div>
+        <div id="otpMeta" class="otp-meta" hidden>
+          <span id="otpExpiry">OTP expires in 1:30</span>
+          <button type="button" id="resendOtp" class="ghost small">Send again</button>
+        </div>
+        <label>Password <input name="password" type="password" placeholder="Create password" minlength="8" required /></label>
+        <label id="phoneFieldWrap"><span id="phoneLabel">Mobile Number</span> <input name="phone" inputmode="tel" placeholder="10-digit mobile number" required /></label>
+        <div id="signupOnlyFields" class="subscription-box">
+          <div class="subscription-head">
+            <strong>Account Type</strong>
+            <span class="hint">Choose this only when signing up</span>
+          </div>
+          <div class="subscription-grid">
+            <label><input type="radio" name="subscriberType" value="individual" checked /> Individual</label>
+            <label><input type="radio" name="subscriberType" value="company" /> Company</label>
+            <label><input type="radio" name="subscriberType" value="group" /> Group</label>
+          </div>
+        </div>
+        <div id="companyRegistrantFields" class="subscription-box" hidden>
+          <div class="subscription-head">
+            <strong>Company Registrant</strong>
+            <span class="hint">Required for company signup</span>
+          </div>
+          <div class="grid two">
+            <label>Registrant Name <input name="registrantName" placeholder="Person registering the company" /></label>
+            <label>Designation <input name="registrantDesignation" placeholder="Founder, Director, Manager" /></label>
+            <label>Registrant Email <input name="registrantEmail" type="email" placeholder="person@company.com" /></label>
+            <label>Registrant Mobile <input name="registrantPhone" inputmode="tel" placeholder="10-digit mobile number" /></label>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="submit" class="primary">Continue</button>
+          <button type="button" id="googleAuth" class="ghost google">Continue with Google</button>
+        </div>
+        <span id="authStatus" class="status"></span>
+      </form>
+      <div class="note-box" style="margin-top:12px">
+        Login and signup use email OTP verification. Mobile number is collected for your profile and can be verified later when SMS OTP is enabled.
+      </div>
+    </section>
+  </div>
+  <script src="./auth.js?v=20260528-auth-otp-4"></script>
+</body>
+</html>

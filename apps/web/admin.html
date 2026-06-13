@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eazinvoice Admin</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark"><img src="./assets/logo-mark.png?v=20260605-logo-refresh" alt="EazInvoice" /></div>
+    </div>
+    <nav class="topnav">
+      <a class="ghost" href="/apps/web/index.html">Home</a>
+      <a class="ghost" href="/apps/web/dashboard.html">Dashboard</a>
+    </nav>
+  </header>
+  <main class="home admin-command-center" id="protectedContent" hidden>
+    <section class="panel admin-hero">
+      <div>
+        <span class="pill blue">Founder console</span>
+        <h1>Admin Command Center</h1>
+        <p class="hint">Revenue, subscriptions, user access, KYC review and account controls in one secure workspace.</p>
+      </div>
+      <div class="actions">
+        <a class="ghost" href="/apps/web/index.html" style="text-decoration:none;display:inline-block">Home</a>
+        <a class="primary" href="/apps/web/dashboard.html" style="text-decoration:none;display:inline-block">Dashboard</a>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Revenue Overview</h2>
+        <span class="pill gold">Monetization</span>
+      </div>
+      <div class="admin-grid">
+        <div class="admin-card"><span>Total Monetization</span><strong id="adminTotal">0.00</strong></div>
+        <div class="admin-card"><span>Subscriptions</span><strong id="adminCount">0</strong></div>
+        <div class="admin-card"><span>Company Revenue</span><strong id="adminCompany">0.00</strong></div>
+        <div class="admin-card"><span>Individual Revenue</span><strong id="adminIndividual">0.00</strong></div>
+        <div class="admin-card"><span>Group Revenue</span><strong id="adminGroup">0.00</strong></div>
+      </div>
+      <div class="growth-board dashboard-growth">
+        <section class="growth-panel">
+          <div class="panel-head"><h3>Revenue Mix</h3><span class="pill blue">Live</span></div>
+          <div class="growth-bars"><span style="height:76%"></span><span style="height:38%"></span><span style="height:52%"></span><span style="height:62%"></span></div>
+        </section>
+        <section class="growth-panel">
+          <div class="panel-head"><h3>Admin Watchlist</h3><span class="pill gold">Risk</span></div>
+          <div class="expense-entry-row"><span>Users</span><span>Plans</span><span>KYC</span><span>Status</span></div>
+          <div class="expense-entry-row muted"><span>Active</span><span>Free</span><span>Pending</span><span>Review</span></div>
+        </section>
+      </div>
+      <h2>Subscriptions</h2>
+      <div id="adminSubscriptions" class="list"></div>
+      <h2 style="margin-top:18px">Users</h2>
+      <div id="adminUsers" class="list"></div>
+      <h2 style="margin-top:18px">KYC Review Queue</h2>
+      <div id="kycReviewQueue" class="list"></div>
+    </section>
+  </main>
+  <script type="module" src="./admin.js"></script>
+</body>
+</html>

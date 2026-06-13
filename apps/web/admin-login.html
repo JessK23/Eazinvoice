@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eazinvoice Admin Login</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark"><img src="./assets/logo-mark.png?v=20260605-logo-refresh" alt="EazInvoice" /></div>
+    </div>
+    <nav class="topnav">
+      <a class="ghost" href="/apps/web/index.html">Home</a>
+      <a class="ghost" href="/apps/web/auth.html">User Auth</a>
+    </nav>
+  </header>
+  <main class="home">
+    <section class="panel" style="max-width:560px;margin:48px auto">
+      <div class="panel-head">
+        <h1>Admin Login</h1>
+        <span class="pill maroon">Separate from customers</span>
+      </div>
+      <form id="adminLoginForm" class="stack">
+        <label>Admin Email <input name="email" type="email" value="jesskurian23@gmail.com" /></label>
+        <label>Access Key <input name="accessKey" type="password" placeholder="Admin access key" /></label>
+        <div class="actions">
+          <button type="submit" class="primary">Enter Admin</button>
+        </div>
+        <span id="adminLoginStatus" class="status"></span>
+      </form>
+    </section>
+  </main>
+  <script type="module" src="./admin-login.js"></script>
+</body>
+</html>

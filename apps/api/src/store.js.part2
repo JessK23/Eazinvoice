@@ -1,0 +1,174 @@
+
+  function createSubscription(input) {
+    const amount = Number(input.amount ?? 0);
+    const subscription = {
+      id: nextId("sub", ++state.counters.subscription),
+      subscriberType: input.subscriberType ?? "individual",
+      subscriberName: input.subscriberName?.trim() ?? "",
+      companyId: input.companyId ?? null,
+      userId: input.userId ?? null,
+      groupName: input.groupName?.trim() ?? "",
+      plan: input.plan ?? "free",
+      amount,
+      currency: input.currency ?? "INR",
+      billingCycle: input.billingCycle ?? "monthly",
+      status: input.status ?? "active",
+      adminUserId: input.adminUserId ?? null,
+      createdAt: new Date().toISOString(),
+    };
+    state.subscriptions.push(subscription);
+    state.monetization.push({
+      id: nextId("mon", ++state.counters.monetization),
+      subscriptionId: subscription.id,
+      adminUserId: subscription.adminUserId,
+      sourceType: subscription.subscriberType,
+      sourceName: subscription.subscriberName || subscription.groupName || "Unnamed",
+      amount,
+      currency: subscription.currency,
+      createdAt: subscription.createdAt,
+    });
+    persist();
+    return clone(subscription);
+  }
+
+  function listSubscriptions() {
+    return clone(state.subscriptions);
+  }
+
+  function listMonetization() {
+    return clone(state.monetization);
+  }
+
+  function summarizeMonetization() {
+    const totalAmount = state.monetization.reduce((sum, entry) => sum + entry.amount, 0);
+    const byType = state.monetization.reduce((acc, entry) => {
+      acc[entry.sourceType] = (acc[entry.sourceType] ?? 0) + entry.amount;
+      return acc;
+    }, {});
+    return {
+      totalAmount,
+      byType,
+      count: state.monetization.length,
+    };
+  }
+
+  function createReport(input) {
+    const report = {
+      id: nextId("rpt", ++state.counters.report),
+      ownerUserId: input.ownerUserId ?? null,
+      companyId: input.companyId ?? null,
+      reportType: input.reportType ?? "summary",
+      title: input.title ?? "Free Tier Report",
+      fromDate: input.fromDate ?? "",
+      toDate: input.toDate ?? "",
+      totalInvoices: input.totalInvoices ?? 0,
+      totalPurchaseOrders: input.totalPurchaseOrders ?? 0,
+      totalAmount: input.totalAmount ?? 0,
+      createdAt: new Date().toISOString(),
+    };
+    state.reports.push(report);
+    persist();
+    return clone(report);
+  }
+
+  function listReportsForUser(user) {
+    if (!user || user.role === "admin") return clone(state.reports);
+    const companiesOwned = new Set(state.companies.filter((company) => company.ownerUserId === user.id).map((company) => company.id));
+    return clone(state.reports.filter((report) => report.ownerUserId === user.id || companiesOwned.has(report.companyId)));
+  }
+
+  function listInvoices() {
+    return clone(state.invoices);
+  }
+
+  function listPurchaseOrdersForUser(user) {
+    if (!user || user.role === "admin") return clone(state.purchaseOrders);
+    const companiesOwned = new Set(state.companies.filter((company) => company.ownerUserId === user.id).map((company) => company.id));
+    return clone(state.purchaseOrders.filter((purchaseOrder) => purchaseOrder.ownerUserId === user.id || companiesOwned.has(purchaseOrder.companyId)));
+  }
+
+  function setUserRestriction(userId, updates) {
+    const user = state.users.find((entry) => entry.id === userId);
+    if (!user) return null;
+    if (updates.accountStatus) user.accountStatus = updates.accountStatus;
+    if (typeof updates.restrictedReason === "string") user.restrictedReason = updates.restrictedReason;
+    if (typeof updates.restrictedAt === "string") user.restrictedAt = updates.restrictedAt;
+    persist();
+    return clone(user);
+  }
+
+  function listRestrictedUsers() {
+    return clone(state.users.filter((user) => user.accountStatus === "restricted"));
+  }
+
+  function setUserPermissions(userId, permissions) {
+    const user = state.users.find((entry) => entry.id === userId);
+    if (!user) return null;
+    user.permissions = Array.isArray(permissions) ? permissions : [];
+    persist();
+    return clone(user);
+  }
+
+  function listInvoicesForUser(user) {
+    if (!user || user.role === "admin") return clone(state.invoices);
+    const companiesOwned = new Set(state.companies.filter((company) => company.ownerUserId === user.id).map((company) => company.id));
+    return clone(state.invoices.filter((invoice) => invoice.ownerUserId === user.id || companiesOwned.has(invoice.companyId)));
+  }
+
+  function getInvoice(id, user) {
+    const invoice = state.invoices.find((entry) => entry.id === id);
+    if (!invoice) return null;
+    if (!user || user.role === "admin") return clone(invoice);
+    const companiesOwned = new Set(state.companies.filter((company) => company.ownerUserId === user.id).map((company) => company.id));
+    if (invoice.ownerUserId !== user.id && !companiesOwned.has(invoice.companyId)) return null;
+    return invoice ? clone(invoice) : null;
+  }
+
+  function getPurchaseOrder(id, user) {
+    const purchaseOrder = state.purchaseOrders.find((entry) => entry.id === id);
+    if (!purchaseOrder) return null;
+    if (!user || user.role === "admin") return clone(purchaseOrder);
+    const companiesOwned = new Set(state.companies.filter((company) => company.ownerUserId === user.id).map((company) => company.id));
+    if (purchaseOrder.ownerUserId !== user.id && !companiesOwned.has(purchaseOrder.companyId)) return null;
+    return clone(purchaseOrder);
+  }
+
+  function countUsage() {
+    return {
+      companies: state.companies.length,
+      customers: state.customers.length,
+      invoicesPerMonth: state.invoices.length,
+      invoiceItemsPerInvoice: Math.max(0, ...state.invoices.map((invoice) => invoice.items.length), 0),
+      templates: 1,
+    };
+  }
+
+  return {
+    createUser,
+    listUsers,
+    getUserById,
+    getUserByEmail,
+    createCompany,
+    listCompanies,
+    updateCompanyKyc,
+    createCustomer,
+    listCustomers,
+    createInvoice,
+    createPurchaseOrder,
+    listInvoicesForUser,
+    listPurchaseOrdersForUser,
+    createSubscription,
+    createReport,
+    listSubscriptions,
+    listMonetization,
+    summarizeMonetization,
+    listReportsForUser,
+    listInvoices,
+    getInvoice,
+    getPurchaseOrder,
+    setUserRestriction,
+    setUserPermissions,
+    listRestrictedUsers,
+    countUsage,
+  };
+}

@@ -1,0 +1,1275 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eazinvoice Document Workflow</title>
+  <link rel="stylesheet" href="./styles.css?v=20260602-po-flow" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark"><img src="./assets/logo-mark.png?v=20260605-logo-refresh" alt="EazInvoice" /></div>
+    </div>
+    <nav class="topnav">
+      <a class="ghost" href="/apps/web/dashboard.html">Dashboard</a>
+      <a class="ghost" href="/apps/web/onboarding.html">Business Profile</a>
+    </nav>
+  </header>
+
+  <main id="invoiceApp" class="invoice-workspace">
+    <section class="invoice-builder">
+      <form id="invoiceWorkflowForm" class="stack">
+        <section class="invoice-form-hero panel" id="customerStep">
+          <div class="panel-head">
+            <div>
+              <span id="workflowStartBadge" class="pill blue">Start invoice</span>
+              <h1 id="workflowTitle">Create Invoice</h1>
+            </div>
+            <span id="customerCodePreview" class="pill blue">Choose customer</span>
+          </div>
+          <p id="workflowIntro" class="hint">First choose whether this invoice is for an existing customer or a new customer, then choose the invoice currency.</p>
+          <div class="invoice-start-grid">
+            <label id="customerTypeLabel">Customer Type
+              <select id="customerModeSelect" name="customerMode">
+                <option value="">Choose customer type</option>
+                <option value="existing">Existing Customer</option>
+                <option value="new">New Customer</option>
+              </select>
+            </label>
+            <label id="documentTypeWrap" hidden>Document Type
+              <select id="documentTypeSelect" name="documentType">
+                <option value="po">Purchase Order</option>
+                <option value="wo">Work Order</option>
+              </select>
+            </label>
+            <label>Currency
+              <select id="currencySelect" name="currency">
+                <option value="INR">INR - Indian Rupee</option>
+                <option value="USD">USD - US Dollar</option>
+                <option value="EUR">EUR - Euro</option>
+                <option value="GBP">GBP - Pound Sterling</option>
+                <option value="AED">AED - UAE Dirham</option>
+              </select>
+            </label>
+          </div>
+          <p id="customerModePrompt" class="choice-prompt">Choose Existing Customer to auto-fill saved details, or New Customer to add a customer first and then select them for this invoice.</p>
+          <div class="grid two" id="existingCustomerFields" hidden>
+            <label id="savedCustomerWrap">Saved Customer <select id="customerSelect" name="customerId"></select></label>
+            <label>Customer Name <input name="customerName" placeholder="Auto-filled from saved customer" readonly /></label>
+            <label class="full">Bill To Address <textarea name="customerBillingAddress" rows="3" placeholder="Optional invoice billing address"></textarea></label>
+          </div>
+          <div class="new-customer-box" id="newCustomerFields" hidden>
+            <div class="panel-head compact">
+              <div>
+                <h3>Add New Customer</h3>
+                <p class="hint">Add the customer once, then select them from the saved customer dropdown for this invoice.</p>
+              </div>
+              <span class="pill blue">Customer code auto</span>
+            </div>
+            <div class="grid two">
+              <label>Customer Category
+                <select id="newCustomerCategory" name="newCustomerCategory">
+                  <option value="individual">Individual</option>
+                  <option value="company">Company</option>
+                </select>
+              </label>
+              <label><span id="newCustomerNameLabel">Customer Name</span> <input name="newCustomerName" placeholder="Rahul Sharma" /></label>
+              <label>Contact Number <input name="newCustomerPhone" inputmode="tel" placeholder="10-digit mobile or phone" /></label>
+              <label>Email ID <input name="newCustomerEmail" type="email" placeholder="customer@example.com" /></label>
+              <label id="newCustomerPanWrap">PAN Number <input name="newCustomerPan" placeholder="ABCDE1234F" /></label>
+              <label id="newCustomerGstinWrap">GST Number <input name="newCustomerGstin" placeholder="22AAAAA0000A1Z5" /></label>
+              <label class="full">Address <textarea name="newCustomerBillingAddress" rows="3" placeholder="Customer billing address"></textarea></label>
+            </div>
+            <div class="actions">
+              <button id="addNewCustomerBtn" class="primary" type="button">Add Customer</button>
+              <button id="cancelNewCustomerBtn" class="ghost" type="button">Cancel</button>
+            </div>
+            <div id="newCustomerStatus" class="inline-status" aria-live="polite"></div>
+          </div>
+        </section>
+
+        <section class="panel issuer-setup" id="issuerSetup" hidden>
+          <div class="panel-head">
+            <div>
+              <span class="pill blue">Issuer details</span>
+              <h2>Confirm Your Business Profile</h2>
+            </div>
+            <span id="issuerModeBadge" class="pill gold">Required</span>
+          </div>
+          <p id="issuerSetupHint" class="hint">Complete your own profile once before opening the invoice form.</p>
+          <div class="grid two">
+            <label id="issuerCompanySelectWrap" hidden>Company Profile
+              <select id="issuerCompanySelect"></select>
+            </label>
+            <label>Business / Issuer Name <input id="issuerNameInput" placeholder="Your name or company name" /></label>
+            <label>PAN Number <input id="issuerPanInput" placeholder="ABCDE1234F" /></label>
+            <label id="issuerGstWrap">GST Number <input id="issuerGstInput" placeholder="22AAAAA0000A1Z5" /></label>
+            <label>State <input id="issuerStateInput" placeholder="Maharashtra" /></label>
+            <label>Contact Email <input id="issuerEmailInput" type="email" placeholder="billing@example.com" /></label>
+          </div>
+          <div class="actions">
+            <button id="updateIssuerBtn" class="primary" type="button">Update and Continue</button>
+          </div>
+          <div id="issuerStatus" class="inline-status" aria-live="polite"></div>
+        </section>
+
+        <section class="panel" id="businessStep" data-invoice-entry hidden>
+          <div class="panel-head">
+            <h2 id="businessDetailsTitle">Business and Invoice Details</h2>
+            <a class="ghost small" href="/apps/web/onboarding.html">Add Profile</a>
+          </div>
+          <div class="grid two">
+            <label>Registered Name / Company <select id="companySelect" name="companyId"></select></label>
+            <label><span id="documentNumberLabel">Invoice Number</span> <input name="invoiceNumber" placeholder="Auto generated" readonly /></label>
+            <label><span id="documentDateLabel">Invoice Date</span> <input name="invoiceDate" type="date" /></label>
+            <label>Due Date <input name="dueDate" type="date" /></label>
+            <label>Payment Terms <input name="paymentTerms" placeholder="Due in 7 days" /></label>
+            <label>Place of Supply <input name="placeOfSupply" placeholder="Customer state" /></label>
+          </div>
+        </section>
+
+        <section class="panel" id="itemsStep" data-invoice-entry hidden>
+          <div class="panel-head">
+            <h2>Goods and Items</h2>
+            <button id="addItemBtn" class="ghost small" type="button">Add Good / Item</button>
+          </div>
+          <p class="hint">Select a previous item from the item name suggestions or type a new item manually. You can add multiple goods or services.</p>
+          <datalist id="itemSuggestions"></datalist>
+          <div class="invoice-items-head">
+            <span>Item Name</span>
+            <span id="taxCodeHead">HSN/SAC</span>
+            <span>Qty</span>
+            <span>Rate / Amt</span>
+            <span>Discount Amt</span>
+            <span id="taxRateHead">GST %</span>
+            <span>Total Amt</span>
+            <span></span>
+          </div>
+          <div id="workflowItems" class="item-list"></div>
+        </section>
+
+        <section class="panel" data-invoice-entry hidden>
+          <div class="panel-head">
+            <h2>Delivery and Payment Details</h2>
+            <span id="gstModeBadge" class="pill blue">CGST + SGST</span>
+          </div>
+          <div class="grid two">
+            <label>Mode of Delivery <input name="modeOfDelivery" placeholder="Email, courier, hand delivery, WhatsApp" /></label>
+            <label>Mode of Payment <input name="modeOfPayment" placeholder="UPI, bank transfer, cash, card" /></label>
+            <label class="full">Payment Instructions <textarea name="paymentInstructions" rows="3"></textarea></label>
+            <label class="full">Terms and Conditions <textarea name="terms" rows="3"></textarea></label>
+          </div>
+        </section>
+
+        <section class="panel invoice-summary-panel" data-invoice-entry hidden>
+          <div class="panel-head">
+            <h2>Amount Summary</h2>
+            <span class="pill gold">Auto calculated</span>
+          </div>
+          <div class="invoice-summary-grid">
+            <div><span>Subtotal</span><strong id="previewSubtotal">0.00</strong></div>
+            <div><span>Discount</span><strong id="previewDiscount">0.00</strong></div>
+            <div><span id="summaryTaxLabel">GST</span><strong id="previewTax">0.00</strong></div>
+            <div><span>Total Amount</span><strong id="previewTotal">0.00</strong></div>
+          </div>
+        </section>
+
+        <section id="invoicePaymentPanel" class="panel" hidden>
+          <div class="panel-head">
+            <div>
+              <span class="pill blue">Payment tracking</span>
+              <h2>Invoice Payment</h2>
+            </div>
+            <span id="invoicePaymentBadge" class="pill red">UNPAID</span>
+          </div>
+          <div class="payment-status-grid">
+            <div><span>Total Amount</span><strong id="invoicePaymentTotal">0.00</strong></div>
+            <div><span>Paid Amount</span><strong id="invoicePaymentPaid">0.00</strong></div>
+            <div><span>Balance Amount</span><strong id="invoicePaymentBalance">0.00</strong></div>
+          </div>
+          <div class="actions" style="margin-top:14px">
+            <button id="invoiceRecordPaymentBtn" class="primary" type="button">Record Payment</button>
+            <button id="invoicePaymentLinkBtn" class="ghost" type="button">Create Payment Link</button>
+          </div>
+          <div id="invoicePaymentStatus" class="inline-status" aria-live="polite"></div>
+        </section>
+
+        <section id="documentPreview" class="panel invoice-a4 tax-invoice-preview invoice-document-preview" data-invoice-entry hidden>
+          <div id="previewDocumentHeading" class="tax-invoice-heading">TAX INVOICE</div>
+          <div class="preview-top">
+            <div>
+              <img class="invoice-brand-logo" src="./assets/eazinvoice-logo.png?v=20260605-logo-refresh" alt="EazInvoice" />
+              <strong id="previewCompany">Your Business</strong>
+              <div id="previewCompanyMeta" class="hint">Business details</div>
+            </div>
+            <div class="tax-title">
+              <span id="previewDocumentNumberLabel">Invoice No.</span>
+              <strong id="previewInvoiceNo">Auto</strong>
+            </div>
+          </div>
+          <div class="preview-meta">
+            <div><span id="previewBillToLabel">Bill To</span><strong id="previewCustomer">Customer</strong></div>
+            <div><span id="previewDateLabel">Invoice Date</span><strong id="previewInvoiceDate">-</strong></div>
+            <div><span>Due Date</span><strong id="previewDueDate">-</strong></div>
+          </div>
+          <table class="tax-invoice-table">
+            <thead>
+              <tr>
+                <th>Item Details</th>
+                <th>HSN/SAC</th>
+                <th>Qty</th>
+                <th>Rate / Amt</th>
+                <th>Discount Amt</th>
+                <th>GST %</th>
+                <th>Total Amt</th>
+              </tr>
+            </thead>
+            <tbody id="previewRows"></tbody>
+          </table>
+          <div class="preview-total">
+            <div><span>Subtotal</span><strong id="previewPdfSubtotal">0.00</strong></div>
+            <div><span>Discount Amt</span><strong id="previewPdfDiscount">0.00</strong></div>
+            <div><span>Tax</span><strong id="previewPdfTax">0.00</strong></div>
+            <div><span>Total</span><strong id="previewPdfTotal">0.00</strong></div>
+          </div>
+          <div class="invoice-footer-grid">
+            <div>
+              <strong>Payment Instructions</strong>
+              <p id="previewPaymentInstructions">-</p>
+            </div>
+            <div>
+              <strong>Terms and Conditions</strong>
+              <p id="previewTerms">-</p>
+            </div>
+          </div>
+          <div class="authorized-signature">
+            <div></div>
+            <div>
+              <span>For <strong id="previewSignatureCompany">Your Business</strong></span>
+              <div class="signature-line"></div>
+              <strong>Authorized Signatory</strong>
+            </div>
+          </div>
+        </section>
+
+        <div class="actions sticky-actions" data-invoice-entry hidden>
+          <button id="saveDraftBtn" class="primary" type="submit">Save Draft</button>
+          <button id="createInvoiceBtn" class="primary alt" type="button">Create Invoice</button>
+          <button id="printInvoice" class="ghost" type="button">Generate Tax Invoice PDF</button>
+          <a id="whatsappShare" class="ghost" href="#" target="_blank" rel="noreferrer">WhatsApp Share</a>
+        </div>
+        <span id="invoiceWorkflowStatus" class="status"></span>
+      </form>
+    </section>
+
+  </main>
+
+  <div id="invoicePaymentModal" class="payment-modal" hidden>
+    <div class="payment-modal-card">
+      <div class="panel-head">
+        <div>
+          <span class="pill blue">Record payment</span>
+          <h2>Add Invoice Payment</h2>
+        </div>
+        <button id="invoicePaymentModalClose" class="ghost small" type="button">Close</button>
+      </div>
+      <p id="invoicePaymentModalMeta" class="hint"></p>
+      <form id="invoicePaymentForm" class="grid two">
+        <label>Amount Received
+          <input id="invoicePaymentAmountInput" name="amount" type="number" min="0" step="0.01" required />
+        </label>
+        <label>Payment Date
+          <input id="invoicePaymentDateInput" name="paymentDate" type="date" required />
+        </label>
+        <label>Mode of Payment
+          <select id="invoicePaymentModeInput" name="mode">
+            <option value="UPI">UPI</option>
+            <option value="bank_transfer">Bank transfer</option>
+            <option value="cash">Cash</option>
+            <option value="card">Card</option>
+            <option value="cheque">Cheque</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label>Reference / UTR
+          <input id="invoicePaymentReferenceInput" name="reference" placeholder="Optional payment reference" />
+        </label>
+        <label class="full">Notes
+          <textarea id="invoicePaymentNotesInput" name="notes" rows="3" placeholder="Optional internal note"></textarea>
+        </label>
+        <div class="actions full">
+          <button class="primary" type="submit">Add Payment</button>
+          <button id="invoicePaymentModalCancel" class="ghost" type="button">Cancel</button>
+        </div>
+      </form>
+      <div id="invoicePaymentModalStatus" class="inline-status" aria-live="polite"></div>
+    </div>
+  </div>
+
+  <div id="saveSuccessModal" class="payment-modal" hidden>
+    <div class="payment-modal-card save-success-card">
+      <span class="pill green">Saved</span>
+      <h2 id="saveSuccessTitle">Saved successfully</h2>
+      <p id="saveSuccessMessage" class="hint">Your document has been saved.</p>
+      <div class="actions">
+        <button id="saveSuccessContinue" class="primary" type="button">Go to dashboard</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const form = document.getElementById("invoiceWorkflowForm");
+      const modeSelect = document.getElementById("customerModeSelect");
+      const currencySelect = document.getElementById("currencySelect");
+      const documentTypeSelect = document.getElementById("documentTypeSelect");
+      const documentTypeWrap = document.getElementById("documentTypeWrap");
+      const workflowStartBadge = document.getElementById("workflowStartBadge");
+      const workflowTitle = document.getElementById("workflowTitle");
+      const workflowIntro = document.getElementById("workflowIntro");
+      const customerTypeLabel = document.getElementById("customerTypeLabel");
+      const businessDetailsTitle = document.getElementById("businessDetailsTitle");
+      const documentNumberLabel = document.getElementById("documentNumberLabel");
+      const documentDateLabel = document.getElementById("documentDateLabel");
+      const existingFields = document.getElementById("existingCustomerFields");
+      const newFields = document.getElementById("newCustomerFields");
+      const prompt = document.getElementById("customerModePrompt");
+      const customerSelect = document.getElementById("customerSelect");
+      const customerCodePreview = document.getElementById("customerCodePreview");
+      const nameInput = form?.querySelector('input[name="customerName"]');
+      const addressInput = form?.querySelector('textarea[name="customerBillingAddress"]');
+      const categorySelect = document.getElementById("newCustomerCategory");
+      const nameLabel = document.getElementById("newCustomerNameLabel");
+      const panWrap = document.getElementById("newCustomerPanWrap");
+      const gstWrap = document.getElementById("newCustomerGstinWrap");
+      const status = document.getElementById("invoiceWorkflowStatus");
+      const newCustomerStatus = document.getElementById("newCustomerStatus");
+      const addButton = document.getElementById("addNewCustomerBtn");
+      const cancelButton = document.getElementById("cancelNewCustomerBtn");
+      const itemButton = document.getElementById("addItemBtn");
+      const itemsEl = document.getElementById("workflowItems");
+      const companySelect = document.getElementById("companySelect");
+      const entrySections = document.querySelectorAll("[data-invoice-entry]");
+      const issuerSetup = document.getElementById("issuerSetup");
+      const issuerStatus = document.getElementById("issuerStatus");
+      const issuerCompanySelect = document.getElementById("issuerCompanySelect");
+      const issuerCompanySelectWrap = document.getElementById("issuerCompanySelectWrap");
+      const issuerNameInput = document.getElementById("issuerNameInput");
+      const issuerPanInput = document.getElementById("issuerPanInput");
+      const issuerGstInput = document.getElementById("issuerGstInput");
+      const issuerGstWrap = document.getElementById("issuerGstWrap");
+      const issuerStateInput = document.getElementById("issuerStateInput");
+      const issuerEmailInput = document.getElementById("issuerEmailInput");
+      const issuerSetupHint = document.getElementById("issuerSetupHint");
+      const updateIssuerBtn = document.getElementById("updateIssuerBtn");
+      const saveDraftButton = document.getElementById("saveDraftBtn");
+      const createInvoiceButton = document.getElementById("createInvoiceBtn");
+      const printButton = document.getElementById("printInvoice");
+      const previewRows = document.getElementById("previewRows");
+      const previewCompany = document.getElementById("previewCompany");
+      const previewCompanyMeta = document.getElementById("previewCompanyMeta");
+      const previewCustomer = document.getElementById("previewCustomer");
+      const previewInvoiceNo = document.getElementById("previewInvoiceNo");
+      const previewInvoiceDate = document.getElementById("previewInvoiceDate");
+      const previewDueDate = document.getElementById("previewDueDate");
+      const documentPreview = document.getElementById("documentPreview");
+      const previewDocumentHeading = document.getElementById("previewDocumentHeading");
+      const previewDocumentNumberLabel = document.getElementById("previewDocumentNumberLabel");
+      const previewBillToLabel = document.getElementById("previewBillToLabel");
+      const previewDateLabel = document.getElementById("previewDateLabel");
+      const previewSignatureCompany = document.getElementById("previewSignatureCompany");
+      const previewPdfSubtotal = document.getElementById("previewPdfSubtotal");
+      const previewPdfDiscount = document.getElementById("previewPdfDiscount");
+      const previewPdfTax = document.getElementById("previewPdfTax");
+      const previewPdfTotal = document.getElementById("previewPdfTotal");
+      const previewPaymentInstructions = document.getElementById("previewPaymentInstructions");
+      const previewTerms = document.getElementById("previewTerms");
+      const invoicePaymentPanel = document.getElementById("invoicePaymentPanel");
+      const invoicePaymentBadge = document.getElementById("invoicePaymentBadge");
+      const invoicePaymentTotal = document.getElementById("invoicePaymentTotal");
+      const invoicePaymentPaid = document.getElementById("invoicePaymentPaid");
+      const invoicePaymentBalance = document.getElementById("invoicePaymentBalance");
+      const invoiceRecordPaymentBtn = document.getElementById("invoiceRecordPaymentBtn");
+      const invoicePaymentLinkBtn = document.getElementById("invoicePaymentLinkBtn");
+      const invoicePaymentStatus = document.getElementById("invoicePaymentStatus");
+      const invoicePaymentModal = document.getElementById("invoicePaymentModal");
+      const invoicePaymentForm = document.getElementById("invoicePaymentForm");
+      const invoicePaymentModalClose = document.getElementById("invoicePaymentModalClose");
+      const invoicePaymentModalCancel = document.getElementById("invoicePaymentModalCancel");
+      const invoicePaymentModalMeta = document.getElementById("invoicePaymentModalMeta");
+      const invoicePaymentModalStatus = document.getElementById("invoicePaymentModalStatus");
+      const invoicePaymentAmountInput = document.getElementById("invoicePaymentAmountInput");
+      const invoicePaymentDateInput = document.getElementById("invoicePaymentDateInput");
+      const invoicePaymentModeInput = document.getElementById("invoicePaymentModeInput");
+      const invoicePaymentReferenceInput = document.getElementById("invoicePaymentReferenceInput");
+      const invoicePaymentNotesInput = document.getElementById("invoicePaymentNotesInput");
+      const saveSuccessModal = document.getElementById("saveSuccessModal");
+      const saveSuccessTitle = document.getElementById("saveSuccessTitle");
+      const saveSuccessMessage = document.getElementById("saveSuccessMessage");
+      const saveSuccessContinue = document.getElementById("saveSuccessContinue");
+      const token = localStorage.getItem("eazinvoice_token") || new URLSearchParams(location.search).get("token") || "";
+      const params = new URLSearchParams(location.search);
+      const invoiceIdFromUrl = params.get("invoice") || "";
+      const poIdFromUrl = params.get("po") || "";
+      const workflowType = String(params.get("type") || (poIdFromUrl ? "po" : "invoice")).toLowerCase();
+      const isPoFlow = Boolean(poIdFromUrl) || workflowType === "po" || workflowType === "wo";
+      if (!token) {
+        window.location.replace("/apps/web/auth.html?tab=login");
+        return;
+      }
+      let fallbackCompanies = [];
+      let fallbackCustomers = [];
+      let currentUser = null;
+      let fallbackSavedInvoice = null;
+      let saveRedirectUrl = "/apps/web/dashboard.html";
+
+      function documentTypeLabel() {
+        if (!isPoFlow) return "Invoice";
+        return documentTypeSelect?.value === "wo" ? "Work Order" : "Purchase Order";
+      }
+
+      function documentTypeShort() {
+        if (!isPoFlow) return "INV";
+        return documentTypeSelect?.value === "wo" ? "WO" : "PO";
+      }
+
+      function applyWorkflowMode() {
+        const label = documentTypeLabel();
+        document.title = isPoFlow ? `Eazinvoice ${label} Workflow` : "Eazinvoice Invoice Workflow";
+        if (workflowStartBadge) workflowStartBadge.textContent = isPoFlow ? `Start ${documentTypeShort()}` : "Start invoice";
+        if (workflowTitle) workflowTitle.textContent = isPoFlow ? `Create ${label}` : "Create Invoice";
+        if (workflowIntro) workflowIntro.textContent = isPoFlow
+          ? "First choose whether this document is for an existing vendor or a new vendor, then choose the currency and tax rule."
+          : "First choose whether this invoice is for an existing customer or a new customer, then choose the invoice currency.";
+        if (customerCodePreview) customerCodePreview.textContent = isPoFlow ? "Choose vendor" : "Choose customer";
+        if (customerTypeLabel?.firstChild) customerTypeLabel.firstChild.textContent = isPoFlow ? "Vendor Type" : "Customer Type";
+        const savedCustomerWrap = document.getElementById("savedCustomerWrap");
+        if (savedCustomerWrap?.firstChild) savedCustomerWrap.firstChild.textContent = isPoFlow ? "Saved Vendor " : "Saved Customer ";
+        nameInput?.setAttribute("placeholder", isPoFlow ? "Auto-filled from saved vendor" : "Auto-filled from saved customer");
+        addressInput?.setAttribute("placeholder", isPoFlow ? "Optional vendor address" : "Optional invoice billing address");
+        if (modeSelect) {
+          modeSelect.options[0].textContent = isPoFlow ? "Choose vendor type" : "Choose customer type";
+          modeSelect.options[1].textContent = isPoFlow ? "Existing Vendor" : "Existing Customer";
+          modeSelect.options[2].textContent = isPoFlow ? "New Vendor" : "New Customer";
+        }
+        if (documentTypeWrap) documentTypeWrap.hidden = !isPoFlow;
+        if (businessDetailsTitle) businessDetailsTitle.textContent = isPoFlow ? `Business and ${label} Details` : "Business and Invoice Details";
+        if (documentNumberLabel) documentNumberLabel.textContent = `${label} Number`;
+        if (documentDateLabel) documentDateLabel.textContent = `${label} Date`;
+        if (saveDraftButton) saveDraftButton.textContent = `Save ${documentTypeShort()} Draft`;
+        if (createInvoiceButton) createInvoiceButton.textContent = isPoFlow ? `Create ${documentTypeShort()}` : "Create Invoice";
+        if (printButton) printButton.textContent = isPoFlow ? `Generate ${documentTypeShort()} PDF` : "Generate Tax Invoice PDF";
+        if (invoicePaymentPanel) invoicePaymentPanel.hidden = true;
+        if (documentPreview) {
+          documentPreview.classList.toggle("po-document-preview", isPoFlow);
+          documentPreview.classList.toggle("invoice-document-preview", !isPoFlow);
+        }
+        if (previewDocumentHeading) previewDocumentHeading.textContent = isPoFlow ? label.toUpperCase() : "TAX INVOICE";
+        if (previewDocumentNumberLabel) previewDocumentNumberLabel.textContent = isPoFlow ? `${documentTypeShort()} No.` : "Invoice No.";
+        if (previewBillToLabel) previewBillToLabel.textContent = isPoFlow ? "Vendor / Supplier" : "Bill To";
+        if (previewDateLabel) previewDateLabel.textContent = isPoFlow ? `${documentTypeShort()} Date` : "Invoice Date";
+      }
+
+      function dashboardSectionUrl() {
+        return isPoFlow ? "/apps/web/dashboard.html#purchase-orders" : "/apps/web/dashboard.html#invoices";
+      }
+
+      function showSaveSuccess(documentRecord, targetStatus) {
+        const docLabel = documentTypeLabel();
+        const statusWord = targetStatus === "draft" ? "saved as draft" : "created";
+        saveRedirectUrl = dashboardSectionUrl();
+        if (saveSuccessTitle) saveSuccessTitle.textContent = `${docLabel} ${statusWord} successfully`;
+        if (saveSuccessMessage) {
+          saveSuccessMessage.textContent = `${documentRecord?.invoiceNumber || documentRecord?.poNumber || docLabel} has been ${statusWord}. Returning to the dashboard.`;
+        }
+        if (saveSuccessModal) saveSuccessModal.hidden = false;
+        window.setTimeout(() => {
+          window.location.href = saveRedirectUrl;
+        }, 1500);
+      }
+
+      function issuerCode(company = activeIssuer()) {
+        const raw = company?.companyCode || company?.name || currentUser?.name || "INV";
+        const cleaned = String(raw).trim().toUpperCase().replace(/[^A-Z0-9]+/g, "");
+        return cleaned.slice(0, 8) || "INV";
+      }
+
+      function ensureDraftInvoiceNumber() {
+        const input = form?.querySelector('input[name="invoiceNumber"]');
+        const company = activeIssuer();
+        if (!input || !company || input.value) return;
+        const invoiceDate = form?.querySelector('input[name="invoiceDate"]')?.value || new Date().toISOString().slice(0, 10);
+        input.value = `${issuerCode(company)}/${String(invoiceDate).slice(0, 4)}/${documentTypeShort()}-${String(fallbackCompanies.length + fallbackCustomers.length + 1).padStart(4, "0")}`;
+      }
+
+      function simpleNumber(value) {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+      }
+
+      function selectedTaxLabels() {
+        const currency = currencySelect?.value || "INR";
+        if (currency === "INR") return { code: "HSN/SAC", tax: "GST %", rate: 18, placeholder: "9983" };
+        if (currency === "USD") return { code: "Tax Code", tax: "Sales Tax %", rate: 0, placeholder: "Optional" };
+        return { code: "Tax Code", tax: "VAT %", rate: currency === "AED" ? 5 : 0, placeholder: "Optional" };
+      }
+
+      function currencySymbol() {
+        const currency = currencySelect?.value || "INR";
+        return ({ INR: "\u20B9", USD: "$", EUR: "\u20AC", GBP: "\u00A3", AED: "AED" })[currency] || currency;
+      }
+
+      function moneyText(value) {
+        return `${currencySymbol()} ${Number(value || 0).toFixed(2)}`;
+      }
+
+      function invoiceMoneyText(invoice, value) {
+        const currency = invoice?.currency || currencySelect?.value || "INR";
+        const symbol = ({ INR: "\u20B9", USD: "$", EUR: "\u20AC", GBP: "\u00A3", AED: "AED" })[currency] || currency;
+        return `${symbol} ${Number(value || 0).toFixed(2)}`;
+      }
+
+      function paymentTone(statusValue) {
+        const normalized = String(statusValue || "unpaid").toLowerCase().replace(/\s+/g, "_");
+        if (normalized === "paid") return "green";
+        if (normalized === "part_paid" || normalized === "partial_paid") return "amber";
+        if (normalized === "draft") return "gold";
+        return "red";
+      }
+
+      function setInvoicePaymentStatus(message, tone = "") {
+        if (!invoicePaymentStatus) return;
+        invoicePaymentStatus.textContent = message || "";
+        invoicePaymentStatus.dataset.tone = tone;
+      }
+
+      function setInvoicePaymentModalStatus(message, tone = "") {
+        if (!invoicePaymentModalStatus) return;
+        invoicePaymentModalStatus.textContent = message || "";
+        invoicePaymentModalStatus.dataset.tone = tone;
+      }
+
+      function renderInvoicePaymentPanel(invoice = fallbackSavedInvoice) {
+        if (!invoicePaymentPanel || !invoice) return;
+        const balance = Number(invoice.balanceAmount ?? invoice.total ?? 0);
+        const paid = Number(invoice.paidAmount || 0);
+        const statusValue = invoice.paymentStatus || (String(invoice.status || "").toLowerCase() === "draft" ? "draft" : "unpaid");
+        invoicePaymentPanel.hidden = String(invoice.status || "").toLowerCase() === "draft";
+        if (invoicePaymentBadge) {
+          invoicePaymentBadge.className = `pill ${paymentTone(statusValue)}`;
+          invoicePaymentBadge.textContent = String(statusValue).replace(/_/g, " ").toUpperCase();
+        }
+        if (invoicePaymentTotal) invoicePaymentTotal.textContent = invoiceMoneyText(invoice, invoice.total || 0);
+        if (invoicePaymentPaid) invoicePaymentPaid.textContent = invoiceMoneyText(invoice, paid);
+        if (invoicePaymentBalance) invoicePaymentBalance.textContent = invoiceMoneyText(invoice, balance);
+        if (invoiceRecordPaymentBtn) invoiceRecordPaymentBtn.hidden = balance <= 0;
+        if (invoicePaymentLinkBtn) invoicePaymentLinkBtn.hidden = balance <= 0;
+      }
+
+      function openInvoicePaymentModal() {
+        const invoice = fallbackSavedInvoice;
+        if (!invoice || !invoicePaymentModal || !invoicePaymentAmountInput || !invoicePaymentDateInput) return;
+        const balance = Number(invoice.balanceAmount ?? invoice.total ?? 0);
+        invoicePaymentAmountInput.value = balance > 0 ? String(balance) : "";
+        invoicePaymentAmountInput.max = balance > 0 ? String(balance) : "";
+        invoicePaymentDateInput.value = new Date().toISOString().slice(0, 10);
+        if (invoicePaymentModeInput) invoicePaymentModeInput.value = "UPI";
+        if (invoicePaymentReferenceInput) invoicePaymentReferenceInput.value = "";
+        if (invoicePaymentNotesInput) invoicePaymentNotesInput.value = "";
+        if (invoicePaymentModalMeta) invoicePaymentModalMeta.textContent = `${invoice.invoiceNumber || "Invoice"} - Balance ${invoiceMoneyText(invoice, balance)}`;
+        setInvoicePaymentModalStatus("");
+        invoicePaymentModal.hidden = false;
+        invoicePaymentAmountInput.focus();
+      }
+
+      function closeInvoicePaymentModal() {
+        if (invoicePaymentModal) invoicePaymentModal.hidden = true;
+        invoicePaymentForm?.reset();
+        setInvoicePaymentModalStatus("");
+      }
+
+      function updateFallbackRow(row) {
+        const qty = simpleNumber(row.querySelector('[name="quantity"]')?.value);
+        const rate = simpleNumber(row.querySelector('[name="rate"]')?.value);
+        const discount = Math.min(qty * rate, simpleNumber(row.querySelector('[name="discount"]')?.value));
+        const taxRate = simpleNumber(row.querySelector('[name="gstRate"]')?.value);
+        const taxable = Math.max(0, qty * rate - discount);
+        const total = taxable + (taxable * taxRate) / 100;
+        const output = row.querySelector(".line-total");
+        if (output) output.textContent = moneyText(total);
+        updateFallbackPreview();
+      }
+
+      function readFallbackItems() {
+        return [...(itemsEl?.querySelectorAll(".workflow-item-row") || [])].map((row) => ({
+          description: row.querySelector('[name="description"]')?.value || "",
+          hsnSac: row.querySelector('[name="hsnSac"]')?.value || "",
+          quantity: simpleNumber(row.querySelector('[name="quantity"]')?.value),
+          rate: simpleNumber(row.querySelector('[name="rate"]')?.value),
+          discount: simpleNumber(row.querySelector('[name="discount"]')?.value),
+          gstRate: simpleNumber(row.querySelector('[name="gstRate"]')?.value),
+        })).filter((item) => item.description.trim());
+      }
+
+      function updateFallbackPreview() {
+        const data = new FormData(form);
+        const issuer = activeIssuer();
+        const items = readFallbackItems();
+        const subtotal = items.reduce((sum, item) => sum + item.quantity * item.rate, 0);
+        const discount = items.reduce((sum, item) => sum + Math.min(item.quantity * item.rate, item.discount), 0);
+        const tax = items.reduce((sum, item) => {
+          const lineBase = item.quantity * item.rate;
+          const taxable = Math.max(0, lineBase - Math.min(lineBase, item.discount));
+          return sum + (taxable * item.gstRate) / 100;
+        }, 0);
+        const total = Math.max(0, subtotal - discount) + tax;
+        if (previewCompany) previewCompany.textContent = issuer?.legalName || issuer?.name || "Your Business";
+        if (previewCompanyMeta) previewCompanyMeta.textContent = [issuer?.gstNumber, issuer?.state, issuer?.pincode].filter(Boolean).join(" | ") || "Business details";
+        if (previewSignatureCompany) previewSignatureCompany.textContent = issuer?.legalName || issuer?.name || "Your Business";
+        if (previewCustomer) previewCustomer.textContent = data.get("customerName") || (isPoFlow ? "Vendor" : "Customer");
+        if (previewInvoiceNo) previewInvoiceNo.textContent = data.get("invoiceNumber") || "Auto";
+        if (previewInvoiceDate) previewInvoiceDate.textContent = data.get("invoiceDate") || "-";
+        if (previewDueDate) previewDueDate.textContent = data.get("dueDate") || "-";
+        if (previewRows) {
+          previewRows.innerHTML = items.map((item) => {
+            const lineBase = item.quantity * item.rate;
+            const lineDiscount = Math.min(lineBase, item.discount);
+            const lineTaxable = Math.max(0, lineBase - lineDiscount);
+            const lineTotal = lineTaxable + (lineTaxable * item.gstRate) / 100;
+            return `<tr><td>${item.description || "-"}</td><td>${item.hsnSac || "-"}</td><td>${item.quantity}</td><td>${moneyText(item.rate)}</td><td>${moneyText(lineDiscount)}</td><td>${item.gstRate}</td><td>${moneyText(lineTotal)}</td></tr>`;
+          }).join("");
+        }
+        if (previewPdfSubtotal) previewPdfSubtotal.textContent = moneyText(subtotal);
+        if (previewPdfDiscount) previewPdfDiscount.textContent = moneyText(discount);
+        if (previewPdfTax) previewPdfTax.textContent = moneyText(tax);
+        if (previewPdfTotal) previewPdfTotal.textContent = moneyText(total);
+        if (previewPaymentInstructions) previewPaymentInstructions.textContent = data.get("paymentInstructions") || "-";
+        if (previewTerms) previewTerms.textContent = data.get("terms") || "-";
+      }
+
+      async function persistInvoiceFallback(targetStatus = "draft", options = {}) {
+        const notify = options.notify !== false;
+        const data = new FormData(form);
+        const issuer = activeIssuer();
+        const items = readFallbackItems();
+        if (!issuer) {
+          if (status) status.textContent = "Select your registered name or company before saving.";
+          return null;
+        }
+        if (!items.length) {
+          if (status) status.textContent = "Add at least one good, item, or service before saving.";
+          return null;
+        }
+        const selectedCustomer = fallbackCustomers.find((entry) => entry.id === customerSelect?.value) || null;
+        const invoiceNumberInput = form?.querySelector('input[name="invoiceNumber"]');
+        ensureDraftInvoiceNumber();
+        const billToName = data.get("customerName") || selectedCustomer?.businessName || selectedCustomer?.name || (isPoFlow ? "Vendor" : "Customer");
+        const billToAddress = data.get("customerBillingAddress") || selectedCustomer?.billingAddress || "";
+        const payload = {
+          companyId: issuer.isUserIssuer ? null : issuer.id,
+          customerId: selectedCustomer?.id || null,
+          invoiceNumber: data.get("invoiceNumber"),
+          poNumber: data.get("invoiceNumber"),
+          documentType: documentTypeSelect?.value || "po",
+          status: targetStatus,
+          invoiceDate: data.get("invoiceDate"),
+          poDate: data.get("invoiceDate"),
+          dueDate: data.get("dueDate"),
+          currency: data.get("currency"),
+          paymentTerms: data.get("paymentTerms"),
+          placeOfSupply: data.get("placeOfSupply"),
+          taxRate: 0,
+          gstMode: "intra",
+          discount: 0,
+          shipping: 0,
+          roundOff: 0,
+          modeOfDelivery: data.get("modeOfDelivery"),
+          modeOfPayment: data.get("modeOfPayment"),
+          paymentInstructions: data.get("paymentInstructions"),
+          terms: data.get("terms"),
+          billToName,
+          billToAddress,
+          items,
+        };
+        try {
+          const isCreated = targetStatus === "created";
+          const docLabel = documentTypeLabel();
+          if (status) status.textContent = isCreated ? `Creating ${docLabel.toLowerCase()} record...` : `Saving ${docLabel.toLowerCase()} draft...`;
+          const invoice = isPoFlow
+            ? fallbackSavedInvoice?.id
+              ? await api(`/purchase-orders/${fallbackSavedInvoice.id}`, { method: "PATCH", body: JSON.stringify(payload) })
+              : await api("/purchase-orders", { method: "POST", body: JSON.stringify(payload) })
+            : fallbackSavedInvoice
+            ? await api(`/invoices/${fallbackSavedInvoice.id}`, { method: "PATCH", body: JSON.stringify(payload) })
+            : await api("/invoices", { method: "POST", body: JSON.stringify(payload) });
+          if (invoiceNumberInput) invoiceNumberInput.value = invoice.invoiceNumber || invoice.poNumber || invoiceNumberInput.value;
+          if (status) {
+            const summaryHref = isPoFlow ? "/apps/web/dashboard.html#purchase-orders" : "/apps/web/dashboard.html#invoices";
+            const summaryLabel = isPoFlow ? "PO Summary" : "Invoice Summary";
+            status.innerHTML = isCreated
+              ? `Created ${docLabel} ${invoice.invoiceNumber || invoice.poNumber}. <a href="${summaryHref}">View it in ${summaryLabel}</a>`
+              : `Saved ${docLabel} draft ${invoice.invoiceNumber || invoice.poNumber}. <a href="${summaryHref}">View it in ${summaryLabel}</a>`;
+          }
+          fallbackSavedInvoice = invoice;
+          if (!isPoFlow) renderInvoicePaymentPanel(invoice);
+          if (notify) showSaveSuccess(invoice, targetStatus);
+          return invoice;
+        } catch (error) {
+          if (status) status.textContent = error.message || (targetStatus === "created" ? "Could not create invoice." : "Could not save draft.");
+          return null;
+        }
+      }
+
+      async function saveDraftFallback(event) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        await persistInvoiceFallback("draft");
+      }
+
+      async function createInvoiceFallback(event) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        await persistInvoiceFallback("created");
+      }
+
+      async function generateTaxInvoicePdf(event) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const invoice = await persistInvoiceFallback("created", { notify: false });
+        if (!invoice) return;
+        updateFallbackPreview();
+        window.print();
+      }
+
+      function addFallbackItemRow(data = {}) {
+        if (!itemsEl) return;
+        const labels = selectedTaxLabels();
+        const row = document.createElement("div");
+        row.className = "workflow-item-row";
+        row.innerHTML = `
+          <label><span>Item Name</span><input name="description" placeholder="Website design" value="${data.description || ""}" required /></label>
+          <label><span data-tax-code-label>${labels.code}</span><input name="hsnSac" placeholder="${labels.placeholder}" value="${data.hsnSac || ""}" /></label>
+          <label><span>Qty</span><input name="quantity" type="number" min="0" step="0.01" value="${data.quantity || 1}" /></label>
+          <label><span>Rate / Amt</span><input name="rate" type="number" min="0" step="0.01" value="${data.rate || 0}" /></label>
+          <label><span>Discount Amt</span><input name="discount" type="number" min="0" step="0.01" value="${data.discount || 0}" /></label>
+          <label><span data-tax-rate-label>${labels.tax}</span><input name="gstRate" type="number" min="0" step="0.01" value="${data.gstRate ?? labels.rate}" /></label>
+          <output class="line-total">0.00</output>
+          <button class="ghost small" type="button">Remove</button>
+        `;
+        row.querySelectorAll("input").forEach((input) => input.addEventListener("input", () => updateFallbackRow(row)));
+        row.querySelector("button")?.addEventListener("click", () => row.remove());
+        itemsEl.appendChild(row);
+        updateFallbackRow(row);
+      }
+
+      function showEntry(show) {
+        entrySections.forEach((section) => { section.hidden = !show; });
+        if (show) ensureDraftInvoiceNumber();
+        if (show && itemsEl && !itemsEl.querySelector(".workflow-item-row")) {
+          addFallbackItemRow({ description: "Website design", hsnSac: "9983", quantity: 1, rate: 15000, gstRate: 18 });
+        }
+        if (show) updateFallbackPreview();
+      }
+
+      function subscriberType() {
+        return currentUser?.subscriberType || (currentUser?.registrant ? "company" : "individual");
+      }
+
+      function userIssuer() {
+        if (!currentUser) return null;
+        const initials = String(currentUser.name || currentUser.email || "Individual")
+          .trim()
+          .toUpperCase()
+          .split(/[^A-Z0-9]+/)
+          .filter(Boolean)
+          .map((word) => word[0])
+          .join("")
+          .slice(0, 4) || "IND";
+        return {
+          id: "__user__",
+          isUserIssuer: true,
+          name: currentUser.name || currentUser.email || "Individual",
+          legalName: "",
+          companyCode: initials,
+          entityType: "individual",
+          panNumber: currentUser.panNumber || "",
+          gstNumber: "",
+          email: currentUser.email || "",
+          phone: currentUser.phone || "",
+          state: "",
+          pincode: "",
+        };
+      }
+
+      function isGroupUser() {
+        return subscriberType() === "group";
+      }
+
+      function activeIssuer() {
+        if (issuerCompanySelect?.value === "__user__") return userIssuer();
+        return fallbackCompanies.find((entry) => entry.id === issuerCompanySelect?.value)
+          || fallbackCompanies.find((entry) => entry.id === companySelect?.value)
+          || fallbackCompanies[0]
+          || userIssuer()
+          || null;
+      }
+
+      function issuerNeedsSetup(company = activeIssuer()) {
+        const type = subscriberType();
+        if (!company) return true;
+        if (company.isUserIssuer) return !currentUser?.panNumber;
+        if (type === "individual") return !company.panNumber;
+        return !company.panNumber || !company.gstNumber;
+      }
+
+      function setIssuerStatus(message, tone = "") {
+        if (!issuerStatus) return;
+        issuerStatus.textContent = message;
+        issuerStatus.dataset.tone = tone;
+      }
+
+      function populateIssuerFields() {
+        const company = activeIssuer();
+        const isUser = company?.isUserIssuer;
+        if (issuerCompanySelectWrap) issuerCompanySelectWrap.hidden = false;
+        if (issuerGstWrap) issuerGstWrap.hidden = isUser || subscriberType() === "individual";
+        if (issuerSetupHint) {
+          issuerSetupHint.textContent = isUser
+            ? "Your own registered name will be used as the invoice issuer. Add PAN before continuing."
+            : isGroupUser()
+              ? "Choose the company issuing this invoice and update PAN/GST before continuing."
+              : "Choose your registered name or company name for this invoice. Company issuers need PAN/GST before continuing.";
+        }
+        if (issuerCompanySelect) {
+          const own = userIssuer();
+          issuerCompanySelect.innerHTML = [
+            own ? `<option value="__user__">${own.name} (Individual)</option>` : "",
+            ...fallbackCompanies.map((entry) => `<option value="${entry.id}">${entry.legalName || entry.name || "Company"}</option>`),
+          ].join("") || '<option value="">Create profile</option>';
+          if (company?.id) issuerCompanySelect.value = company.id;
+        }
+        if (issuerNameInput) issuerNameInput.value = company?.legalName || company?.name || currentUser?.name || "";
+        if (issuerPanInput) issuerPanInput.value = company?.panNumber || "";
+        if (issuerGstInput) issuerGstInput.value = company?.gstNumber || "";
+        if (issuerStateInput) issuerStateInput.value = company?.state || "";
+        if (issuerEmailInput) issuerEmailInput.value = company?.email || currentUser?.email || "";
+      }
+
+      function maybeOpenIssuerSetup() {
+        const customerReady = modeSelect?.value === "existing" && Boolean(customerSelect?.value);
+        if (!customerReady) {
+          if (issuerSetup) issuerSetup.hidden = true;
+          showEntry(false);
+          return;
+        }
+        populateIssuerFields();
+        if (issuerNeedsSetup()) {
+          if (issuerSetup) issuerSetup.hidden = false;
+          showEntry(false);
+        } else {
+          if (issuerSetup) issuerSetup.hidden = true;
+          const company = activeIssuer();
+          if (companySelect && company?.id) companySelect.value = company.id;
+          showEntry(true);
+        }
+      }
+
+      function setNewCustomerStatus(message, tone = "") {
+        if (!newCustomerStatus) return;
+        newCustomerStatus.textContent = message;
+        newCustomerStatus.dataset.tone = tone;
+      }
+
+      function showTaxFields() {
+        const show = currencySelect?.value === "INR" && categorySelect?.value === "company";
+        if (nameLabel) nameLabel.textContent = categorySelect?.value === "company" ? (isPoFlow ? "Vendor Business Name" : "Business Name") : (isPoFlow ? "Vendor Name" : "Customer Name");
+        if (panWrap) panWrap.hidden = !show;
+        if (gstWrap) gstWrap.hidden = !show;
+      }
+
+      function fillCustomer() {
+        const customer = fallbackCustomers.find((entry) => entry.id === customerSelect?.value);
+        if (nameInput) nameInput.value = customer ? (customer.businessName || customer.name || "") : "";
+        if (addressInput) addressInput.value = customer ? (customer.billingAddress || customer.shippingAddress || "") : "";
+      }
+
+      function applyMode() {
+        const mode = modeSelect?.value || "";
+        if (existingFields) existingFields.hidden = mode !== "existing";
+        if (newFields) newFields.hidden = mode !== "new";
+        if (prompt) prompt.hidden = mode === "existing" || mode === "new";
+        if (prompt && !prompt.hidden) {
+          prompt.textContent = isPoFlow
+            ? "Choose Existing Vendor to auto-fill saved details, or New Vendor to add vendor details first and then select them for this PO/WO."
+            : "Choose Existing Customer to auto-fill saved details, or New Customer to add a customer first and then select them for this invoice.";
+        }
+        maybeOpenIssuerSetup();
+        if (mode === "new") showTaxFields();
+        if (mode === "existing") fillCustomer();
+      }
+
+      async function api(path, options = {}) {
+        const response = await fetch(path, {
+          ...options,
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(options.headers || {}),
+          },
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || "Request failed");
+        return payload;
+      }
+
+      function renderCustomers() {
+        if (!customerSelect) return;
+        customerSelect.innerHTML = fallbackCustomers.length
+          ? fallbackCustomers.map((customer) => `<option value="${customer.id}">${customer.customerCode || customer.id} - ${customer.businessName || customer.name || "Customer"}</option>`).join("")
+          : '<option value="">No saved customers yet</option>';
+      }
+
+      function syncBusinessNotice() {
+        const existing = document.getElementById("businessDraftNotice");
+        if (fallbackCompanies.length || existing) return;
+        const businessStep = document.getElementById("businessStep");
+        businessStep?.insertAdjacentHTML("beforeend", '<p id="businessDraftNotice" class="hint">You can raise invoices using your registered name. Add PAN if asked before continuing.</p>');
+      }
+
+      function renderCompanies() {
+        if (!companySelect) return;
+        const own = userIssuer();
+        companySelect.innerHTML = [
+          '<option value="">Select invoice issuer</option>',
+          own ? `<option value="__user__">${own.name} (Individual)</option>` : "",
+          ...fallbackCompanies.map((company) => `<option value="${company.id}">${company.legalName || company.name || "Business"}</option>`),
+        ].join("");
+        syncBusinessNotice();
+        if (issuerCompanySelect) {
+          issuerCompanySelect.innerHTML = [
+            own ? `<option value="__user__">${own.name} (Individual)</option>` : "",
+            ...fallbackCompanies.map((company) => `<option value="${company.id}">${company.legalName || company.name || "Business"}</option>`),
+          ].join("") || '<option value="">Create profile</option>';
+        }
+      }
+
+      function setField(name, value) {
+        const field = form?.elements[name];
+        if (!field) return;
+        field.value = value || "";
+      }
+
+      function openInvoiceForEdit(invoice) {
+        if (!invoice) return;
+        fallbackSavedInvoice = invoice;
+        if (currencySelect && invoice.currency) currencySelect.value = invoice.currency;
+        const issuerValue = invoice.companyId || "__user__";
+        if (companySelect) companySelect.value = issuerValue;
+        if (issuerCompanySelect) issuerCompanySelect.value = issuerValue;
+        if (modeSelect) modeSelect.value = "existing";
+        if (invoice.customerId && customerSelect) customerSelect.value = invoice.customerId;
+        if (nameInput) nameInput.value = invoice.billToName || "";
+        if (addressInput) addressInput.value = invoice.billToAddress || "";
+        setField("invoiceNumber", invoice.invoiceNumber);
+        setField("invoiceDate", invoice.invoiceDate);
+        setField("dueDate", invoice.dueDate);
+        setField("paymentTerms", invoice.paymentTerms);
+        setField("placeOfSupply", invoice.placeOfSupply);
+        setField("modeOfDelivery", invoice.modeOfDelivery);
+        setField("modeOfPayment", invoice.modeOfPayment);
+        setField("paymentInstructions", invoice.paymentInstructions);
+        setField("terms", invoice.terms);
+        if (itemsEl) itemsEl.innerHTML = "";
+        (invoice.items || []).forEach((item) => addFallbackItemRow({
+          description: item.description,
+          hsnSac: item.hsnSac,
+          quantity: item.quantity,
+          rate: item.rate,
+          discount: item.discount,
+          gstRate: item.gstRate,
+        }));
+        if (!itemsEl?.querySelector(".workflow-item-row")) addFallbackItemRow();
+        showEntry(true);
+        updateFallbackPreview();
+        renderInvoicePaymentPanel(invoice);
+        if (status) status.textContent = `${String(invoice.status || "created").toUpperCase()} ${invoice.invoiceNumber || "invoice"} loaded for editing.`;
+      }
+
+      function openPurchaseOrderForEdit(po) {
+        if (!po) return;
+        fallbackSavedInvoice = po;
+        if (documentTypeSelect) documentTypeSelect.value = po.documentType || "po";
+        applyWorkflowMode();
+        if (currencySelect && po.currency) currencySelect.value = po.currency;
+        const issuerValue = po.companyId || "__user__";
+        if (companySelect) companySelect.value = issuerValue;
+        if (issuerCompanySelect) issuerCompanySelect.value = issuerValue;
+        if (modeSelect) modeSelect.value = "existing";
+        if (po.customerId && customerSelect) customerSelect.value = po.customerId;
+        if (nameInput) nameInput.value = po.billToName || "";
+        if (addressInput) addressInput.value = po.billToAddress || "";
+        setField("invoiceNumber", po.poNumber);
+        setField("invoiceDate", po.poDate || po.issueDate);
+        setField("dueDate", po.dueDate);
+        setField("paymentTerms", po.paymentTerms);
+        setField("placeOfSupply", po.placeOfSupply);
+        setField("modeOfDelivery", po.modeOfDelivery);
+        setField("modeOfPayment", po.modeOfPayment);
+        setField("paymentInstructions", po.paymentInstructions);
+        setField("terms", po.terms);
+        if (itemsEl) itemsEl.innerHTML = "";
+        (po.items || []).forEach((item) => addFallbackItemRow({
+          description: item.description,
+          hsnSac: item.hsnSac,
+          quantity: item.quantity,
+          rate: item.rate,
+          discount: item.discount,
+          gstRate: item.gstRate,
+        }));
+        if (!itemsEl?.querySelector(".workflow-item-row")) addFallbackItemRow();
+        showEntry(true);
+        updateFallbackPreview();
+        if (status) status.textContent = `${String(po.status || "created").toUpperCase()} ${po.poNumber || documentTypeLabel()} loaded for editing.`;
+      }
+
+      async function loadInvoiceFromUrl() {
+        if (!invoiceIdFromUrl) return;
+        try {
+          const invoice = await api(`/invoices/${encodeURIComponent(invoiceIdFromUrl)}`);
+          openInvoiceForEdit(invoice);
+        } catch (error) {
+          if (status) status.textContent = error.message || "Could not open this invoice.";
+        }
+      }
+
+      async function loadPurchaseOrderFromUrl() {
+        if (!poIdFromUrl) return;
+        try {
+          const po = await api(`/purchase-orders/${encodeURIComponent(poIdFromUrl)}`);
+          openPurchaseOrderForEdit(po);
+        } catch (error) {
+          if (status) status.textContent = error.message || "Could not open this PO/WO.";
+        }
+      }
+
+      async function updateIssuerProfile(event) {
+        event?.preventDefault();
+        const name = issuerNameInput?.value.trim() || currentUser?.name || "My Business";
+        const panNumber = issuerPanInput?.value.trim() || "";
+        const gstNumber = issuerGstInput?.value.trim() || "";
+        const existing = activeIssuer();
+        const isUser = existing?.isUserIssuer;
+        if (!panNumber) {
+          setIssuerStatus("PAN number is required before continuing.", "error");
+          return;
+        }
+        if (!isUser && !gstNumber) {
+          setIssuerStatus("GST number is required for company profiles before continuing.", "error");
+          return;
+        }
+        const payload = {
+          profilePurpose: "onboarding",
+          entityType: isUser ? "freelancer" : "company",
+          name,
+          legalName: isUser ? "" : name,
+          panNumber,
+          gstNumber: isUser ? "" : gstNumber,
+          state: issuerStateInput?.value || "",
+          email: issuerEmailInput?.value || currentUser?.email || "",
+        };
+        try {
+          updateIssuerBtn.disabled = true;
+          setIssuerStatus("Updating issuer profile...", "");
+          const company = isUser
+            ? (currentUser = (await api("/me", { method: "PATCH", body: JSON.stringify({ name, panNumber }) })).user, userIssuer())
+            : existing?.id
+            ? await api(`/companies/${existing.id}`, { method: "PATCH", body: JSON.stringify(payload) })
+            : await api("/companies", { method: "POST", body: JSON.stringify(payload) });
+          if (!company.isUserIssuer) {
+            const index = fallbackCompanies.findIndex((entry) => entry.id === company.id);
+            if (index >= 0) fallbackCompanies[index] = company;
+            else fallbackCompanies.push(company);
+          }
+          renderCompanies();
+          if (companySelect) companySelect.value = company.id;
+          if (issuerCompanySelect) issuerCompanySelect.value = company.id;
+          if (issuerSetup) issuerSetup.hidden = true;
+          showEntry(true);
+          setIssuerStatus("Issuer profile updated. Continue the invoice below.", "success");
+        } catch (error) {
+          setIssuerStatus(error.message || "Could not update issuer profile.", "error");
+        } finally {
+          updateIssuerBtn.disabled = false;
+        }
+      }
+
+      async function loadLists() {
+        if (!token) return;
+        try {
+          const [me, companies, customers] = await Promise.all([
+            api("/me").catch(() => null),
+            api("/companies").catch(() => []),
+            api("/customers").catch(() => []),
+          ]);
+          currentUser = me?.user || null;
+          fallbackCompanies = companies;
+          fallbackCustomers = customers;
+          renderCompanies();
+          renderCustomers();
+          applyMode();
+          await loadInvoiceFromUrl();
+          await loadPurchaseOrderFromUrl();
+        } catch (error) {
+          if (status) status.textContent = error.message;
+        }
+      }
+
+      async function addCustomer(event) {
+        event?.preventDefault();
+        event?.stopImmediatePropagation();
+        const data = new FormData(form);
+        const name = String(data.get("newCustomerName") || "").trim();
+        if (!name) {
+          setNewCustomerStatus("Enter customer or business name before adding.", "error");
+          return;
+        }
+        const company = fallbackCompanies.find((entry) => entry.id === companySelect?.value) || fallbackCompanies[0];
+        try {
+          setNewCustomerStatus("Adding customer...", "");
+          addButton.disabled = true;
+          const isCompany = data.get("newCustomerCategory") === "company";
+          const isInr = data.get("currency") === "INR";
+          const customer = await api("/customers", {
+            method: "POST",
+            body: JSON.stringify({
+              companyId: company?.id || null,
+              name,
+              businessName: isCompany ? name : "",
+              phone: data.get("newCustomerPhone"),
+              email: data.get("newCustomerEmail"),
+              billingAddress: data.get("newCustomerBillingAddress"),
+              panNumber: isCompany && isInr ? data.get("newCustomerPan") : "",
+              gstNumber: isCompany && isInr ? data.get("newCustomerGstin") : "",
+            }),
+          });
+          fallbackCustomers.push(customer);
+          renderCustomers();
+          if (customerSelect) customerSelect.value = customer.id;
+          if (modeSelect) modeSelect.value = "existing";
+          applyMode();
+          const message = `${isPoFlow ? "Vendor" : "Customer"} ${customer.customerCode || customer.id} added and selected. Continue below.`;
+          setNewCustomerStatus(message, "success");
+          if (status) status.textContent = message;
+        } catch (error) {
+          setNewCustomerStatus(error.message || "Could not add customer.", "error");
+        } finally {
+          addButton.disabled = false;
+        }
+      }
+
+      modeSelect?.addEventListener("change", applyMode);
+      currencySelect?.addEventListener("change", () => { showTaxFields(); applyMode(); });
+      documentTypeSelect?.addEventListener("change", () => {
+        const numberInput = form?.querySelector('input[name="invoiceNumber"]');
+        if (numberInput && !fallbackSavedInvoice) numberInput.value = "";
+        applyWorkflowMode();
+        ensureDraftInvoiceNumber();
+        updateFallbackPreview();
+      });
+      categorySelect?.addEventListener("change", showTaxFields);
+      form?.addEventListener("input", updateFallbackPreview);
+      customerSelect?.addEventListener("change", () => { fillCustomer(); maybeOpenIssuerSetup(); });
+      issuerCompanySelect?.addEventListener("change", () => { populateIssuerFields(); maybeOpenIssuerSetup(); });
+      updateIssuerBtn?.addEventListener("click", updateIssuerProfile);
+      addButton?.addEventListener("click", addCustomer, true);
+      itemButton?.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        addFallbackItemRow();
+      }, true);
+      invoiceRecordPaymentBtn?.addEventListener("click", openInvoicePaymentModal);
+      invoicePaymentModalClose?.addEventListener("click", closeInvoicePaymentModal);
+      invoicePaymentModalCancel?.addEventListener("click", closeInvoicePaymentModal);
+      invoicePaymentModal?.addEventListener("click", (event) => {
+        if (event.target === invoicePaymentModal) closeInvoicePaymentModal();
+      });
+      invoicePaymentForm?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const invoice = fallbackSavedInvoice;
+        const amount = Number(invoicePaymentAmountInput?.value || 0);
+        const balance = Number(invoice?.balanceAmount ?? invoice?.total ?? 0);
+        if (!invoice?.id || !Number.isFinite(amount) || amount <= 0) {
+          setInvoicePaymentModalStatus("Enter a valid payment amount.", "error");
+          return;
+        }
+        if (balance > 0 && amount > balance + 0.01) {
+          setInvoicePaymentModalStatus(`Payment cannot be more than the pending balance of ${invoice.currency || "INR"} ${Number(balance || 0).toFixed(2)}.`, "error");
+          return;
+        }
+        try {
+          setInvoicePaymentModalStatus("Adding payment...", "");
+          const result = await api(`/invoices/${encodeURIComponent(invoice.id)}/payments`, {
+            method: "POST",
+            body: JSON.stringify({
+              amount,
+              mode: invoicePaymentModeInput?.value || "manual",
+              reference: invoicePaymentReferenceInput?.value || "",
+              notes: invoicePaymentNotesInput?.value || "",
+              paymentDate: invoicePaymentDateInput?.value || new Date().toISOString().slice(0, 10),
+            }),
+          });
+          fallbackSavedInvoice = result.invoice || result;
+          renderInvoicePaymentPanel(fallbackSavedInvoice);
+          const updatedBalance = Number(fallbackSavedInvoice.balanceAmount ?? 0);
+          if (updatedBalance > 0) {
+            if (invoicePaymentAmountInput) {
+              invoicePaymentAmountInput.value = String(updatedBalance);
+              invoicePaymentAmountInput.max = String(updatedBalance);
+            }
+            if (invoicePaymentReferenceInput) invoicePaymentReferenceInput.value = "";
+            if (invoicePaymentNotesInput) invoicePaymentNotesInput.value = "";
+            setInvoicePaymentStatus("Partial payment added. This invoice still has a pending balance.", "success");
+            setInvoicePaymentModalStatus(`Payment added. Pending balance is ${fallbackSavedInvoice.currency || "INR"} ${updatedBalance.toFixed(2)}. Add another payment when received.`, "success");
+          } else {
+            setInvoicePaymentStatus("Payment added. Invoice is now PAID.", "success");
+            setInvoicePaymentModalStatus("Payment added. Invoice is now PAID.", "success");
+            setTimeout(closeInvoicePaymentModal, 900);
+          }
+        } catch (error) {
+          setInvoicePaymentModalStatus(error.message || "Could not add payment.", "error");
+        }
+      });
+      invoicePaymentLinkBtn?.addEventListener("click", async () => {
+        if (!fallbackSavedInvoice?.id) return;
+        try {
+          setInvoicePaymentStatus("Creating payment link...", "");
+          const invoice = await api(`/invoices/${encodeURIComponent(fallbackSavedInvoice.id)}/payment-link`, {
+            method: "POST",
+            body: JSON.stringify({ gateway: "razorpay" }),
+          });
+          fallbackSavedInvoice = invoice;
+          renderInvoicePaymentPanel(invoice);
+          setInvoicePaymentStatus(`Payment link created: ${invoice.paymentLink?.url || "ready"}`, "success");
+        } catch (error) {
+          setInvoicePaymentStatus(error.message || "Payment gateway automation is available only in paid tiers.", "error");
+        }
+      });
+      form?.addEventListener("submit", saveDraftFallback, true);
+      createInvoiceButton?.addEventListener("click", createInvoiceFallback, true);
+      printButton?.addEventListener("click", generateTaxInvoicePdf, true);
+      saveSuccessContinue?.addEventListener("click", () => {
+        window.location.href = saveRedirectUrl;
+      });
+      cancelButton?.addEventListener("click", () => {
+        if (modeSelect) modeSelect.value = "";
+        applyMode();
+      });
+      showTaxFields();
+      applyWorkflowMode();
+      applyMode();
+      loadLists();
+    })();
+  </script>
+</body>
+</html>

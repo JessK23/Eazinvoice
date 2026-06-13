@@ -1,0 +1,221 @@
+import { loadPersistedState, savePersistedState } from "./persistence.js";
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function nextId(prefix, counter) {
+  return `${prefix}_${String(counter).padStart(4, "0")}`;
+}
+
+function makeCodeFromText(text, fallback) {
+  const cleaned = String(text || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "");
+  return cleaned.slice(0, 8) || fallback;
+}
+
+export function createStore(seed = {}, options = {}) {
+  const usePersistence = options.persist !== false;
+  const persisted = usePersistence ? loadPersistedState() : {};
+  const state = {
+    users: [],
+    companies: [],
+    customers: [],
+    invoices: [],
+    purchaseOrders: [],
+    subscriptions: [],
+    monetization: [],
+    reports: [],
+    counters: {
+      user: 0,
+      company: 0,
+      customer: 0,
+      invoice: 0,
+      purchaseOrder: 0,
+      subscription: 0,
+      monetization: 0,
+      report: 0,
+    },
+    ...clone(seed),
+    ...clone(persisted),
+  };
+
+  state.counters = {
+    user: 0,
+    company: 0,
+    customer: 0,
+    invoice: 0,
+    purchaseOrder: 0,
+    subscription: 0,
+    monetization: 0,
+    ...(clone(seed).counters || {}),
+    ...(clone(persisted).counters || {}),
+  };
+
+  function persist() {
+    if (!usePersistence) return;
+    savePersistedState({
+      users: state.users,
+      companies: state.companies,
+      customers: state.customers,
+      invoices: state.invoices,
+      purchaseOrders: state.purchaseOrders,
+      subscriptions: state.subscriptions,
+      monetization: state.monetization,
+      reports: state.reports,
+      counters: state.counters,
+    });
+  }
+
+  function createUser(input) {
+    const user = {
+      id: nextId("usr", ++state.counters.user),
+      name: input.name.trim(),
+      email: input.email.trim(),
+      role: input.role ?? "user",
+      permissions: Array.isArray(input.permissions) ? input.permissions : [],
+      accountStatus: input.accountStatus ?? "active",
+      restrictedReason: input.restrictedReason ?? "",
+      restrictedAt: input.restrictedAt ?? "",
+      createdAt: new Date().toISOString(),
+    };
+    state.users.push(user);
+    persist();
+    return clone(user);
+  }
+
+  function listUsers() {
+    return clone(state.users);
+  }
+
+  function getUserById(id) {
+    const user = state.users.find((entry) => entry.id === id);
+    return user ? clone(user) : null;
+  }
+
+  function getUserByEmail(email) {
+    const normalized = String(email || "").trim().toLowerCase();
+    const user = state.users.find((entry) => entry.email.toLowerCase() === normalized);
+    return user ? clone(user) : null;
+  }
+
+  function createCompany(input) {
+    const ownerUserId = input.ownerUserId ?? null;
+    const companyCode = input.companyCode || makeCodeFromText(input.name, `CMP${state.counters.company + 1}`);
+    const company = {
+      id: nextId("cmp", ++state.counters.company),
+      ownerUserId,
+      companyCode,
+      entityType: input.entityType ?? "company",
+      name: input.name.trim(),
+      legalName: input.legalName?.trim() ?? "",
+      address: input.address?.trim() ?? "",
+      gstNumber: input.gstNumber?.trim() ?? "",
+      panNumber: input.panNumber?.trim() ?? "",
+      logoUrl: input.logoUrl?.trim() ?? "",
+      kycStatus: input.kycStatus ?? "pending",
+      kycMode: input.kycMode ?? "",
+      kycDocumentType: input.kycDocumentType ?? "",
+      aadhaarLast4: input.aadhaarLast4?.trim() ?? "",
+      addressProof: input.addressProof?.trim() ?? "",
+      documentNames: Array.isArray(input.documentNames) ? input.documentNames : [],
+      documentFiles: Array.isArray(input.documentFiles) ? input.documentFiles : [],
+      reviewStatus: input.reviewStatus ?? "pending",
+      reviewNotes: input.reviewNotes ?? "",
+      reviewedAt: input.reviewedAt ?? "",
+      aadhaarOtpStatus: input.aadhaarOtpStatus ?? "not-requested",
+      gstOtpStatus: input.gstOtpStatus ?? "not-requested",
+      panOtpStatus: input.panOtpStatus ?? "not-requested",
+      email: input.email?.trim() ?? "",
+      phone: input.phone?.trim() ?? "",
+      createdAt: new Date().toISOString(),
+    };
+    state.companies.push(company);
+    persist();
+    return clone(company);
+  }
+
+  function listCompanies() {
+    return clone(state.companies);
+  }
+
+  function updateCompanyKyc(companyId, updates) {
+    const company = state.companies.find((entry) => entry.id === companyId);
+    if (!company) return null;
+    if (typeof updates.kycStatus === "string") company.kycStatus = updates.kycStatus;
+    if (typeof updates.reviewStatus === "string") company.reviewStatus = updates.reviewStatus;
+    if (typeof updates.reviewNotes === "string") company.reviewNotes = updates.reviewNotes;
+    if (typeof updates.reviewedAt === "string") company.reviewedAt = updates.reviewedAt;
+    if (Array.isArray(updates.documentFiles)) company.documentFiles = updates.documentFiles;
+    persist();
+    return clone(company);
+  }
+
+  function createCustomer(input) {
+    const customer = {
+      id: nextId("cus", ++state.counters.customer),
+      ownerUserId: input.ownerUserId ?? null,
+      name: input.name.trim(),
+      email: input.email?.trim() ?? "",
+      phone: input.phone?.trim() ?? "",
+      companyId: input.companyId ?? null,
+      createdAt: new Date().toISOString(),
+    };
+    state.customers.push(customer);
+    persist();
+    return clone(customer);
+  }
+
+  function listCustomers() {
+    return clone(state.customers);
+  }
+
+  function calculateInvoiceTotals(items, taxRate) {
+    const subtotal = items.reduce((sum, item) => sum + item.quantity * item.rate, 0);
+    const taxAmount = (subtotal * taxRate) / 100;
+    const total = subtotal + taxAmount;
+    return {
+      subtotal,
+      taxAmount,
+      total,
+    };
+  }
+
+  function createInvoice(input, limits) {
+    const items = input.items.map((item) => ({
+      description: item.description.trim(),
+      quantity: Number(item.quantity),
+      rate: Number(item.rate),
+    }));
+
+    if (items.length > limits.invoiceItemsPerInvoice) {
+      throw new Error("invoice items exceed free plan limit");
+    }
+
+    const totals = calculateInvoiceTotals(items, Number(input.taxRate ?? 0));
+    const ownerUserId = input.ownerUserId ?? null;
+    const company = state.companies.find((entry) => entry.id === input.companyId) ?? null;
+    const invoiceCode = input.invoiceCode || makeCodeFromText(company?.companyCode || input.ownerCode || "INV", `INV${state.counters.invoice + 1}`);
+    const invoiceSequence = String(state.counters.invoice + 1).padStart(4, "0");
+    const invoice = {
+      id: nextId("inv", ++state.counters.invoice),
+      ownerUserId,
+      companyId: input.companyId ?? null,
+      invoiceCode,
+      invoiceNumber: input.invoiceNumber?.trim() ?? `${invoiceCode}-${invoiceSequence}`,
+      customerId: input.customerId ?? null,
+      invoiceDate: input.invoiceDate ?? new Date().toISOString().slice(0, 10),
+      dueDate: input.dueDate ?? "",
+      taxRate: Number(input.taxRate ?? 0),
+      notes: input.notes?.trim() ?? "",
+      billToName: input.billToName?.trim() ?? "",
+      billToAddress: input.billToAddress?.trim() ?? "",
+      items,
+      ...totals,
+      createdAt: new Date().toISOString(),
+    };
+    state.invoices.push(invoice);
+    persist();
+    return clone(invoice);

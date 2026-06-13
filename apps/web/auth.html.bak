@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eazinvoice Auth</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">E</div>
+      <div>
+        <div class="brand-name">Eazinvoice</div>
+        <div class="brand-sub">Auth</div>
+      </div>
+    </div>
+    <nav class="topnav">
+      <a class="ghost" href="/apps/web/index.html">Home</a>
+      <a class="ghost" href="/apps/web/dashboard.html">Dashboard</a>
+    </nav>
+  </header>
+  <div id="authView" class="auth-view">
+    <section class="auth-card">
+      <div class="auth-brand">
+        <div class="mark">E</div>
+        <div>
+          <div class="brand-name">Eazinvoice</div>
+          <div class="brand-sub">Free plan access</div>
+        </div>
+      </div>
+      <div class="auth-tabs" role="tablist" aria-label="Authentication options">
+        <button type="button" class="auth-tab active" data-tab="signup" id="signupTab">Signup</button>
+        <button type="button" class="auth-tab" data-tab="login" id="loginTab">Login</button>
+      </div>
+      <h1 id="authTitle">Create your free account</h1>
+      <form id="authForm" class="stack">
+        <div id="nameFieldWrap">
+          <label>Name <input name="name" placeholder="Your name" required /></label>
+        </div>
+        <label>Email <input name="email" type="email" placeholder="you@example.com" required /></label>
+        <div id="signupOnlyFields" class="subscription-box">
+          <div class="subscription-head">
+            <strong>Account Type</strong>
+            <span class="hint">Choose this only when signing up</span>
+          </div>
+          <div class="subscription-grid">
+            <label><input type="radio" name="subscriberType" value="individual" checked /> Individual</label>
+            <label><input type="radio" name="subscriberType" value="company" /> Company</label>
+            <label><input type="radio" name="subscriberType" value="group" /> Group</label>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="submit" class="primary">Continue</button>
+          <button type="button" id="googleAuth" class="ghost google">Continue with Google</button>
+        </div>
+        <span id="authStatus" class="status"></span>
+      </form>
+      <div class="note-box" style="margin-top:12px">
+        Login and signup here only create your account access. Plans, pricing, and upgrades are managed after you enter the dashboard.
+      </div>
+    </section>
+  </div>
+  <script type="module" src="./auth.js"></script>
+</body>
+</html>

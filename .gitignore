@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+data/*.json
+*.log
+server.err.log
+server.out.log
+store_with_line_numbers.txt
+temp.txt
+.DS_Store
+Thumbs.db

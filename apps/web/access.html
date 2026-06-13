@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eazinvoice Access</title>
+  <link rel="stylesheet" href="./styles.css?v=20260531-qa" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark"><img src="./assets/logo-mark.png?v=20260605-logo-refresh" alt="EazInvoice" /></div>
+    </div>
+    <nav class="topnav">
+      <a class="ghost" href="/apps/web/index.html">Home</a>
+      <a class="ghost" href="/apps/web/access.html?tab=invoice">Invoice</a>
+      <a class="ghost" href="/apps/web/access.html?tab=po">PO</a>
+      <a class="ghost" href="/apps/web/access.html?tab=dashboard">Dashboard</a>
+      <a class="ghost" href="/apps/web/subscription.html">Subscription</a>
+      <div id="accessProfileMenu" class="profile-menu" hidden>
+        <button id="accessProfileButton" class="profile-button" type="button" aria-expanded="false">
+          <span id="accessProfileInitials" class="profile-avatar">U</span>
+          <span>
+            <strong id="accessProfileName">User</strong>
+            <small id="accessProfileMeta">Signed in</small>
+          </span>
+        </button>
+        <div id="accessProfileDropdown" class="profile-dropdown" hidden>
+          <div class="profile-summary">
+            <strong id="accessDropdownName">User</strong>
+            <span id="accessDropdownEmail">Signed in</span>
+          </div>
+          <button class="profile-tab-jump" type="button" data-profile-tab="profile">Account Settings</button>
+          <button class="profile-tab-jump" type="button" data-profile-tab="profile">Change Password</button>
+          <a href="/apps/web/access.html?tab=dashboard">Reports Dashboard</a>
+          <button id="accessLogout" type="button">Sign-out</button>
+        </div>
+      </div>
+    </nav>
+  </header>
+
+  <main id="accessApp" class="access-shell" hidden>
+    <section class="access-hero panel">
+      <div>
+        <span id="accessPlanBadge" class="pill blue">Free Plan</span>
+        <h1 id="accessTitle">Your Eazinvoice Access</h1>
+        <p id="accessIntro">Manage your profile, company profile, invoices, purchase orders, and plan features from one place.</p>
+      </div>
+      <div class="access-summary">
+        <strong id="accessName">User</strong>
+        <span id="accessEmail">email@example.com</span>
+        <span id="accessCompany">No company profile yet</span>
+        <button id="addCompanyAccessBtn" class="ghost small" type="button" hidden>Add a Company</button>
+      </div>
+    </section>
+
+    <section class="panel access-tabs-wrap">
+      <div class="access-tabs" role="tablist" aria-label="User access sections">
+        <button class="access-tab active" type="button" data-tab="status">Status</button>
+        <button class="access-tab" type="button" data-tab="profile">Update Profile</button>
+        <button id="companyAccessTab" class="access-tab" type="button" data-tab="company">Company Profile</button>
+        <button class="access-tab" type="button" data-tab="invoice">Generate Invoice</button>
+        <button class="access-tab" type="button" data-tab="po">Generate PO</button>
+        <button class="access-tab" type="button" data-tab="dashboard">Dashboard</button>
+        <button class="access-tab" type="button" data-tab="reports">Reports</button>
+        <button class="access-tab" type="button" data-tab="features">Tier Features</button>
+        <button id="adminAccessTab" class="access-tab" type="button" data-tab="admin" hidden>Admin</button>
+      </div>
+
+      <section class="access-pane" data-pane="status">
+        <div class="metric-grid">
+          <article class="metric-card"><span>Plan</span><strong id="statusPlan">Free</strong></article>
+          <article class="metric-card"><span>Invoices</span><strong id="statusInvoices">0</strong></article>
+          <article class="metric-card"><span>Companies</span><strong id="statusCompanies">0</strong></article>
+          <article class="metric-card"><span>Customers</span><strong id="statusCustomers">0</strong></article>
+          <article class="metric-card"><span>Purchase Orders</span><strong id="statusPo">0</strong></article>
+          <article class="metric-card"><span>Email OTP</span><strong id="statusEmail">Verified</strong></article>
+          <article class="metric-card"><span>Mobile</span><strong id="statusMobile">Registered</strong></article>
+        </div>
+        <div id="statusActivity" class="list" style="margin-top:14px"></div>
+      </section>
+
+      <section class="access-pane" data-pane="profile" hidden>
+        <form id="profileForm" class="stack">
+          <div class="grid two">
+            <label>Name <input name="name" required /></label>
+            <label>Email <input name="email" type="email" disabled /></label>
+            <label>Mobile <input name="phone" inputmode="tel" /></label>
+            <label>Role <input name="role" disabled /></label>
+            <label>PAN Number <input name="panNumber" placeholder="ABCDE1234F" /></label>
+            <label>Aadhaar Number <input name="aadhaarNumber" inputmode="numeric" placeholder="12-digit Aadhaar number" /></label>
+          </div>
+          <div class="panel soft-panel">
+            <div class="panel-head compact">
+              <div>
+                <h2>Account Settings</h2>
+                <p class="hint">Change password only when you want to update your login credentials.</p>
+              </div>
+            </div>
+            <div class="grid two">
+              <label>Current Password <input name="currentPassword" type="password" autocomplete="current-password" /></label>
+              <label>New Password <input name="newPassword" type="password" autocomplete="new-password" minlength="8" /></label>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="primary" type="submit">Update Profile</button>
+          </div>
+          <span id="profileStatus" class="status"></span>
+        </form>
+      </section>
+
+      <section class="access-pane" data-pane="company" hidden>
+        <form id="companyAccessForm" class="stack">
+          <div class="panel-head compact">
+            <div>
+              <h2>Add or Update Company</h2>
+              <p id="companyAccessHint" class="hint">Do you want to add a company? Save the company details and your login access will switch to company mode.</p>
+            </div>
+          </div>
+          <div class="grid two">
+            <label>Business Name <input name="name" required /></label>
+            <label>Business Type <input name="businessType" placeholder="Agency, trader, consultant" /></label>
+            <label>Entity Type
+              <select name="entityType">
+                <option value="company">Company</option>
+                <option value="freelancer">Freelancer</option>
+                <option value="consultant">Consultant</option>
+                <option value="group">Group / Nonprofit</option>
+              </select>
+            </label>
+            <label class="toggle-line"><input name="gstRegistered" type="checkbox" /> GST registered</label>
+            <label>GSTIN <input name="gstNumber" /></label>
+            <label>PAN <input name="panNumber" /></label>
+            <label>Phone <input name="phone" inputmode="tel" /></label>
+            <label>Email <input name="email" type="email" /></label>
+            <label>State <input name="state" /></label>
+            <label>Pincode <input name="pincode" inputmode="numeric" /></label>
+            <label>UPI ID <input name="upiId" /></label>
+            <label class="full">Address <textarea name="address" rows="3"></textarea></label>
+            <label class="full">Bank Details <textarea name="bankDetails" rows="3"></textarea></label>
+          </div>
+          <div class="actions">
+            <button class="primary" type="submit">Save Company Profile</button>
+          </div>
+          <span id="companyStatus" class="status"></span>
+        </form>
+      </section>
+
+      <section class="access-pane" data-pane="invoice" hidden>
+        <div class="panel-head compact">
+          <div>
+            <span class="pill blue">Invoice workspace</span>
+            <h2>Generate Invoice</h2>
+            <p class="hint">Create a new invoice, continue a draft, or open invoices already created for this account.</p>
+          </div>
+          <a class="primary" href="/apps/web/invoice.html">Generate New Invoice</a>
+        </div>
+        <div class="quick-grid">
+          <article class="quick-card"><strong>Create Invoice</strong><span>Start a new tax invoice with customer, currency, goods or services, and auto invoice number.</span><a class="ghost small" href="/apps/web/invoice.html">Create Invoice</a></article>
+          <article class="quick-card"><strong>Draft Invoices</strong><span>Incomplete invoices saved from the form before final creation.</span><strong id="accessDraftInvoiceCount">0</strong></article>
+          <article class="quick-card"><strong>Generated Invoices</strong><span>Created invoice records counted in reports and revenue.</span><strong id="accessCreatedInvoiceCount">0</strong></article>
+          <article class="quick-card"><strong>Edit Invoices</strong><span>Open a draft or generated invoice record to review and update it.</span></article>
+        </div>
+        <div class="grid two invoice-list-grid">
+          <section class="soft-panel">
+            <div class="panel-head compact">
+              <h3>Draft Invoices</h3>
+              <span class="pill gold">Saved Drafts</span>
+            </div>
+            <div id="accessDraftInvoicesList" class="list"></div>
+          </section>
+          <section class="soft-panel">
+            <div class="panel-head compact">
+              <h3>Generated Invoices</h3>
+              <span class="pill blue">Created</span>
+            </div>
+            <div id="accessCreatedInvoicesList" class="list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="access-pane" data-pane="po" hidden>
+        <div class="panel-head compact">
+          <div>
+            <span class="pill blue">PO workspace</span>
+            <h2>Generate PO</h2>
+            <p class="hint">Create purchase orders and track draft or generated PO records separately from invoices.</p>
+          </div>
+          <a class="primary" href="/apps/web/invoice.html?type=po">Generate New PO</a>
+        </div>
+        <div class="quick-grid">
+          <article class="quick-card"><strong>Create PO</strong><span>Start a new vendor purchase order.</span><a class="ghost small" href="/apps/web/invoice.html?type=po">Create PO</a></article>
+          <article class="quick-card"><strong>Draft POs</strong><span>Purchase orders saved before final creation.</span><strong id="accessDraftPoCount">0</strong></article>
+          <article class="quick-card"><strong>Generated POs</strong><span>Created purchase order records.</span><strong id="accessCreatedPoCount">0</strong></article>
+        </div>
+      </section>
+
+      <section class="access-pane" data-pane="dashboard" hidden>
+        <div class="panel-head compact">
+          <div>
+            <span class="pill blue">Dashboard</span>
+            <h2>Reports and Summaries</h2>
+            <p class="hint">Use this dashboard for invoice, PO, revenue, profit and loss, and profile reporting.</p>
+          </div>
+          <a class="primary" href="/apps/web/dashboard.html">Open Full Dashboard</a>
+        </div>
+        <div class="quick-grid">
+          <article class="quick-card"><strong>Invoice Summary</strong><span>Drafts, created invoices, pending payments, and invoice revenue.</span></article>
+          <article class="quick-card"><strong>PO Summary</strong><span>Purchase order drafts, vendors, and procurement value.</span></article>
+          <article class="quick-card"><strong>Revenue Report</strong><span>Monthly, yearly, and custom period income views.</span></article>
+          <article class="quick-card"><strong>Profit & Loss</strong><span>Income, expenses, tax, and net profit position.</span></article>
+          <article class="quick-card"><strong>Balance Sheet</strong><span>Assets, liabilities, equity, and business position snapshot.</span></article>
+          <article class="quick-card"><strong>Profile Reports</strong><span>User, customer, company, KYC, and plan status reports.</span></article>
+        </div>
+      </section>
+
+      <section class="access-pane" data-pane="reports" hidden>
+        <div class="report-command">
+          <div>
+            <span class="pill blue">Reporting suite</span>
+            <h2>Income, Expenses, Profit and Growth</h2>
+            <p class="hint">Monthly, yearly, and custom period reporting for revenue, expenses, receivables, and profit tracking.</p>
+          </div>
+          <div class="report-filter">
+            <button class="ghost small" type="button">Monthly</button>
+            <button class="ghost small" type="button">Yearly</button>
+            <button class="ghost small" type="button">Custom Period</button>
+          </div>
+        </div>
+        <div class="report-grid">
+          <article class="report-card revenue"><span>Total Revenue</span><strong>INR 0.00</strong><small>Invoice income for selected period</small></article>
+          <article class="report-card expense"><span>Total Expenses</span><strong>INR 0.00</strong><small>Vendor, operating and purchase entries</small></article>
+          <article class="report-card profit"><span>Net Profit</span><strong>INR 0.00</strong><small>Revenue minus expenses</small></article>
+          <article class="report-card pending"><span>Pending Receivables</span><strong>INR 0.00</strong><small>Unpaid and overdue invoices</small></article>
+        </div>
+        <div class="growth-board">
+          <section class="growth-panel">
+            <div class="panel-head"><h3>Revenue vs Expenses</h3><span class="pill gold">Growth</span></div>
+            <div class="growth-bars" aria-label="Revenue and expense graph preview">
+              <span style="height:42%"></span><span style="height:68%"></span><span style="height:54%"></span><span style="height:78%"></span><span style="height:64%"></span><span style="height:88%"></span>
+            </div>
+          </section>
+          <section class="growth-panel">
+            <div class="panel-head"><h3>Expense Entries</h3><span class="pill blue">Ledger</span></div>
+            <div class="expense-entry-row"><span>Date</span><span>Category</span><span>Vendor</span><span>Amount</span></div>
+            <div class="expense-entry-row muted"><span>--</span><span>Office</span><span>Vendor</span><span>INR 0.00</span></div>
+            <div class="expense-entry-row muted"><span>--</span><span>Travel</span><span>Vendor</span><span>INR 0.00</span></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="access-pane" data-pane="features" hidden>
+        <div class="plan-feature-grid">
+          <article class="plan-tile selected"><strong>Free</strong><p>Limited invoices, basic GST invoices, PDF-ready print, one business, no AI.</p></article>
+          <article class="plan-tile"><strong>Starter</strong><p>Branding removal, WhatsApp sharing, recurring invoices, basic AI invoice assist.</p></article>
+          <article class="plan-tile"><strong>Pro</strong><p>Advanced AI invoice generation, AI PO generation, reports, payment tracking, multiple businesses.</p></article>
+          <article class="plan-tile"><strong>Business</strong><p>Team access, approvals, API access, advanced automation, analytics, priority support.</p></article>
+        </div>
+      </section>
+
+      <section class="access-pane" data-pane="admin" hidden>
+        <div class="panel-head">
+          <h2>Admin Rights and Reports</h2>
+          <a class="ghost small" href="/apps/web/admin.html">Open Full Admin Page</a>
+        </div>
+        <div class="admin-grid">
+          <div class="admin-card"><span>Total Monetization</span><strong id="accessAdminTotal">0.00</strong></div>
+          <div class="admin-card"><span>Subscriptions</span><strong id="accessAdminCount">0</strong></div>
+          <div class="admin-card"><span>Company Revenue</span><strong id="accessAdminCompany">0.00</strong></div>
+          <div class="admin-card"><span>Individual Revenue</span><strong id="accessAdminIndividual">0.00</strong></div>
+          <div class="admin-card"><span>Group Revenue</span><strong id="accessAdminGroup">0.00</strong></div>
+        </div>
+        <h3>Subscriptions</h3>
+        <div id="accessAdminSubscriptions" class="list"></div>
+        <h3 style="margin-top:18px">Users and Permissions</h3>
+        <div id="accessAdminUsers" class="list"></div>
+        <h3 style="margin-top:18px">KYC Review Queue</h3>
+        <div id="accessAdminKyc" class="list"></div>
+      </section>
+    </section>
+  </main>
+
+  <script src="./access.js?v=20260531-access-tabs"></script>
+</body>
+</html>
