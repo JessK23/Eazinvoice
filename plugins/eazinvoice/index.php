@@ -8,7 +8,7 @@
  * Requires PHP: 7.4
  * Author: EazInvoice
  * Author URI: https://www.eazinvoice.com
- * Text Domain: eazinvoice
+ * Text Domain: eazinvoice-invoicing-for-msmes
  * Domain Path: /languages
  * License: GPLv2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
