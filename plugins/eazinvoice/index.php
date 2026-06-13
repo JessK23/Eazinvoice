@@ -1,13 +1,13 @@
 <?php
 /**
  * Plugin Name: EazInvoice - Invoicing for MSMEs
- * Plugin URI: https://eazinvoice.com/wordpress
+ * Plugin URI: https://www.eazinvoice.com/wordpress
  * Description: Connect WordPress sites to EazInvoice for simple invoice links, customer billing CTAs, and upgrade-ready MSME invoicing workflows.
  * Version: 0.2.0
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: EazInvoice
- * Author URI: https://eazinvoice.com
+ * Author URI: https://www.eazinvoice.com
  * Text Domain: eazinvoice
  * Domain Path: /languages
  * License: GPLv2 or later

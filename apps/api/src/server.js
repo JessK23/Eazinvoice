@@ -119,6 +119,12 @@ function getEmailOtpExpirySeconds() {
   return Number.isFinite(configured) && configured > 0 ? configured : 30;
 }
 
+function getPublicBaseUrl() {
+  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/+$/, "");
+  if (process.env.NODE_ENV === "production") return "https://www.eazinvoice.com";
+  return "http://localhost:3001";
+}
+
 function isConfiguredAdminUser(user) {
   return Boolean(user?.role === "admin" && adminRoleForEmail(user.email));
 }
@@ -339,6 +345,15 @@ export function createServer(options = {}) {
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
 
+    if ((url.pathname === "/" || url.pathname === "/index.html") && req.method === "GET") {
+      res.writeHead(302, {
+        Location: "/apps/web/index.html",
+        "Cache-Control": "no-store",
+      });
+      res.end();
+      return;
+    }
+
     if (await tryServeStatic(url.pathname, res)) return;
 
     if (req.method === "OPTIONS") {
@@ -530,7 +545,7 @@ export function createServer(options = {}) {
 
     if (url.pathname === "/auth/google/start" && req.method === "GET") {
       const clientId = process.env.GOOGLE_CLIENT_ID;
-      const redirectUri = process.env.GOOGLE_REDIRECT_URI || "http://localhost:3001/auth/google/callback";
+      const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${getPublicBaseUrl()}/auth/google/callback`;
       if (!clientId) {
         sendJson(res, 500, {
           error: "Google login is not configured yet. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI.",
@@ -567,7 +582,7 @@ export function createServer(options = {}) {
 
       const clientId = process.env.GOOGLE_CLIENT_ID;
       const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-      const redirectUri = process.env.GOOGLE_REDIRECT_URI || "http://localhost:3001/auth/google/callback";
+      const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${getPublicBaseUrl()}/auth/google/callback`;
       if (!clientId || !clientSecret) {
         sendJson(res, 500, {
           error: "Google OAuth secrets are not configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.",
@@ -608,7 +623,7 @@ export function createServer(options = {}) {
         permissions: adminPermissionsForEmail(profile.email),
       });
       const token = sessions.create(user);
-      const destination = new URL("http://localhost:3001/apps/web/index.html");
+      const destination = new URL(`${getPublicBaseUrl()}/apps/web/index.html`);
       destination.searchParams.set("token", token);
       destination.searchParams.set("provider", "google");
       destination.searchParams.set("mode", oauthState.mode);
