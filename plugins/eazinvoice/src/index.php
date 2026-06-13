@@ -189,7 +189,7 @@ final class EazInvoice_Plugin {
 			'workspace_url' => 'https://www.eazinvoice.com/apps/web/index.html',
 			'upgrade_url'   => 'https://www.eazinvoice.com/apps/web/index.html',
 			'button_label'  => __( 'Create invoice with EazInvoice', 'eazinvoice' ),
-			'auto_button'   => '1',
+			'auto_button'   => '0',
 			'button_position' => 'bottom-right',
 			'plan'          => 'free',
 		);

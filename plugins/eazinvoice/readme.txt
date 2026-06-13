@@ -25,7 +25,7 @@ The free plugin gives the site owner an embedded EazInvoice workspace inside Wor
 * API Access page for connecting an EazInvoice account
 * Account email and workspace URL settings
 * Basic API key field for future connection
-* Automatic public website invoice CTA button that opens the embedded WordPress invoice screen
+* Optional public website invoice CTA button that opens the embedded WordPress invoice screen after the site owner enables it
 * Optional invoice CTA shortcode: `[eazinvoice_button]`
 * Legacy shortcode alias: `[eazinvoice_free_invoice]`
 * Local free-tier draft and created records for invoices and PO/WO documents
