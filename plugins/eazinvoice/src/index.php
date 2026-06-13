@@ -368,13 +368,15 @@ final class EazInvoice_Plugin {
 
 		check_admin_referer( 'eazinvoice_save_document' );
 
-		$type          = 'po' === sanitize_key( $_POST['document_family'] ?? 'invoice' ) ? 'po' : 'invoice';
-		$status        = 'created' === sanitize_key( $_POST['document_status'] ?? 'draft' ) ? 'created' : 'draft';
-		$document_type = 'wo' === sanitize_key( $_POST['document_type'] ?? 'po' ) ? 'wo' : 'po';
-		$quantity      = max( 0, (float) ( $_POST['quantity'] ?? 0 ) );
-		$rate          = max( 0, (float) ( $_POST['rate'] ?? 0 ) );
-		$discount      = max( 0, (float) ( $_POST['discount'] ?? 0 ) );
-		$tax_rate      = max( 0, (float) ( $_POST['tax_rate'] ?? 0 ) );
+		$post          = wp_unslash( $_POST );
+		$type          = 'po' === sanitize_key( $post['document_family'] ?? 'invoice' ) ? 'po' : 'invoice';
+		$status        = 'created' === sanitize_key( $post['document_status'] ?? 'draft' ) ? 'created' : 'draft';
+		$document_type = 'wo' === sanitize_key( $post['document_type'] ?? 'po' ) ? 'wo' : 'po';
+		$currency      = strtoupper( sanitize_text_field( $post['currency'] ?? 'INR' ) );
+		$quantity      = max( 0, (float) sanitize_text_field( $post['quantity'] ?? 0 ) );
+		$rate          = max( 0, (float) sanitize_text_field( $post['rate'] ?? 0 ) );
+		$discount      = max( 0, (float) sanitize_text_field( $post['discount'] ?? 0 ) );
+		$tax_rate      = max( 0, (float) sanitize_text_field( $post['tax_rate'] ?? 0 ) );
 		$subtotal      = $quantity * $rate;
 		$taxable       = max( 0, $subtotal - $discount );
 		$tax_amount    = ( $taxable * $tax_rate ) / 100;
@@ -386,11 +388,11 @@ final class EazInvoice_Plugin {
 			'type'           => $type,
 			'document_type'  => $document_type,
 			'status'         => $status,
-			'party_name'     => sanitize_text_field( $_POST['party_name'] ?? '' ),
-			'party_email'    => sanitize_email( $_POST['party_email'] ?? '' ),
-			'currency'       => sanitize_text_field( $_POST['currency'] ?? 'INR' ),
-			'item_name'      => sanitize_text_field( $_POST['item_name'] ?? '' ),
-			'item_code'      => sanitize_text_field( $_POST['item_code'] ?? '' ),
+			'party_name'     => sanitize_text_field( $post['party_name'] ?? '' ),
+			'party_email'    => sanitize_email( $post['party_email'] ?? '' ),
+			'currency'       => in_array( $currency, array( 'INR', 'USD', 'AUD', 'EUR', 'GBP' ), true ) ? $currency : 'INR',
+			'item_name'      => sanitize_text_field( $post['item_name'] ?? '' ),
+			'item_code'      => sanitize_text_field( $post['item_code'] ?? '' ),
 			'quantity'       => $quantity,
 			'rate'           => $rate,
 			'discount'       => $discount,
@@ -536,7 +538,8 @@ final class EazInvoice_Plugin {
 			return;
 		}
 
-		$status = 'created' === sanitize_key( $_GET['eazinvoice_saved'] ) ? __( 'created', 'eazinvoice' ) : __( 'saved as draft', 'eazinvoice' );
+		$saved_status = sanitize_key( wp_unslash( $_GET['eazinvoice_saved'] ) );
+		$status       = 'created' === $saved_status ? __( 'created', 'eazinvoice' ) : __( 'saved as draft', 'eazinvoice' );
 		$number = sanitize_text_field( wp_unslash( $_GET['eazinvoice_no'] ?? '' ) );
 
 		echo '<div class="notice notice-success is-dismissible"><p>' . esc_html( sprintf( __( '%1$s %2$s successfully.', 'eazinvoice' ), $number, $status ) ) . '</p></div>';

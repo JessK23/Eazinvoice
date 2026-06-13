@@ -309,8 +309,17 @@ function reportTypeConfig(type) {
   return configs[type] || configs.revenue;
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function metricCard(label, value) {
-  return `<article class="metric-card"><span>${label}</span><strong>${value}</strong></article>`;
+  return `<article class="metric-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`;
 }
 
 function syncDetailFilterVisibility() {
@@ -407,8 +416,8 @@ function renderLiveBarChart(container, rows, valueKey, options = {}) {
         <div class="live-chart-track">
           <span class="live-chart-bar ${signedTone}" style="height:${height}%"></span>
         </div>
-        <strong>${displayValue}</strong>
-        <span>${row.label}</span>
+        <strong>${escapeHtml(displayValue)}</strong>
+        <span>${escapeHtml(row.label)}</span>
       </div>
     `;
   }).join("");
@@ -440,11 +449,11 @@ function renderMainReportCharts() {
 
 function renderReportTable(headers, rows) {
   if (reportDetailHead) {
-    reportDetailHead.innerHTML = `<tr>${headers.map((header) => `<th>${header}</th>`).join("")}</tr>`;
+    reportDetailHead.innerHTML = `<tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>`;
   }
   if (reportDetailBody) {
     reportDetailBody.innerHTML = rows.length
-      ? rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("")
+      ? rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")
       : `<tr><td colspan="${headers.length}">No records for this report period.</td></tr>`;
   }
 }
@@ -655,17 +664,17 @@ function renderRecentActivity(invoices, companies) {
   const recentInvoices = invoices.slice().reverse().slice(0, 4).map((invoice) => `
     <div class="invoice-card">
       <div>
-        <strong>${invoice.invoiceNumber}</strong>
-        <div class="hint">${invoice.invoiceDate || "No date"} - INR ${money(invoice.total || 0)} - ${String(invoice.paymentStatus || "unpaid").replace(/_/g, " ")}</div>
+        <strong>${escapeHtml(invoice.invoiceNumber || "Invoice")}</strong>
+        <div class="hint">${escapeHtml(invoice.invoiceDate || "No date")} - INR ${money(invoice.total || 0)} - ${escapeHtml(String(invoice.paymentStatus || "unpaid").replace(/_/g, " "))}</div>
       </div>
-      <span class="pill ${paymentTone(invoice.paymentStatus)}">${String(invoice.paymentStatus || "unpaid").replace(/_/g, " ").toUpperCase()}</span>
+      <span class="pill ${paymentTone(invoice.paymentStatus)}">${escapeHtml(String(invoice.paymentStatus || "unpaid").replace(/_/g, " ").toUpperCase())}</span>
     </div>
   `);
   const recentCompanies = companies.slice().reverse().slice(0, 2).map((company) => `
     <div class="invoice-card">
       <div>
-        <strong>${company.legalName || company.name}</strong>
-        <div class="hint">${company.entityType || "business"} profile</div>
+        <strong>${escapeHtml(company.legalName || company.name || "Business")}</strong>
+        <div class="hint">${escapeHtml(company.entityType || "business")} profile</div>
       </div>
       <span class="pill blue">Business</span>
     </div>
@@ -681,10 +690,10 @@ function renderBusinessProfiles(companies) {
     ? companies.map((company) => `
       <article class="management-card">
         <div>
-          <span class="pill blue">${company.companyCode || "Business"}</span>
-          <h3>${company.legalName || company.name || "Business profile"}</h3>
-          <p>${company.entityType || "company"} - ${company.state || "State not saved"} - ${company.email || "Email not saved"}</p>
-          <p class="hint">PAN: ${company.panNumber || "Not added"} | GST: ${company.gstNumber || "Not added"} | KYC: ${company.kycStatus || "not submitted"}</p>
+          <span class="pill blue">${escapeHtml(company.companyCode || "Business")}</span>
+          <h3>${escapeHtml(company.legalName || company.name || "Business profile")}</h3>
+          <p>${escapeHtml(company.entityType || "company")} - ${escapeHtml(company.state || "State not saved")} - ${escapeHtml(company.email || "Email not saved")}</p>
+          <p class="hint">PAN: ${escapeHtml(company.panNumber || "Not added")} | GST: ${escapeHtml(company.gstNumber || "Not added")} | KYC: ${escapeHtml(company.kycStatus || "not submitted")}</p>
         </div>
         <div class="row-actions">
           <a class="ghost small" href="/apps/web/onboarding.html?company=${encodeURIComponent(company.id)}">Edit</a>
@@ -708,11 +717,11 @@ function renderCustomers(customers) {
     ? customers.map((customer) => `
       <article class="management-card">
         <div>
-          <span class="pill blue">${customer.customerCode || "Customer"}</span>
-          <h3>${customer.businessName || customer.name || "Customer"}</h3>
-          <p>${customer.phone || "Phone not saved"} - ${customer.email || "Email not saved"}</p>
-          <p class="hint">${customer.billingAddress || "Address not saved"}</p>
-          <p class="hint">GST: ${customer.gstNumber || "Not added"} | PAN: ${customer.panNumber || "Not added"} | Due: INR ${money(customerDueAmount(customer))}</p>
+          <span class="pill blue">${escapeHtml(customer.customerCode || "Customer")}</span>
+          <h3>${escapeHtml(customer.businessName || customer.name || "Customer")}</h3>
+          <p>${escapeHtml(customer.phone || "Phone not saved")} - ${escapeHtml(customer.email || "Email not saved")}</p>
+          <p class="hint">${escapeHtml(customer.billingAddress || "Address not saved")}</p>
+          <p class="hint">GST: ${escapeHtml(customer.gstNumber || "Not added")} | PAN: ${escapeHtml(customer.panNumber || "Not added")} | Due: INR ${money(customerDueAmount(customer))}</p>
         </div>
         <div class="row-actions">
           <button class="ghost small" type="button" disabled>Edit</button>
@@ -746,9 +755,9 @@ function renderVendors(purchaseOrders) {
     ? vendors.map((vendor) => `
       <article class="management-card">
         <div>
-          <span class="pill blue">${vendor.vendorCode}</span>
-          <h3>${vendor.name}</h3>
-          <p>${vendor.address || "Vendor address not saved"}</p>
+          <span class="pill blue">${escapeHtml(vendor.vendorCode)}</span>
+          <h3>${escapeHtml(vendor.name)}</h3>
+          <p>${escapeHtml(vendor.address || "Vendor address not saved")}</p>
           <p class="hint">PO/WO records: ${vendor.count} | Total expense value: INR ${money(vendor.total)}</p>
         </div>
         <div class="row-actions">
@@ -782,9 +791,9 @@ function renderPaymentModalDetails(invoice) {
   }
   if (paymentModalSummary) {
     paymentModalSummary.innerHTML = `
-      <div><span>Total Amount</span><strong>${currency} ${money(invoice.total || 0)}</strong></div>
-      <div><span>Paid So Far</span><strong>${currency} ${money(paid)}</strong></div>
-      <div><span>Pending Balance</span><strong>${currency} ${money(balance)}</strong></div>
+      <div><span>Total Amount</span><strong>${escapeHtml(currency)} ${money(invoice.total || 0)}</strong></div>
+      <div><span>Paid So Far</span><strong>${escapeHtml(currency)} ${money(paid)}</strong></div>
+      <div><span>Pending Balance</span><strong>${escapeHtml(currency)} ${money(balance)}</strong></div>
     `;
   }
   if (paymentHistoryList) {
@@ -794,8 +803,8 @@ function renderPaymentModalDetails(invoice) {
         <h3>Payment History</h3>
         ${payments.map((payment) => `
           <div class="payment-history-row">
-            <strong>${payment.currency || currency} ${money(payment.amount || 0)}</strong>
-            <span>${payment.paymentDate || "No date"} - ${payment.mode || "manual"}${payment.reference ? ` - ${payment.reference}` : ""}</span>
+            <strong>${escapeHtml(payment.currency || currency)} ${money(payment.amount || 0)}</strong>
+            <span>${escapeHtml(payment.paymentDate || "No date")} - ${escapeHtml(payment.mode || "manual")}${payment.reference ? ` - ${escapeHtml(payment.reference)}` : ""}</span>
           </div>
         `).join("")}
       `
@@ -865,12 +874,12 @@ function renderInvoiceWorkspaceLegacy(invoices) {
   const renderInvoiceRow = (invoice, tone = "gold") => `
     <div class="invoice-card">
       <div>
-        <strong>${invoice.invoiceNumber || "Draft invoice"}</strong>
-        <div class="hint">${invoice.billToName || "Customer"} · ${invoice.invoiceDate || "No date"} · ${invoice.currency || "INR"} ${money(invoice.total || 0)}</div>
+        <strong>${escapeHtml(invoice.invoiceNumber || "Draft invoice")}</strong>
+        <div class="hint">${escapeHtml(invoice.billToName || "Customer")} - ${escapeHtml(invoice.invoiceDate || "No date")} - ${escapeHtml(invoice.currency || "INR")} ${money(invoice.total || 0)}</div>
       </div>
       <div class="row-actions">
-        <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoice.id)}">Open</a>
-        <span class="pill ${tone}">${String(invoice.status || (tone === "gold" ? "draft" : "created")).toUpperCase()}</span>
+        <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoice.id || "")}">Open</a>
+        <span class="pill ${tone}">${escapeHtml(String(invoice.status || (tone === "gold" ? "draft" : "created")).toUpperCase())}</span>
       </div>
     </div>
   `;
@@ -901,19 +910,21 @@ function renderInvoiceWorkspace(invoices) {
     const rawPaymentStatus = invoice.paymentStatus || (isDraft ? "draft" : "unpaid");
     const paymentStatus = String(rawPaymentStatus).replace(/_/g, " ");
     const balance = Number(invoice.balanceAmount ?? invoice.total ?? 0);
+    const invoiceId = String(invoice.id || "");
+    const currency = invoice.currency || "INR";
     return `
       <div class="invoice-card">
         <div>
-          <strong>${invoice.invoiceNumber || "Draft invoice"}</strong>
-          <div class="hint">${invoice.billToName || "Customer"} - ${invoice.invoiceDate || "No date"} - ${invoice.currency || "INR"} ${money(invoice.total || 0)} - Paid ${invoice.currency || "INR"} ${money(invoice.paidAmount || 0)} - Balance ${invoice.currency || "INR"} ${money(balance)}</div>
-          ${invoice.paymentLink?.url ? `<div class="hint">Payment link: ${invoice.paymentLink.url}</div>` : ""}
+          <strong>${escapeHtml(invoice.invoiceNumber || "Draft invoice")}</strong>
+          <div class="hint">${escapeHtml(invoice.billToName || "Customer")} - ${escapeHtml(invoice.invoiceDate || "No date")} - ${escapeHtml(currency)} ${money(invoice.total || 0)} - Paid ${escapeHtml(currency)} ${money(invoice.paidAmount || 0)} - Balance ${escapeHtml(currency)} ${money(balance)}</div>
+          ${invoice.paymentLink?.url ? `<div class="hint">Payment link: ${escapeHtml(invoice.paymentLink.url)}</div>` : ""}
         </div>
         <div class="row-actions">
-          <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoice.id)}">${isDraft ? "Edit Draft" : "Open / Edit"}</a>
-          ${!isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-invoice="${invoice.id}" data-balance="${balance}">Record Payment</button>` : ""}
-          ${!isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-link="${invoice.id}">${isPaidSubscription(currentSubscription) ? "Create Payment Link" : "Gateway Paid Tier"}</button>` : ""}
-          <button class="ghost small danger" type="button" data-delete-invoice="${invoice.id}">Delete</button>
-          <span class="pill ${paymentTone(rawPaymentStatus)}">${paymentStatus.toUpperCase()}</span>
+          <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoiceId)}">${isDraft ? "Edit Draft" : "Open / Edit"}</a>
+          ${!isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-invoice="${escapeHtml(invoiceId)}" data-balance="${balance}">Record Payment</button>` : ""}
+          ${!isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-link="${escapeHtml(invoiceId)}">${isPaidSubscription(currentSubscription) ? "Create Payment Link" : "Gateway Paid Tier"}</button>` : ""}
+          <button class="ghost small danger" type="button" data-delete-invoice="${escapeHtml(invoiceId)}">Delete</button>
+          <span class="pill ${paymentTone(rawPaymentStatus)}">${escapeHtml(paymentStatus.toUpperCase())}</span>
         </div>
       </div>
     `;
@@ -980,26 +991,28 @@ function renderPoWorkspace(purchaseOrders) {
   const legacyRenderPoRow = (po, tone = "blue") => `
     <div class="invoice-card">
       <div>
-        <strong>${po.poNumber || "Purchase order"}</strong>
-        <div class="hint">${po.billToName || "Vendor"} · ${po.poDate || "No date"} · INR ${money(po.total || 0)}</div>
+        <strong>${escapeHtml(po.poNumber || "Purchase order")}</strong>
+        <div class="hint">${escapeHtml(po.billToName || "Vendor")} - ${escapeHtml(po.poDate || "No date")} - INR ${money(po.total || 0)}</div>
       </div>
-      <span class="pill ${tone}">${String(po.status || "created").toUpperCase()}</span>
+      <span class="pill ${tone}">${escapeHtml(String(po.status || "created").toUpperCase())}</span>
     </div>
   `;
 
   const renderPoRow = (po, tone = "blue") => {
     const isDraft = String(po.status || "created").toLowerCase() === "draft";
     const docType = String(po.documentType || "po").toLowerCase() === "wo" ? "WO" : "PO";
+    const poId = String(po.id || "");
+    const currency = po.currency || "INR";
     return `
       <div class="invoice-card">
         <div>
-          <strong>${po.poNumber || `${docType} draft`}</strong>
-          <div class="hint">${po.billToName || "Vendor"} - ${po.poDate || "No date"} - ${po.currency || "INR"} ${money(po.total || 0)}</div>
+          <strong>${escapeHtml(po.poNumber || `${docType} draft`)}</strong>
+          <div class="hint">${escapeHtml(po.billToName || "Vendor")} - ${escapeHtml(po.poDate || "No date")} - ${escapeHtml(currency)} ${money(po.total || 0)}</div>
         </div>
         <div class="row-actions">
-          <a class="ghost small" href="/apps/web/invoice.html?type=po&po=${encodeURIComponent(po.id)}">${isDraft ? "Edit Draft" : "Open / Edit"}</a>
-          <button class="ghost small danger" type="button" data-delete-po="${po.id}">Delete</button>
-          <span class="pill ${tone}">${String(po.status || "created").toUpperCase()}</span>
+          <a class="ghost small" href="/apps/web/invoice.html?type=po&po=${encodeURIComponent(poId)}">${isDraft ? "Edit Draft" : "Open / Edit"}</a>
+          <button class="ghost small danger" type="button" data-delete-po="${escapeHtml(poId)}">Delete</button>
+          <span class="pill ${tone}">${escapeHtml(String(po.status || "created").toUpperCase())}</span>
         </div>
       </div>
     `;
@@ -1041,10 +1054,10 @@ async function loadSubscriptionPanel(existingSubscriptions) {
       ? subscriptions.slice().reverse().map((subscription) => `
         <div class="invoice-card">
           <div>
-            <strong>${subscription.plan}</strong>
-            <div class="hint">${subscription.billingCycle || "monthly"} · INR ${money(subscription.amount || 0)} · ${subscription.status}</div>
+            <strong>${escapeHtml(subscription.plan || "Subscription")}</strong>
+            <div class="hint">${escapeHtml(subscription.billingCycle || "monthly")} - INR ${money(subscription.amount || 0)} - ${escapeHtml(subscription.status || "active")}</div>
           </div>
-          <span class="pill blue">${subscription.subscriberType}</span>
+          <span class="pill blue">${escapeHtml(subscription.subscriberType || "user")}</span>
         </div>
       `).join("")
       : "<p>No subscription history yet.</p>";

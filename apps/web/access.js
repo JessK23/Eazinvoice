@@ -75,6 +75,14 @@ function money(value) {
   return `INR ${Number(value || 0).toFixed(2)}`;
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
 function setText(id, value) {
   const node = document.getElementById(id);
   if (node) node.textContent = value;
@@ -159,14 +167,14 @@ function renderAccess() {
     activity.innerHTML = `
       <div class="invoice-card">
         <div><strong>Account status</strong><div class="hint">${adminAuthorized ? "Admin access enabled" : "Normal user access"}</div></div>
-        <span class="pill blue">${currentUser?.accountStatus || "active"}</span>
+        <span class="pill blue">${escapeHtml(currentUser?.accountStatus || "active")}</span>
       </div>
       <div class="invoice-card">
         <div><strong>Total invoice value</strong><div class="hint">${money(total)} across saved invoices</div></div>
         <span class="pill gold">Billing</span>
       </div>
       <div class="invoice-card">
-        <div><strong>Plan usage</strong><div class="hint">${plan?.status?.reason || "within limits"}</div></div>
+        <div><strong>Plan usage</strong><div class="hint">${escapeHtml(plan?.status?.reason || "within limits")}</div></div>
         <span class="pill maroon">Tier</span>
       </div>
     `;
@@ -219,12 +227,12 @@ function renderAccessInvoiceWorkspace() {
   const row = (invoice, tone) => `
     <div class="invoice-card">
       <div>
-        <strong>${invoice.invoiceNumber || "Draft invoice"}</strong>
-        <div class="hint">${invoice.billToName || "Customer"} - ${invoice.invoiceDate || "No date"} - ${invoice.currency || "INR"} ${Number(invoice.total || 0).toFixed(2)}</div>
+        <strong>${escapeHtml(invoice.invoiceNumber || "Draft invoice")}</strong>
+        <div class="hint">${escapeHtml(invoice.billToName || "Customer")} - ${escapeHtml(invoice.invoiceDate || "No date")} - ${escapeHtml(invoice.currency || "INR")} ${Number(invoice.total || 0).toFixed(2)}</div>
       </div>
       <div class="row-actions">
         <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoice.id)}">Open</a>
-        <span class="pill ${tone}">${String(invoice.status || (tone === "gold" ? "draft" : "created")).toUpperCase()}</span>
+        <span class="pill ${tone}">${escapeHtml(String(invoice.status || (tone === "gold" ? "draft" : "created")).toUpperCase())}</span>
       </div>
     </div>
   `;
@@ -255,19 +263,19 @@ function renderAdminUsers(users) {
     ? users.map((user) => `
       <div class="invoice-card">
         <div>
-          <strong>${user.name || user.email}</strong>
-          <div class="hint">${user.email} - ${user.role || "user"} - ${user.accountStatus || "active"}</div>
+          <strong>${escapeHtml(user.name || user.email || "User")}</strong>
+          <div class="hint">${escapeHtml(user.email || "")} - ${escapeHtml(user.role || "user")} - ${escapeHtml(user.accountStatus || "active")}</div>
           <div class="badge-row">
             ${badge((user.role || "user").toUpperCase(), user.role === "admin" ? "maroon" : "blue")}
             ${badge((user.accountStatus || "active").toUpperCase(), user.accountStatus === "restricted" ? "gold" : "blue")}
             ${(user.permissions || []).map((permission) => badge(permission.replace(/-/g, " ").toUpperCase(), "gold")).join("") || badge("NO PERMISSIONS", "blue")}
           </div>
-          <div class="hint">${user.restrictedReason ? `Reason: ${user.restrictedReason}` : "No restriction reason"}</div>
+          <div class="hint">${user.restrictedReason ? `Reason: ${escapeHtml(user.restrictedReason)}` : "No restriction reason"}</div>
         </div>
         <div class="actions">
-          <button class="ghost small" data-admin-action="restrict" data-user="${user.id}">Restrict</button>
-          <button class="ghost small" data-admin-action="restore" data-user="${user.id}">Restore</button>
-          <button class="ghost small" data-admin-action="kyc-review" data-user="${user.id}">Grant KYC Review</button>
+          <button class="ghost small" data-admin-action="restrict" data-user="${escapeHtml(user.id)}">Restrict</button>
+          <button class="ghost small" data-admin-action="restore" data-user="${escapeHtml(user.id)}">Restore</button>
+          <button class="ghost small" data-admin-action="kyc-review" data-user="${escapeHtml(user.id)}">Grant KYC Review</button>
         </div>
       </div>
     `).join("")
@@ -302,17 +310,17 @@ function renderAdminKyc(companiesForReview) {
     ? companiesForReview.map((company) => `
       <div class="invoice-card">
         <div>
-          <strong>${company.name}</strong>
-          <div class="hint">${company.entityType} - KYC ${company.kycStatus || "pending"} - Review ${company.reviewStatus || "pending"}</div>
+          <strong>${escapeHtml(company.name || "Company")}</strong>
+          <div class="hint">${escapeHtml(company.entityType || "company")} - KYC ${escapeHtml(company.kycStatus || "pending")} - Review ${escapeHtml(company.reviewStatus || "pending")}</div>
           <div class="badge-row">
             ${badge((company.kycStatus || "pending").toUpperCase(), company.kycStatus === "verified" ? "blue" : "gold")}
             ${badge((company.reviewStatus || "pending").toUpperCase(), company.reviewStatus === "approved" ? "blue" : company.reviewStatus === "rejected" ? "maroon" : "gold")}
           </div>
-          <div class="hint">Docs: ${(company.documentNames || []).join(", ") || "none"}</div>
+          <div class="hint">Docs: ${escapeHtml((company.documentNames || []).join(", ") || "none")}</div>
         </div>
         <div class="actions">
-          <button class="ghost small" data-kyc-action="approve" data-company="${company.id}">Approve</button>
-          <button class="ghost small" data-kyc-action="reject" data-company="${company.id}">Reject</button>
+          <button class="ghost small" data-kyc-action="approve" data-company="${escapeHtml(company.id)}">Approve</button>
+          <button class="ghost small" data-kyc-action="reject" data-company="${escapeHtml(company.id)}">Reject</button>
         </div>
       </div>
     `).join("")
@@ -352,10 +360,10 @@ async function loadAdminAccess() {
       ? moneyPayload.subscriptions.map((subscription) => `
         <div class="invoice-card">
           <div>
-            <strong>${subscription.subscriberName || subscription.groupName || subscription.subscriberType}</strong>
-            <div class="hint">${subscription.subscriberType} - ${subscription.plan} - ${subscription.currency} ${Number(subscription.amount || 0).toFixed(2)}</div>
+            <strong>${escapeHtml(subscription.subscriberName || subscription.groupName || subscription.subscriberType || "Subscriber")}</strong>
+            <div class="hint">${escapeHtml(subscription.subscriberType || "user")} - ${escapeHtml(subscription.plan || "free")} - ${escapeHtml(subscription.currency || "INR")} ${Number(subscription.amount || 0).toFixed(2)}</div>
           </div>
-          <span class="pill blue">${subscription.status}</span>
+          <span class="pill blue">${escapeHtml(subscription.status || "active")}</span>
         </div>
       `).join("")
       : "<p>No subscriptions yet.</p>";

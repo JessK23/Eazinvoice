@@ -524,6 +524,15 @@
         return `${currencySymbol()} ${Number(value || 0).toFixed(2)}`;
       }
 
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
       function invoiceMoneyText(invoice, value) {
         const currency = invoice?.currency || currencySelect?.value || "INR";
         const symbol = ({ INR: "\u20B9", USD: "$", EUR: "\u20AC", GBP: "\u00A3", AED: "AED" })[currency] || currency;
@@ -637,7 +646,7 @@
             const lineDiscount = Math.min(lineBase, item.discount);
             const lineTaxable = Math.max(0, lineBase - lineDiscount);
             const lineTotal = lineTaxable + (lineTaxable * item.gstRate) / 100;
-            return `<tr><td>${item.description || "-"}</td><td>${item.hsnSac || "-"}</td><td>${item.quantity}</td><td>${moneyText(item.rate)}</td><td>${moneyText(lineDiscount)}</td><td>${item.gstRate}</td><td>${moneyText(lineTotal)}</td></tr>`;
+            return `<tr><td>${escapeHtml(item.description || "-")}</td><td>${escapeHtml(item.hsnSac || "-")}</td><td>${escapeHtml(item.quantity)}</td><td>${escapeHtml(moneyText(item.rate))}</td><td>${escapeHtml(moneyText(lineDiscount))}</td><td>${escapeHtml(item.gstRate)}</td><td>${escapeHtml(moneyText(lineTotal))}</td></tr>`;
           }).join("");
         }
         if (previewPdfSubtotal) previewPdfSubtotal.textContent = moneyText(subtotal);
@@ -708,8 +717,8 @@
             const summaryHref = isPoFlow ? "/apps/web/dashboard.html#purchase-orders" : "/apps/web/dashboard.html#invoices";
             const summaryLabel = isPoFlow ? "PO Summary" : "Invoice Summary";
             status.innerHTML = isCreated
-              ? `Created ${docLabel} ${invoice.invoiceNumber || invoice.poNumber}. <a href="${summaryHref}">View it in ${summaryLabel}</a>`
-              : `Saved ${docLabel} draft ${invoice.invoiceNumber || invoice.poNumber}. <a href="${summaryHref}">View it in ${summaryLabel}</a>`;
+              ? `Created ${escapeHtml(docLabel)} ${escapeHtml(invoice.invoiceNumber || invoice.poNumber)}. <a href="${summaryHref}">View it in ${escapeHtml(summaryLabel)}</a>`
+              : `Saved ${escapeHtml(docLabel)} draft ${escapeHtml(invoice.invoiceNumber || invoice.poNumber)}. <a href="${summaryHref}">View it in ${escapeHtml(summaryLabel)}</a>`;
           }
           fallbackSavedInvoice = invoice;
           if (!isPoFlow) renderInvoicePaymentPanel(invoice);
@@ -748,12 +757,12 @@
         const row = document.createElement("div");
         row.className = "workflow-item-row";
         row.innerHTML = `
-          <label><span>Item Name</span><input name="description" placeholder="Website design" value="${data.description || ""}" required /></label>
-          <label><span data-tax-code-label>${labels.code}</span><input name="hsnSac" placeholder="${labels.placeholder}" value="${data.hsnSac || ""}" /></label>
+          <label><span>Item Name</span><input name="description" placeholder="Website design" value="${escapeHtml(data.description || "")}" required /></label>
+          <label><span data-tax-code-label>${escapeHtml(labels.code)}</span><input name="hsnSac" placeholder="${escapeHtml(labels.placeholder)}" value="${escapeHtml(data.hsnSac || "")}" /></label>
           <label><span>Qty</span><input name="quantity" type="number" min="0" step="0.01" value="${data.quantity || 1}" /></label>
           <label><span>Rate / Amt</span><input name="rate" type="number" min="0" step="0.01" value="${data.rate || 0}" /></label>
           <label><span>Discount Amt</span><input name="discount" type="number" min="0" step="0.01" value="${data.discount || 0}" /></label>
-          <label><span data-tax-rate-label>${labels.tax}</span><input name="gstRate" type="number" min="0" step="0.01" value="${data.gstRate ?? labels.rate}" /></label>
+          <label><span data-tax-rate-label>${escapeHtml(labels.tax)}</span><input name="gstRate" type="number" min="0" step="0.01" value="${escapeHtml(data.gstRate ?? labels.rate)}" /></label>
           <output class="line-total">0.00</output>
           <button class="ghost small" type="button">Remove</button>
         `;

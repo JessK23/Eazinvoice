@@ -396,3 +396,34 @@ p {
     grid-template-columns: 1fr;
   }
 }
+
+@media (min-width: 700px) {
+  .app-shell {
+    width: min(100%, 760px);
+  }
+
+  .hero-card {
+    align-items: center;
+  }
+
+  .quick-nav {
+    grid-template-columns: repeat(5, minmax(96px, 1fr));
+  }
+
+  .view.active {
+    gap: 18px;
+  }
+
+  .mobile-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mobile-form .form-actions,
+  .mobile-form .status {
+    grid-column: 1 / -1;
+  }
+
+  .record-row {
+    align-items: flex-start;
+  }
+}

@@ -2042,3 +2042,138 @@ input:focus, textarea:focus, select:focus { outline: 3px solid rgba(37,99,235,.1
   }
   .landing-section { margin-left: -16px; margin-right: -16px; }
 }
+
+/* Release responsive guardrails */
+html,
+body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+img,
+svg,
+canvas,
+video {
+  max-width: 100%;
+}
+
+.topbar,
+.landing-header,
+.dashboard-topbar {
+  min-width: 0;
+}
+
+.table-wrap,
+.report-table-wrap,
+.invoice-board,
+.workflow-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+@media (max-width: 1180px) {
+  .landing-header {
+    gap: 14px;
+    align-items: center;
+    padding-inline: 24px;
+  }
+
+  .landing-header .header-full-logo {
+    width: min(330px, 38vw);
+    height: auto;
+  }
+
+  .landing-nav {
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .landing-nav a,
+  .landing-nav .nav-cta {
+    padding: 9px 12px;
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 960px) {
+  .topbar,
+  .landing-header,
+  .dashboard-topbar {
+    flex-wrap: wrap;
+    padding-inline: 18px;
+  }
+
+  .landing-header .brand,
+  .landing-nav {
+    width: 100%;
+  }
+
+  .landing-nav {
+    justify-content: flex-start;
+  }
+
+  .landing-hero,
+  .dashboard-preview,
+  .invoice-start-grid,
+  .invoice-summary-grid,
+  .customer-choice-grid,
+  .business-form-grid,
+  .tax-invoice-top,
+  .po-preview-top {
+    grid-template-columns: 1fr;
+  }
+
+  .landing-copy {
+    padding: 22px;
+  }
+}
+
+@media (max-width: 640px) {
+  .landing-header {
+    padding: 14px 14px 8px;
+  }
+
+  .landing-header .header-full-logo {
+    width: min(280px, 82vw);
+    height: auto;
+  }
+
+  .landing-nav {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .landing-nav a,
+  .landing-nav .nav-cta,
+  .landing-nav .profile-menu,
+  .landing-nav .profile-button {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .landing-shell,
+  .home,
+  .main,
+  .access-shell,
+  .dashboard-shell,
+  .invoice-workspace {
+    padding-inline: 14px;
+  }
+
+  .landing-copy h1 {
+    font-size: clamp(36px, 12vw, 48px);
+  }
+
+  .section-title,
+  .report-command,
+  .dashboard-search,
+  .sticky-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .sticky-actions {
+    position: static;
+    margin-top: 16px;
+  }
+}

@@ -37,6 +37,14 @@ function money(value) {
   return Number(value || 0).toFixed(2);
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
 function setView(mode) {
   if (!authForm) return;
   authMode = mode;
@@ -68,9 +76,9 @@ function createItemRow(data = {}) {
   const row = document.createElement("div");
   row.className = "item-row";
   row.innerHTML = `
-    <label>Description <input name="description" value="${data.description ?? ""}" placeholder="Service fee" /></label>
-    <label>Qty <input name="quantity" type="number" min="0" value="${data.quantity ?? 1}" /></label>
-    <label>Rate <input name="rate" type="number" min="0" value="${data.rate ?? 0}" /></label>
+    <label>Description <input name="description" value="${escapeHtml(data.description ?? "")}" placeholder="Service fee" /></label>
+    <label>Qty <input name="quantity" type="number" min="0" value="${Number(data.quantity ?? 1)}" /></label>
+    <label>Rate <input name="rate" type="number" min="0" value="${Number(data.rate ?? 0)}" /></label>
     <button type="button" class="ghost">Remove</button>
   `;
   row.querySelector("button").addEventListener("click", () => {
@@ -110,13 +118,13 @@ function renderPreview() {
   document.getElementById("previewTax").textContent = money(t.taxAmount);
   document.getElementById("previewTotal").textContent = money(t.total);
   document.getElementById("previewMeta").innerHTML = `
-    <div class="meta-box"><strong>Invoice Date</strong><div>${invoiceDate}</div></div>
-    <div class="meta-box"><strong>Due Date</strong><div>${dueDate || "-"}</div></div>
-    <div class="meta-box"><strong>Company</strong><div>${currentCompany?.name || "Not saved yet"}</div></div>
+    <div class="meta-box"><strong>Invoice Date</strong><div>${escapeHtml(invoiceDate)}</div></div>
+    <div class="meta-box"><strong>Due Date</strong><div>${escapeHtml(dueDate || "-")}</div></div>
+    <div class="meta-box"><strong>Company</strong><div>${escapeHtml(currentCompany?.name || "Not saved yet")}</div></div>
   `;
   previewRows.innerHTML = items.map((item) => `
     <tr>
-      <td>${item.description || "-"}</td>
+      <td>${escapeHtml(item.description || "-")}</td>
       <td>${item.quantity}</td>
       <td>${money(item.rate)}</td>
       <td>${money(item.quantity * item.rate)}</td>
@@ -128,7 +136,7 @@ async function renderPlan() {
   if (!planSummary) return;
   const summary = await apiClient.getPlan(token);
   planSummary.innerHTML = `
-    <strong>${summary.plan.toUpperCase()}</strong><br />
+    <strong>${escapeHtml(summary.plan.toUpperCase())}</strong><br />
     Companies: ${summary.usage.companies}/${summary.limits.companies}<br />
     Customers: ${summary.usage.customers}/${summary.limits.customers}<br />
     Invoices: ${summary.usage.invoicesPerMonth}/${summary.limits.invoicesPerMonth}
@@ -142,8 +150,8 @@ async function renderInvoices() {
     ? invoices.map((invoice) => `
       <div class="invoice-card">
         <div>
-          <strong>${invoice.invoiceNumber}</strong>
-          <div>${invoice.invoiceDate} - Total ${money(invoice.total)}</div>
+          <strong>${escapeHtml(invoice.invoiceNumber || "Invoice")}</strong>
+          <div>${escapeHtml(invoice.invoiceDate || "No date")} - Total ${money(invoice.total)}</div>
         </div>
         <span class="pill maroon">${invoice.items.length} items</span>
       </div>
@@ -165,10 +173,10 @@ async function renderAdminPanel() {
     ? payload.subscriptions.map((subscription) => `
       <div class="invoice-card">
         <div>
-          <strong>${subscription.subscriberName || subscription.groupName || subscription.subscriberType}</strong>
-          <div>${subscription.subscriberType} - ${subscription.plan} - ${subscription.currency} ${money(subscription.amount)}</div>
+          <strong>${escapeHtml(subscription.subscriberName || subscription.groupName || subscription.subscriberType || "Subscriber")}</strong>
+          <div>${escapeHtml(subscription.subscriberType || "user")} - ${escapeHtml(subscription.plan || "free")} - ${escapeHtml(subscription.currency || "INR")} ${money(subscription.amount)}</div>
         </div>
-        <span class="pill blue">${subscription.status}</span>
+        <span class="pill blue">${escapeHtml(subscription.status || "active")}</span>
       </div>
     `).join("")
     : "<p>No subscriptions yet.</p>";

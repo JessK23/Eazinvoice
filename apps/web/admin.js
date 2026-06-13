@@ -19,7 +19,15 @@ const adminUsers = document.getElementById("adminUsers");
 const kycReviewQueue = document.getElementById("kycReviewQueue");
 
 function badge(text, tone = "blue") {
-  return `<span class="pill ${tone}">${text}</span>`;
+  return `<span class="pill ${tone}">${escapeHtml(text)}</span>`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
 function renderUserControls(users) {
@@ -28,19 +36,19 @@ function renderUserControls(users) {
     ? users.map((user) => `
       <div class="invoice-card">
         <div>
-          <strong>${user.name}</strong>
-          <div class="hint">${user.email} · ${user.role} · ${user.accountStatus || "active"}</div>
+          <strong>${escapeHtml(user.name || user.email || "User")}</strong>
+          <div class="hint">${escapeHtml(user.email || "")} - ${escapeHtml(user.role || "user")} - ${escapeHtml(user.accountStatus || "active")}</div>
           <div class="badge-row">
             ${badge((user.role || "user").toUpperCase(), user.role === "admin" ? "maroon" : "blue")}
             ${badge((user.accountStatus || "active").toUpperCase(), user.accountStatus === "restricted" ? "gold" : "blue")}
             ${(user.permissions || []).map((perm) => badge(perm.replace(/-/g, " ").toUpperCase(), "gold")).join("") || badge("NO PERMISSIONS", "blue")}
           </div>
-          <div class="hint">${user.restrictedReason ? `Reason: ${user.restrictedReason}` : "No restriction reason"}</div>
+          <div class="hint">${user.restrictedReason ? `Reason: ${escapeHtml(user.restrictedReason)}` : "No restriction reason"}</div>
         </div>
         <div class="actions">
-          <button class="ghost small" data-action="restrict" data-user="${user.id}">Restrict</button>
-          <button class="ghost small" data-action="restore" data-user="${user.id}">Restore</button>
-          <button class="ghost small" data-action="kyc-review" data-user="${user.id}">Grant KYC Review</button>
+          <button class="ghost small" data-action="restrict" data-user="${escapeHtml(user.id)}">Restrict</button>
+          <button class="ghost small" data-action="restore" data-user="${escapeHtml(user.id)}">Restore</button>
+          <button class="ghost small" data-action="kyc-review" data-user="${escapeHtml(user.id)}">Grant KYC Review</button>
         </div>
       </div>
     `).join("")
@@ -68,18 +76,18 @@ function renderKycQueue(companies) {
     ? companies.map((company) => `
       <div class="invoice-card">
         <div>
-          <strong>${company.name}</strong>
-          <div class="hint">${company.entityType} · KYC ${company.kycStatus || "pending"} · Review ${company.reviewStatus || "pending"}</div>
+          <strong>${escapeHtml(company.name || "Company")}</strong>
+          <div class="hint">${escapeHtml(company.entityType || "company")} - KYC ${escapeHtml(company.kycStatus || "pending")} - Review ${escapeHtml(company.reviewStatus || "pending")}</div>
           <div class="badge-row">
             ${badge((company.kycStatus || "pending").toUpperCase(), company.kycStatus === "verified" ? "blue" : "gold")}
             ${badge((company.reviewStatus || "pending").toUpperCase(), company.reviewStatus === "approved" ? "blue" : company.reviewStatus === "rejected" ? "maroon" : "gold")}
           </div>
-          <div class="hint">Docs: ${(company.documentNames || []).join(", ") || "none"}</div>
-          <div class="hint">Stored: ${(company.documentFiles || []).map((file) => file.filePath).join(", ") || "none"}</div>
+          <div class="hint">Docs: ${escapeHtml((company.documentNames || []).join(", ") || "none")}</div>
+          <div class="hint">Stored: ${escapeHtml((company.documentFiles || []).map((file) => file.filePath).join(", ") || "none")}</div>
         </div>
         <div class="actions">
-          <button class="ghost small" data-action="approve" data-company="${company.id}">Approve</button>
-          <button class="ghost small" data-action="reject" data-company="${company.id}">Reject</button>
+          <button class="ghost small" data-action="approve" data-company="${escapeHtml(company.id)}">Approve</button>
+          <button class="ghost small" data-action="reject" data-company="${escapeHtml(company.id)}">Reject</button>
         </div>
       </div>
     `).join("")
@@ -113,10 +121,10 @@ Promise.all([
       ? payload.subscriptions.map((subscription) => `
         <div class="invoice-card">
           <div>
-            <strong>${subscription.subscriberName || subscription.groupName || subscription.subscriberType}</strong>
-            <div>${subscription.subscriberType} - ${subscription.plan} - ${subscription.currency} ${money(subscription.amount)}</div>
+            <strong>${escapeHtml(subscription.subscriberName || subscription.groupName || subscription.subscriberType || "Subscriber")}</strong>
+            <div>${escapeHtml(subscription.subscriberType || "user")} - ${escapeHtml(subscription.plan || "free")} - ${escapeHtml(subscription.currency || "INR")} ${money(subscription.amount)}</div>
           </div>
-          <span class="pill blue">${subscription.status}</span>
+          <span class="pill blue">${escapeHtml(subscription.status || "active")}</span>
         </div>
       `).join("")
       : "<p>No subscriptions yet.</p>";

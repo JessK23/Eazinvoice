@@ -2,9 +2,9 @@
 Contributors: eazinvoice
 Tags: invoice, invoicing, gst, billing, msme, freelancer, small business
 Requires at least: 6.0
-Tested up to: 6.6
+Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 0.2.0
+Stable tag: 1.0.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -87,12 +87,14 @@ No. WooCommerce sync is optional and paid. The core EazInvoice plugin is designe
 
 == Changelog ==
 
-= 0.2.0 =
+= 1.0.0 =
 
-* Added production-ready plugin headers.
-* Added admin settings page.
+* First WordPress.org-ready freemium release.
+* Added production-ready plugin headers and GPL licensing.
+* Added admin settings page with sanitized settings and WordPress nonces.
 * Added automatic public website CTA and optional shortcode CTA.
 * Added embedded WordPress dashboard, invoice page, and subscription page.
 * Added embedded PO / WO creation page and local free-tier records.
 * Added API Access connection page and API integration prompt.
+* Added responsive admin and public button styling.
 * Added freemium upgrade messaging.

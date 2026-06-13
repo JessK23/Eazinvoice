@@ -423,6 +423,38 @@
   }
 }
 @media (max-width: 640px) {
+  .eazinvoice-admin {
+    margin-right: 10px;
+  }
+  .eazinvoice-admin .eazinvoice-card,
+  .eazinvoice-admin .eazinvoice-hero {
+    padding: 16px;
+    border-radius: 14px;
+  }
+  .eazinvoice-admin .eazinvoice-admin-nav {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .eazinvoice-admin .eazinvoice-admin-nav a,
+  .eazinvoice-admin .eazinvoice-button {
+    width: 100%;
+  }
+  .eazinvoice-admin .eazinvoice-record-list article {
+    display: grid;
+    align-items: start;
+  }
+  .eazinvoice-admin .form-table,
+  .eazinvoice-admin .form-table tbody,
+  .eazinvoice-admin .form-table tr,
+  .eazinvoice-admin .form-table th,
+  .eazinvoice-admin .form-table td {
+    display: block;
+    width: 100%;
+  }
+  .eazinvoice-admin .regular-text {
+    width: 100%;
+    max-width: 100%;
+  }
   .eazinvoice-admin .eazinvoice-plan-grid,
   .eazinvoice-admin .eazinvoice-workflow-grid,
   .eazinvoice-admin .eazinvoice-section-head {
