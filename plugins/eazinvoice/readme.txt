@@ -25,7 +25,7 @@ The free plugin gives the site owner an embedded EazInvoice workspace inside Wor
 * API Access page for connecting an EazInvoice account
 * Account email and workspace URL settings
 * Basic API key field for future connection
-* Optional public website invoice CTA button that opens the embedded WordPress invoice screen after the site owner enables it
+* Optional compact public website invoice tab that opens the embedded WordPress invoice screen after the site owner enables it
 * Optional invoice CTA shortcode: `[eazinvoice_button]`
 * Legacy shortcode alias: `[eazinvoice_free_invoice]`
 * Local free-tier draft and created records for invoices and PO/WO documents
@@ -52,7 +52,7 @@ The paid version is sold independently from eazinvoice.com and can include:
 2. Activate the plugin through the WordPress Plugins screen.
 3. Open `EazInvoice` from the admin menu.
 4. Add your account email and workspace URL.
-5. Keep the automatic public website button enabled, or place `[eazinvoice_button]` on any page for custom placement.
+5. Enable the compact public website tab only if you want it, or place `[eazinvoice_button]` on any page for custom placement.
 6. Use EazInvoice > Create Invoice inside WordPress.
 7. Use EazInvoice > Create PO / WO inside WordPress.
 8. Use EazInvoice > API Access to open EazInvoice, generate a WordPress API key, and paste it into the plugin.

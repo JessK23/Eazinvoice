@@ -440,12 +440,18 @@ final class EazInvoice_Plugin {
 			'settings'     => array( __( 'Settings', 'eazinvoice-invoicing-for-msmes' ), admin_url( 'admin.php?page=eazinvoice-settings' ) ),
 		);
 
+		$menu_id = 'eazinvoice-admin-menu-' . sanitize_html_class( $active );
+
+		echo '<div class="eazinvoice-admin-menu-wrap">';
+		echo '<input class="eazinvoice-admin-menu-check" type="checkbox" id="' . esc_attr( $menu_id ) . '" />';
+		echo '<label class="eazinvoice-admin-menu-toggle" for="' . esc_attr( $menu_id ) . '"><span class="eazinvoice-admin-menu-icon"><span></span><span></span><span></span></span><strong>' . esc_html__( 'Menu', 'eazinvoice-invoicing-for-msmes' ) . '</strong></label>';
 		echo '<nav class="eazinvoice-admin-nav" aria-label="' . esc_attr__( 'EazInvoice sections', 'eazinvoice-invoicing-for-msmes' ) . '">';
 		foreach ( $links as $key => $link ) {
 			$class = $active === $key ? ' class="is-active"' : '';
 			echo '<a' . $class . ' href="' . esc_url( $link[1] ) . '">' . esc_html( $link[0] ) . '</a>';
 		}
 		echo '</nav>';
+		echo '</div>';
 	}
 
 	/**
