@@ -1,0 +1,8 @@
+{
+  "appId": "com.eazinvoice.app",
+  "appName": "EazInvoice",
+  "webDir": "apps/mobile",
+  "server": {
+    "androidScheme": "https"
+  }
+}

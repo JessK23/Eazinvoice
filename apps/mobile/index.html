@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#071f60" />
   <title>EazInvoice - Money Managed Easy</title>
   <link rel="manifest" href="./manifest.json" />
@@ -11,41 +11,58 @@
 <body>
   <main class="app-shell">
     <header class="app-header">
-      <img src="../web/assets/logo-full.png" alt="EazInvoice Money Managed Easy" />
-      <button id="profileButton" class="profile-button" type="button" aria-label="Open profile">EI</button>
+      <img class="brand-logo" src="../web/assets/logo-header.png" alt="EazInvoice Money Managed Easy" />
+      <button id="profileButton" class="profile-button" type="button" aria-label="Open profile">
+        <span>EI</span>
+      </button>
     </header>
 
     <section class="hero-card">
-      <div>
-        <span class="eyebrow">Free mobile workspace</span>
-        <h1>EazInvoice</h1>
-        <p>Money Managed Easy for invoices, purchase orders, work orders, reports, and subscription upgrades.</p>
+      <div class="hero-copy">
+        <span class="eyebrow">Mobile workspace</span>
+        <h1>Money managed easy.</h1>
+        <p>Create invoices, PO/WO records, and reports from one fast mobile dashboard.</p>
       </div>
-      <div class="plan-pill">FREE</div>
+      <div class="hero-visual" aria-hidden="true">
+        <div class="mini-document">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+        <div class="gold-check"></div>
+      </div>
     </section>
 
-    <nav class="quick-nav" aria-label="Mobile workspace">
-      <button class="nav-chip active" type="button" data-view="home">Home</button>
-      <button class="nav-chip" type="button" data-view="invoice">Invoice</button>
-      <button class="nav-chip" type="button" data-view="po">PO / WO</button>
-      <button class="nav-chip" type="button" data-view="reports">Reports</button>
-      <button class="nav-chip" type="button" data-view="subscription">Plan</button>
-    </nav>
+    <section class="summary-strip" aria-label="Business summary">
+      <article>
+        <span>Revenue</span>
+        <strong id="incomeTotal">INR 0.00</strong>
+      </article>
+      <article>
+        <span>Expenses</span>
+        <strong id="expenseTotal">INR 0.00</strong>
+      </article>
+    </section>
 
     <section class="view active" data-panel="home">
       <div class="metric-grid">
         <article><span>Invoices</span><strong id="invoiceCount">0</strong></article>
         <article><span>PO / WO</span><strong id="poCount">0</strong></article>
-        <article><span>Income</span><strong id="incomeTotal">INR 0.00</strong></article>
-        <article><span>Expenses</span><strong id="expenseTotal">INR 0.00</strong></article>
+        <article><span>Profit</span><strong id="homeProfitTotal">INR 0.00</strong></article>
+        <article><span>Plan</span><strong>FREE</strong></article>
       </div>
+
       <div class="action-grid">
         <button class="primary" type="button" data-jump="invoice">Create Invoice</button>
         <button class="secondary" type="button" data-jump="po">Create PO / WO</button>
       </div>
+
       <section class="panel">
         <div class="panel-head">
-          <h2>Recent Activity</h2>
+          <div>
+            <span class="soft-label">Activity</span>
+            <h2>Recent records</h2>
+          </div>
           <span class="soft-pill">Local test</span>
         </div>
         <div id="recentList" class="record-list"></div>
@@ -53,10 +70,13 @@
     </section>
 
     <section class="view" data-panel="invoice">
-      <section class="panel">
+      <section class="panel document-panel">
         <div class="panel-head">
-          <h2>Create Invoice</h2>
-          <span class="soft-pill">Income</span>
+          <div>
+            <span class="soft-label">Income</span>
+            <h2>Create invoice</h2>
+          </div>
+          <span class="soft-pill blue">Tax ready</span>
         </div>
         <form id="invoiceForm" class="mobile-form">
           <input type="hidden" name="type" value="invoice" />
@@ -81,16 +101,22 @@
         <div id="invoiceStatus" class="status"></div>
       </section>
       <section class="panel">
-        <h2>Invoice Records</h2>
+        <div class="panel-head compact">
+          <h2>Invoice records</h2>
+          <span class="soft-pill">Income</span>
+        </div>
         <div id="invoiceList" class="record-list"></div>
       </section>
     </section>
 
     <section class="view" data-panel="po">
-      <section class="panel">
+      <section class="panel document-panel">
         <div class="panel-head">
-          <h2>Create PO / WO</h2>
-          <span class="soft-pill">Expense</span>
+          <div>
+            <span class="soft-label">Expense</span>
+            <h2>Create PO / WO</h2>
+          </div>
+          <span class="soft-pill gold">Outflow</span>
         </div>
         <form id="poForm" class="mobile-form">
           <input type="hidden" name="type" value="order" />
@@ -116,16 +142,22 @@
         <div id="poStatus" class="status"></div>
       </section>
       <section class="panel">
-        <h2>PO / WO Records</h2>
+        <div class="panel-head compact">
+          <h2>PO / WO records</h2>
+          <span class="soft-pill gold">Expense</span>
+        </div>
         <div id="poList" class="record-list"></div>
       </section>
     </section>
 
     <section class="view" data-panel="reports">
-      <section class="panel">
+      <section class="panel report-panel">
         <div class="panel-head">
-          <h2>Reports</h2>
-          <span class="soft-pill">Realtime local</span>
+          <div>
+            <span class="soft-label">Realtime</span>
+            <h2>Reports</h2>
+          </div>
+          <span class="soft-pill">Free tier</span>
         </div>
         <div class="report-stack">
           <article><span>Revenue</span><strong id="reportRevenue">INR 0.00</strong></article>
@@ -139,8 +171,11 @@
     <section class="view" data-panel="subscription">
       <section class="panel">
         <div class="panel-head">
-          <h2>Subscription</h2>
-          <span class="soft-pill">API ready</span>
+          <div>
+            <span class="soft-label">Plans</span>
+            <h2>Subscription</h2>
+          </div>
+          <span class="soft-pill">Upgrade ready</span>
         </div>
         <div class="plan-list">
           <article class="selected"><strong>Free</strong><span>Invoice, PO/WO, basic reports, one workspace.</span></article>
@@ -150,6 +185,16 @@
         </div>
       </section>
     </section>
+
+    <button class="fab" type="button" data-jump="invoice" aria-label="Create invoice">+</button>
+
+    <nav class="bottom-nav" aria-label="Mobile workspace">
+      <button class="nav-chip active" type="button" data-view="home"><span>Home</span></button>
+      <button class="nav-chip" type="button" data-view="invoice"><span>Invoice</span></button>
+      <button class="nav-chip" type="button" data-view="po"><span>PO / WO</span></button>
+      <button class="nav-chip" type="button" data-view="reports"><span>Reports</span></button>
+      <button class="nav-chip" type="button" data-view="subscription"><span>Plan</span></button>
+    </nav>
   </main>
   <script type="module" src="./app.js"></script>
 </body>

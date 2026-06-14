@@ -112,7 +112,7 @@ function recordRow(record) {
     <article class="record-row">
       <div>
         <strong>${escapeHtml(record.number)}</strong>
-        <span>${escapeHtml(label)} · ${escapeHtml(record.partyName || "No party")} · ${escapeHtml(money(record.total, record.currency))}</span>
+        <span>${escapeHtml(label)} - ${escapeHtml(record.partyName || "No party")} - ${escapeHtml(money(record.total, record.currency))}</span>
       </div>
       <mark class="${record.status === "created" ? "green" : "amber"}">${escapeHtml(record.status)}</mark>
     </article>
@@ -145,6 +145,7 @@ function render() {
   setText("poCount", String(state.orders.length));
   setText("incomeTotal", money(summary.income));
   setText("expenseTotal", money(summary.expenses));
+  setText("homeProfitTotal", money(summary.profit));
   setText("reportRevenue", money(summary.income));
   setText("reportExpenses", money(summary.expenses));
   setText("reportProfit", money(summary.profit));
