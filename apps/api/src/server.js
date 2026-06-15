@@ -99,7 +99,7 @@ async function saveBase64File({ fileName, mimeType, dataUrl }) {
 
 function getAdminIdentity() {
   return {
-    email: process.env.ADMIN_EMAIL || "jesskurian23@gmail.com",
+    email: process.env.ADMIN_EMAIL || "support@eazinvoice.com",
     accessKey: process.env.ADMIN_ACCESS_KEY || "eazinvoice-admin",
   };
 }

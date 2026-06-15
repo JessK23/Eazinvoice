@@ -4,6 +4,20 @@ import { createApi } from "../apps/api/src/index.js";
 import { createStore } from "../apps/api/src/store.js";
 import { createServer } from "../apps/api/src/server.js";
 
+const TEST_ADMIN_EMAIL = "support@eazinvoice.com";
+
+function useTestAdminEmail() {
+  const previousAdminEmail = process.env.ADMIN_EMAIL;
+  process.env.ADMIN_EMAIL = TEST_ADMIN_EMAIL;
+  return () => {
+    if (previousAdminEmail === undefined) {
+      delete process.env.ADMIN_EMAIL;
+    } else {
+      process.env.ADMIN_EMAIL = previousAdminEmail;
+    }
+  };
+}
+
 test("health check is ok", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   assert.equal(api.healthCheck().ok, true);
@@ -449,6 +463,7 @@ test("signup OTP blocks already registered users and login OTP blocks unknown us
 });
 
 test("configured admin email receives admin rights through normal signup and login", async () => {
+  const restoreAdminEmail = useTestAdminEmail();
   const server = createServer({ persist: false, useSupabaseEmailOtp: false });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -468,7 +483,7 @@ test("configured admin email receives admin rights through normal signup and log
   try {
     const adminOtp = await requestOtp({
       mode: "signup",
-      email: "jesskurian23@gmail.com",
+      email: "support@eazinvoice.com",
       phone: "9665444554",
     });
     const adminSignupResponse = await fetch(`${baseUrl}/auth/signup`, {
@@ -476,7 +491,7 @@ test("configured admin email receives admin rights through normal signup and log
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: "Jess Kurian",
-        email: "jesskurian23@gmail.com",
+        email: "support@eazinvoice.com",
         password: "AdminSecure123",
         phone: "9665444554",
         otp: adminOtp,
@@ -489,14 +504,14 @@ test("configured admin email receives admin rights through normal signup and log
 
     const adminLoginOtp = await requestOtp({
       mode: "login",
-      email: "jesskurian23@gmail.com",
+      email: "support@eazinvoice.com",
       phone: "9665444554",
     });
     const adminLoginResponse = await fetch(`${baseUrl}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        email: "jesskurian23@gmail.com",
+        email: "support@eazinvoice.com",
         password: "AdminSecure123",
         phone: "9665444554",
         otp: adminLoginOtp,
@@ -528,10 +543,12 @@ test("configured admin email receives admin rights through normal signup and log
     assert.deepEqual(userSignup.user.permissions, []);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+    restoreAdminEmail();
   }
 });
 
 test("admin access is restricted to the configured admin email", async () => {
+  const restoreAdminEmail = useTestAdminEmail();
   const server = createServer({ persist: false, useSupabaseEmailOtp: false });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -564,7 +581,7 @@ test("admin access is restricted to the configured admin email", async () => {
   try {
     const admin = await signup({
       name: "Jess Kurian",
-      email: "jesskurian23@gmail.com",
+      email: "support@eazinvoice.com",
       password: "AdminSecure123",
       phone: "9665444554",
     });
@@ -597,6 +614,7 @@ test("admin access is restricted to the configured admin email", async () => {
     assert.equal(stillBlocked.response.status, 403);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+    restoreAdminEmail();
   }
 });
 
