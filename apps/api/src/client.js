@@ -83,6 +83,12 @@ export const apiClient = {
   createInvoicePaymentLink(token, invoiceId, body = {}) {
     return request(`/invoices/${invoiceId}/payment-link`, { method: "POST", token, body });
   },
+  createRazorpayOrder(token, body) {
+    return request("/billing/razorpay/order", { method: "POST", token, body });
+  },
+  verifyRazorpayPayment(token, body) {
+    return request("/billing/razorpay/verify", { method: "POST", token, body });
+  },
   listPayments(token) {
     return request("/payments", { token });
   },
@@ -112,6 +118,9 @@ export const apiClient = {
   },
   getAdminMoney(token) {
     return request("/admin/money", { token });
+  },
+  getAdminGateway(token) {
+    return request("/admin/gateway", { token });
   },
   listAdminUsers(token) {
     return request("/admin/users", { token });

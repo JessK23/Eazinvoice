@@ -99,6 +99,7 @@ let dashboardCompanies = [];
 let dashboardPurchaseOrders = [];
 let dashboardCustomers = [];
 let dashboardPayments = [];
+let razorpayCheckoutPromise = null;
 
 function currentDashboardPage() {
   const page = (window.location.hash || "#reports").replace(/^#/, "");
@@ -128,6 +129,50 @@ function showDashboardPage(page = currentDashboardPage()) {
 
 function isPaidSubscription(subscription) {
   return String(subscription?.plan || "free").toLowerCase() !== "free" || Number(subscription?.amount || 0) > 0;
+}
+
+function loadRazorpayCheckout() {
+  if (window.Razorpay) return Promise.resolve();
+  if (!razorpayCheckoutPromise) {
+    razorpayCheckoutPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.async = true;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error("Could not load Razorpay Checkout. Check your connection and try again."));
+      document.head.appendChild(script);
+    });
+  }
+  return razorpayCheckoutPromise;
+}
+
+async function openRazorpayCheckout(orderPayload, onVerified) {
+  await loadRazorpayCheckout();
+  return new Promise((resolve, reject) => {
+    const checkout = new window.Razorpay({
+      key: orderPayload.keyId,
+      amount: orderPayload.order.amount,
+      currency: orderPayload.order.currency,
+      name: "EazInvoice",
+      description: orderPayload.description || "EazInvoice payment",
+      order_id: orderPayload.order.id,
+      prefill: orderPayload.prefill || {},
+      theme: { color: "#123b8f" },
+      handler: async (response) => {
+        try {
+          const verified = await apiClient.verifyRazorpayPayment(token, response);
+          await onVerified?.(verified);
+          resolve(verified);
+        } catch (error) {
+          reject(error);
+        }
+      },
+      modal: {
+        ondismiss: () => resolve(null),
+      },
+    });
+    checkout.open();
+  });
 }
 
 if (currentUser?.role === "admin") {
@@ -178,15 +223,27 @@ function renderPlanCards(currentPlan) {
       const plan = button.getAttribute("data-plan");
       const amount = Number(button.getAttribute("data-amount") || 0);
       try {
-        await apiClient.createSubscription(token, {
-          subscriberType: "individual",
-          amount,
-          currency: "INR",
-          plan,
-          billingCycle: "monthly",
-          status: "active",
-        });
-        if (subscriptionStatus) subscriptionStatus.textContent = `Switched to ${plan} plan.`;
+        if (amount > 0) {
+          if (subscriptionStatus) subscriptionStatus.textContent = "Opening Razorpay checkout...";
+          const orderPayload = await apiClient.createRazorpayOrder(token, { kind: "subscription", plan });
+          const verified = await openRazorpayCheckout(orderPayload, async () => {
+            if (subscriptionStatus) subscriptionStatus.textContent = `Payment verified. ${plan} plan is active.`;
+          });
+          if (!verified) {
+            if (subscriptionStatus) subscriptionStatus.textContent = "Razorpay checkout was closed before payment.";
+            return;
+          }
+        } else {
+          await apiClient.createSubscription(token, {
+            subscriberType: "individual",
+            amount,
+            currency: "INR",
+            plan,
+            billingCycle: "monthly",
+            status: "active",
+          });
+          if (subscriptionStatus) subscriptionStatus.textContent = `Switched to ${plan} plan.`;
+        }
         await loadSubscriptionPanel();
       } catch (error) {
         if (subscriptionStatus) {
@@ -922,7 +979,7 @@ function renderInvoiceWorkspace(invoices) {
         <div class="row-actions">
           <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoiceId)}">${isDraft ? "Edit Draft" : "Open / Edit"}</a>
           ${!isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-invoice="${escapeHtml(invoiceId)}" data-balance="${balance}">Record Payment</button>` : ""}
-          ${!isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-link="${escapeHtml(invoiceId)}">${isPaidSubscription(currentSubscription) ? "Create Payment Link" : "Gateway Paid Tier"}</button>` : ""}
+          ${!isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-link="${escapeHtml(invoiceId)}">${isPaidSubscription(currentSubscription) ? "Collect Online" : "Gateway Paid Tier"}</button>` : ""}
           <button class="ghost small danger" type="button" data-delete-invoice="${escapeHtml(invoiceId)}">Delete</button>
           <span class="pill ${paymentTone(rawPaymentStatus)}">${escapeHtml(paymentStatus.toUpperCase())}</span>
         </div>
@@ -954,10 +1011,20 @@ function renderInvoiceWorkspace(invoices) {
     button.addEventListener("click", async () => {
       const invoiceId = button.getAttribute("data-payment-link");
       try {
-        const invoice = await apiClient.createInvoicePaymentLink(token, invoiceId, { gateway: "razorpay" });
-        replaceInvoice(invoice);
-        rerenderDashboardData();
-        setPaymentModalStatus(`Payment link created: ${invoice.paymentLink?.url || "ready"}`, "success");
+        setPaymentModalStatus("Opening Razorpay checkout...", "");
+        const orderPayload = await apiClient.createRazorpayOrder(token, { kind: "invoice", invoiceId });
+        const verified = await openRazorpayCheckout(orderPayload, async (result) => {
+          const updatedInvoice = result.invoice || result;
+          replaceInvoice(updatedInvoice);
+          if (result.payment) {
+            const existingPaymentIndex = dashboardPayments.findIndex((payment) => payment.id === result.payment.id);
+            if (existingPaymentIndex >= 0) dashboardPayments[existingPaymentIndex] = result.payment;
+            else dashboardPayments.push(result.payment);
+          }
+          rerenderDashboardData();
+          setPaymentModalStatus("Razorpay payment verified and invoice status updated.", "success");
+        });
+        if (!verified) setPaymentModalStatus("Razorpay checkout was closed before payment.", "error");
       } catch (error) {
         setPaymentModalStatus(error.message || "Payment gateway automation is available only in paid tiers.", "error");
       }

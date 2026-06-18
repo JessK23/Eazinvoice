@@ -41,6 +41,15 @@ function sendJson(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8") || "{}"));
+    req.on("error", reject);
+  });
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -55,6 +64,10 @@ function readBody(req) {
     });
     req.on("error", reject);
   });
+}
+
+function parseJsonBody(raw) {
+  return JSON.parse(raw || "{}");
 }
 
 function createOAuthStateStore() {
@@ -104,8 +117,21 @@ function getAdminIdentity() {
   };
 }
 
+function getAdminEmails() {
+  const configured = [
+    getAdminIdentity().email,
+    process.env.ADMIN_EMAILS || "",
+    "info@eazinvoice.com",
+    "support@eazinvoice.com",
+  ];
+  return new Set(configured
+    .flatMap((entry) => String(entry || "").split(","))
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean));
+}
+
 function adminRoleForEmail(email) {
-  return String(email || "").toLowerCase() === getAdminIdentity().email.toLowerCase();
+  return getAdminEmails().has(String(email || "").trim().toLowerCase());
 }
 
 function adminPermissionsForEmail(email) {
@@ -126,7 +152,7 @@ function getPublicBaseUrl() {
 }
 
 function isConfiguredAdminUser(user) {
-  return Boolean(user?.role === "admin" && adminRoleForEmail(user.email));
+  return Boolean(user?.email && adminRoleForEmail(user.email));
 }
 
 function hasSubmittedKyc(company) {
@@ -298,6 +324,100 @@ function extractToken(req) {
   return null;
 }
 
+const PAID_PLAN_CATALOG = {
+  standard: { plan: "standard", label: "Standard", amount: 499, currency: "INR", billingCycle: "monthly" },
+  pro: { plan: "pro", label: "Pro", amount: 999, currency: "INR", billingCycle: "monthly" },
+  business: { plan: "business", label: "Business", amount: 1999, currency: "INR", billingCycle: "monthly" },
+};
+
+function getRazorpayConfig() {
+  const keyId = process.env.RAZORPAY_KEY_ID || "";
+  const keySecret = process.env.RAZORPAY_KEY_SECRET || "";
+  return {
+    keyId,
+    keySecret,
+    webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET || "",
+    publicUrl: process.env.EAZINVOICE_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || "http://localhost:3001",
+    enabled: Boolean(keyId && keySecret),
+  };
+}
+
+function maskSecret(value) {
+  const text = String(value || "");
+  if (!text) return "";
+  if (text.length <= 8) return "configured";
+  return `${text.slice(0, 8)}...${text.slice(-4)}`;
+}
+
+function getGatewayStatus() {
+  const razorpay = getRazorpayConfig();
+  const keyMode = razorpay.keyId.includes("_live_") ? "live" : razorpay.keyId.includes("_test_") ? "test" : "unknown";
+  return {
+    adminEmails: [...getAdminEmails()],
+    razorpay: {
+      provider: "razorpay",
+      enabled: razorpay.enabled,
+      mode: razorpay.enabled ? keyMode : "not_configured",
+      keyIdMasked: maskSecret(razorpay.keyId),
+      keySecretConfigured: Boolean(razorpay.keySecret),
+      webhookSecretConfigured: Boolean(razorpay.webhookSecret),
+      publicUrl: razorpay.publicUrl,
+      webhookUrl: `${razorpay.publicUrl.replace(/\/$/, "")}/webhooks/razorpay`,
+      supportedFlows: [
+        "Paid plan checkout",
+        "Invoice online collection",
+        "Verified payment signature",
+        "Webhook signature verification",
+      ],
+      requiredEnvironmentVariables: [
+        "RAZORPAY_KEY_ID",
+        "RAZORPAY_KEY_SECRET",
+        "RAZORPAY_WEBHOOK_SECRET",
+        "EAZINVOICE_PUBLIC_URL",
+      ],
+    },
+  };
+}
+
+function verifyRazorpaySignature({ orderId, paymentId, signature, keySecret }) {
+  const expected = crypto
+    .createHmac("sha256", keySecret)
+    .update(`${orderId}|${paymentId}`)
+    .digest("hex");
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(String(signature || ""));
+  return expectedBuffer.length === actualBuffer.length && crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+function verifyRazorpayWebhook(rawBody, signature, webhookSecret) {
+  if (!webhookSecret) return true;
+  const expected = crypto.createHmac("sha256", webhookSecret).update(rawBody).digest("hex");
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(String(signature || ""));
+  return expectedBuffer.length === actualBuffer.length && crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+async function razorpayRequest(pathname, body) {
+  const config = getRazorpayConfig();
+  if (!config.enabled) {
+    throw new Error("Razorpay is not configured. Add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.");
+  }
+  const credentials = Buffer.from(`${config.keyId}:${config.keySecret}`).toString("base64");
+  const response = await fetch(`https://api.razorpay.com/v1${pathname}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${credentials}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error?.description || payload.error?.reason || "Razorpay request failed");
+  }
+  return payload;
+}
+
 const ROOT = process.cwd();
 const STATIC_ROOTS = [
   { prefix: "/apps/web/", dir: path.join(ROOT, "apps", "web") },
@@ -341,6 +461,7 @@ export function createServer(options = {}) {
   const oauthStates = createOAuthStateStore();
   const emailOtps = createEmailOtpStore();
   const useSupabaseEmailOtp = options.useSupabaseEmailOtp ?? isSupabaseEmailOtpConfigured();
+  const pendingRazorpayOrders = new Map();
 
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
@@ -368,20 +489,31 @@ export function createServer(options = {}) {
 
     if (url.pathname === "/webhooks/razorpay" && req.method === "POST") {
       try {
-        const body = await readBody(req);
+        const rawBody = await readRawBody(req);
+        const config = getRazorpayConfig();
+        if (!verifyRazorpayWebhook(rawBody, req.headers["x-razorpay-signature"], config.webhookSecret)) {
+          sendJson(res, 401, { error: "Invalid Razorpay webhook signature" });
+          return;
+        }
+        const body = parseJsonBody(rawBody);
         const event = String(body.event || body.type || "payment.captured");
         if (!event.includes("payment") && !event.includes("payment_link")) {
           sendJson(res, 202, { ok: true, ignored: true });
           return;
         }
         const payload = body.payload?.payment?.entity || body.payload?.payment_link?.entity || body.payload || body;
+        const orderMeta = pendingRazorpayOrders.get(payload.order_id || payload.razorpay_order_id) || {};
+        if (orderMeta.kind === "subscription") {
+          sendJson(res, 200, { ok: true, subscriptionWebhook: true });
+          return;
+        }
         const recorded = api.recordGatewayPayment({
-          invoiceId: payload.invoiceId || payload.notes?.invoiceId,
+          invoiceId: payload.invoiceId || payload.notes?.invoiceId || orderMeta.invoiceId,
           paymentLinkId: payload.paymentLinkId || payload.payment_link_id || payload.id,
           amount: payload.amount ? Number(payload.amount) / 100 : payload.amountPaid,
           currency: payload.currency,
           razorpay_payment_id: payload.razorpay_payment_id || payload.payment_id || payload.id,
-          razorpay_order_id: payload.razorpay_order_id || payload.order_id,
+          razorpay_order_id: payload.razorpay_order_id || payload.order_id || orderMeta.orderId,
           gateway: "razorpay",
         });
         if (!recorded) {
@@ -711,6 +843,15 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/admin/gateway" && req.method === "GET") {
+      if (!isConfiguredAdminUser(user)) {
+        sendJson(res, 403, { error: "Forbidden" });
+        return;
+      }
+      sendJson(res, 200, getGatewayStatus());
+      return;
+    }
+
     if (url.pathname === "/admin/users" && req.method === "GET") {
       if (!isConfiguredAdminUser(user)) {
         sendJson(res, 403, { error: "Forbidden" });
@@ -870,6 +1011,176 @@ export function createServer(options = {}) {
     if (url.pathname === "/customers" && req.method === "POST") {
       const body = await readBody(req);
       sendJson(res, 201, api.createCustomer({ ...body, ownerUserId: user.id }));
+      return;
+    }
+
+    if (url.pathname === "/billing/razorpay/order" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        const config = getRazorpayConfig();
+        if (!config.enabled) {
+          sendJson(res, 503, { error: "Razorpay is not configured yet. Add live Razorpay keys in Render environment variables." });
+          return;
+        }
+        const kind = String(body.kind || "subscription").toLowerCase();
+        let orderContext;
+
+        if (kind === "subscription") {
+          const planId = String(body.plan || "").toLowerCase();
+          const selectedPlan = PAID_PLAN_CATALOG[planId];
+          if (!selectedPlan) {
+            sendJson(res, 400, { error: "Choose a valid paid plan." });
+            return;
+          }
+          const companies = api.listCompanies(user);
+          const kycProfile = companies.find((company) => hasSubmittedKyc(company));
+          if (!kycProfile) {
+            sendJson(res, 400, { error: "Paid plans require KYC documents. Submit your organization or identity documents first." });
+            return;
+          }
+          if (kycProfile.kycStatus === "rejected" || kycProfile.reviewStatus === "rejected") {
+            sendJson(res, 403, { error: "KYC documents were rejected. Update documents before choosing a paid plan." });
+            return;
+          }
+          orderContext = {
+            kind,
+            userId: user.id,
+            companyId: body.companyId || kycProfile.id,
+            plan: selectedPlan.plan,
+            amount: selectedPlan.amount,
+            currency: selectedPlan.currency,
+            billingCycle: selectedPlan.billingCycle,
+            description: `${selectedPlan.label} plan - ${selectedPlan.billingCycle}`,
+          };
+        } else if (kind === "invoice") {
+          if (!hasActivePaidPlan(api, user)) {
+            sendJson(res, 402, { error: "Payment gateway links and automatic payment updates are available only in paid tiers." });
+            return;
+          }
+          const invoice = api.getInvoice(body.invoiceId, user);
+          if (!invoice) {
+            sendJson(res, 404, { error: "Invoice not found" });
+            return;
+          }
+          const amount = Number(invoice.balanceAmount ?? invoice.total ?? 0);
+          if (!Number.isFinite(amount) || amount <= 0) {
+            sendJson(res, 400, { error: "This invoice has no pending balance." });
+            return;
+          }
+          orderContext = {
+            kind,
+            userId: user.id,
+            invoiceId: invoice.id,
+            amount,
+            currency: invoice.currency || "INR",
+            description: `Invoice ${invoice.invoiceNumber || invoice.id}`,
+          };
+        } else {
+          sendJson(res, 400, { error: "Unsupported Razorpay order type." });
+          return;
+        }
+
+        const amountInPaise = Math.round(Number(orderContext.amount) * 100);
+        const order = await razorpayRequest("/orders", {
+          amount: amountInPaise,
+          currency: orderContext.currency,
+          receipt: `eaz_${kind}_${Date.now()}`.slice(0, 40),
+          notes: {
+            eazinvoice_kind: kind,
+            userId: orderContext.userId,
+            invoiceId: orderContext.invoiceId || "",
+            companyId: orderContext.companyId || "",
+            plan: orderContext.plan || "",
+          },
+        });
+        pendingRazorpayOrders.set(order.id, {
+          ...orderContext,
+          orderId: order.id,
+          amount: amountInPaise / 100,
+          createdAt: new Date().toISOString(),
+        });
+        sendJson(res, 201, {
+          keyId: config.keyId,
+          order,
+          description: orderContext.description,
+          prefill: {
+            name: user.name || "",
+            email: user.email || "",
+            contact: user.phone || "",
+          },
+        });
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/billing/razorpay/verify" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        const config = getRazorpayConfig();
+        const orderId = String(body.razorpay_order_id || "");
+        const paymentId = String(body.razorpay_payment_id || "");
+        const signature = String(body.razorpay_signature || "");
+        if (!orderId || !paymentId || !signature) {
+          sendJson(res, 400, { error: "Missing Razorpay payment verification details." });
+          return;
+        }
+        if (!verifyRazorpaySignature({ orderId, paymentId, signature, keySecret: config.keySecret })) {
+          sendJson(res, 401, { error: "Razorpay payment signature verification failed." });
+          return;
+        }
+        const orderMeta = pendingRazorpayOrders.get(orderId);
+        if (!orderMeta || orderMeta.userId !== user.id) {
+          sendJson(res, 404, { error: "Razorpay order was not found for this user session." });
+          return;
+        }
+        pendingRazorpayOrders.delete(orderId);
+
+        if (orderMeta.kind === "subscription") {
+          const subscription = api.createSubscription({
+            subscriberType: "individual",
+            subscriberName: user.name || user.email || "Subscriber",
+            companyId: orderMeta.companyId || null,
+            userId: user.id,
+            amount: orderMeta.amount,
+            currency: orderMeta.currency,
+            plan: orderMeta.plan,
+            billingCycle: orderMeta.billingCycle,
+            status: "active",
+            adminUserId: isConfiguredAdminUser(user) ? user.id : null,
+            gateway: "razorpay",
+            gatewayPaymentId: paymentId,
+            gatewayOrderId: orderId,
+          });
+          sendJson(res, 200, { ok: true, type: "subscription", subscription });
+          return;
+        }
+
+        if (orderMeta.kind === "invoice") {
+          const recorded = api.recordInvoicePayment(orderMeta.invoiceId, {
+            amount: orderMeta.amount,
+            currency: orderMeta.currency,
+            mode: "payment_gateway",
+            reference: paymentId,
+            notes: "Verified Razorpay checkout payment",
+            status: "captured",
+            gateway: "razorpay",
+            gatewayPaymentId: paymentId,
+            gatewayOrderId: orderId,
+          });
+          if (!recorded) {
+            sendJson(res, 404, { error: "Invoice not found for verified Razorpay payment." });
+            return;
+          }
+          sendJson(res, 200, { ok: true, type: "invoice", ...recorded });
+          return;
+        }
+
+        sendJson(res, 400, { error: "Unsupported verified Razorpay order type." });
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
       return;
     }
 

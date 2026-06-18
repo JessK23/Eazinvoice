@@ -15,6 +15,7 @@ const adminCompany = document.getElementById("adminCompany");
 const adminIndividual = document.getElementById("adminIndividual");
 const adminGroup = document.getElementById("adminGroup");
 const adminSubscriptions = document.getElementById("adminSubscriptions");
+const gatewayManagement = document.getElementById("gatewayManagement");
 const adminUsers = document.getElementById("adminUsers");
 const kycReviewQueue = document.getElementById("kycReviewQueue");
 
@@ -105,11 +106,50 @@ function renderKycQueue(companies) {
   });
 }
 
+function renderGatewayManagement(payload) {
+  if (!gatewayManagement) return;
+  const gateway = payload?.razorpay || {};
+  const configured = Boolean(gateway.enabled);
+  const envList = (gateway.requiredEnvironmentVariables || []).map((name) => `<code>${escapeHtml(name)}</code>`).join(", ");
+  gatewayManagement.innerHTML = `
+    <div class="invoice-card gateway-card">
+      <div>
+        <div class="panel-head compact">
+          <div>
+            <strong>Razorpay Payment Gateway</strong>
+            <div class="hint">Only admin logins such as info@eazinvoice.com can view this gateway console.</div>
+          </div>
+          ${badge(configured ? `${String(gateway.mode || "live").toUpperCase()} MODE` : "NOT CONFIGURED", configured ? "blue" : "gold")}
+        </div>
+        <div class="metric-grid gateway-metrics">
+          <article class="metric-card"><span>Gateway</span><strong>Razorpay</strong></article>
+          <article class="metric-card"><span>Key ID</span><strong>${escapeHtml(gateway.keyIdMasked || "Missing")}</strong></article>
+          <article class="metric-card"><span>Secret Key</span><strong>${gateway.keySecretConfigured ? "Configured" : "Missing"}</strong></article>
+          <article class="metric-card"><span>Webhook Secret</span><strong>${gateway.webhookSecretConfigured ? "Configured" : "Missing"}</strong></article>
+        </div>
+        <div class="notice compact">
+          <strong>Webhook URL</strong>
+          <div><code>${escapeHtml(gateway.webhookUrl || "/webhooks/razorpay")}</code></div>
+        </div>
+        <div class="hint">Render environment variables required: ${envList}</div>
+        <div class="badge-row">
+          ${(gateway.supportedFlows || []).map((flow) => badge(flow, "blue")).join("")}
+        </div>
+      </div>
+      <div class="actions">
+        <a class="ghost small" href="/apps/web/dashboard.html#subscription">Test Plan Checkout</a>
+        <a class="ghost small" href="/apps/web/dashboard.html#invoices">Test Invoice Collection</a>
+      </div>
+    </div>
+  `;
+}
+
 Promise.all([
   apiClient.getAdminMoney(token),
   apiClient.listAdminUsers(token),
   apiClient.getAdminKycReview(token),
-]).then(([payload, usersPayload, kycPayload]) => {
+  apiClient.getAdminGateway(token),
+]).then(([payload, usersPayload, kycPayload, gatewayPayload]) => {
   const summary = payload.summary;
   if (adminTotal) adminTotal.textContent = money(summary.totalAmount);
   if (adminCount) adminCount.textContent = String(summary.count);
@@ -129,6 +169,7 @@ Promise.all([
       `).join("")
       : "<p>No subscriptions yet.</p>";
   }
+  renderGatewayManagement(gatewayPayload);
   renderUserControls(usersPayload.users || []);
   renderKycQueue(kycPayload.companies || []);
 });

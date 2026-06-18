@@ -421,6 +421,9 @@ export function createStore(seed = {}, options = {}) {
       billingCycle: input.billingCycle ?? "monthly",
       status: input.status ?? "active",
       adminUserId: input.adminUserId ?? null,
+      gateway: input.gateway?.trim() || "",
+      gatewayPaymentId: input.gatewayPaymentId?.trim() || "",
+      gatewayOrderId: input.gatewayOrderId?.trim() || "",
       createdAt: new Date().toISOString(),
     };
     state.subscriptions.push(subscription);
