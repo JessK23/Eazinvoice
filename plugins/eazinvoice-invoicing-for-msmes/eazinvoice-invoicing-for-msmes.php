@@ -1,6 +1,6 @@
 <?php
 /**
- * Plugin Name: EazInvoice - Invoicing for MSMEs
+ * Plugin Name: EazInvoice Billing Workspace for MSMEs
  * Plugin URI: https://www.eazinvoice.com/wordpress
  * Description: Connect WordPress sites to EazInvoice for simple invoice links, customer billing CTAs, and upgrade-ready MSME invoicing workflows.
  * Version: 1.0.0

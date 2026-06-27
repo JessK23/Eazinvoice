@@ -28,3 +28,15 @@ export function savePersistedState(state) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2), "utf8");
 }
 
+export function describePersistence() {
+  ensureDataFile();
+  const stats = fs.statSync(DATA_FILE);
+  return {
+    mode: "local-json",
+    dataDir: DATA_DIR,
+    dataFile: DATA_FILE,
+    exists: true,
+    bytes: stats.size,
+    updatedAt: stats.mtime.toISOString(),
+  };
+}

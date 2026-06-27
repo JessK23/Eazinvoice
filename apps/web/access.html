@@ -33,7 +33,7 @@
           </div>
           <button class="profile-tab-jump" type="button" data-profile-tab="profile">Account Settings</button>
           <button class="profile-tab-jump" type="button" data-profile-tab="profile">Change Password</button>
-          <a href="/apps/web/access.html?tab=dashboard">Reports Dashboard</a>
+          <a href="/apps/web/access.html?tab=dashboard">Reports</a>
           <button id="accessLogout" type="button">Sign-out</button>
         </div>
       </div>
@@ -57,6 +57,7 @@
 
     <section class="panel access-tabs-wrap">
       <div class="access-tabs" role="tablist" aria-label="User access sections">
+        <button class="access-tab access-tab-featured" type="button" data-tab="ai">AI Assistant</button>
         <button class="access-tab active" type="button" data-tab="status">Status</button>
         <button class="access-tab" type="button" data-tab="profile">Update Profile</button>
         <button id="companyAccessTab" class="access-tab" type="button" data-tab="company">Company Profile</button>
@@ -67,6 +68,23 @@
         <button class="access-tab" type="button" data-tab="features">Tier Features</button>
         <button id="adminAccessTab" class="access-tab" type="button" data-tab="admin" hidden>Admin</button>
       </div>
+
+      <section class="access-pane" data-pane="ai" hidden>
+        <div class="panel-head compact">
+          <div>
+            <span class="pill blue">Pro / Business</span>
+            <h2>AI Assistant</h2>
+            <p class="hint">Use paid-plan AI to draft invoices, PO/WO records, and report summaries from one command window.</p>
+          </div>
+          <a class="primary" href="/apps/web/dashboard.html#ai-assistant">Open AI Workspace</a>
+        </div>
+        <div class="quick-grid">
+          <article class="quick-card"><strong>Invoice command</strong><span>Generate a draft invoice from customer, service, amount, tax, and due date text.</span></article>
+          <article class="quick-card"><strong>PO / WO command</strong><span>Create purchase order or work order drafts for vendor-side expense workflows.</span></article>
+          <article class="quick-card"><strong>Report command</strong><span>Summarize revenue, expenses, unpaid invoices, and profit from saved records.</span></article>
+          <article class="quick-card"><strong>Plan access</strong><span>Free keeps AI locked. Pro and Business unlock the AI command workspace.</span></article>
+        </div>
+      </section>
 
       <section class="access-pane" data-pane="status">
         <div class="metric-grid">
@@ -203,7 +221,7 @@
             <h2>Reports and Summaries</h2>
             <p class="hint">Use this dashboard for invoice, PO, revenue, profit and loss, and profile reporting.</p>
           </div>
-          <a class="primary" href="/apps/web/dashboard.html">Open Full Dashboard</a>
+          <a class="primary" href="/apps/web/dashboard.html">Open Reports</a>
         </div>
         <div class="quick-grid">
           <article class="quick-card"><strong>Invoice Summary</strong><span>Drafts, created invoices, pending payments, and invoice revenue.</span></article>
@@ -251,11 +269,11 @@
       </section>
 
       <section class="access-pane" data-pane="features" hidden>
-        <div class="plan-feature-grid">
+        <div class="plan-feature-grid" id="accessPlanFeatureGrid">
           <article class="plan-tile selected"><strong>Free</strong><p>Limited invoices, basic GST invoices, PDF-ready print, one business, no AI.</p></article>
-          <article class="plan-tile"><strong>Starter</strong><p>Branding removal, WhatsApp sharing, recurring invoices, basic AI invoice assist.</p></article>
-          <article class="plan-tile"><strong>Pro</strong><p>Advanced AI invoice generation, AI PO generation, reports, payment tracking, multiple businesses.</p></article>
-          <article class="plan-tile"><strong>Business</strong><p>Team access, approvals, API access, advanced automation, analytics, priority support.</p></article>
+          <article class="plan-tile"><strong>Standard</strong><p>Branding removal, WhatsApp sharing, Razorpay collection links, recurring drafts, and higher limits. No AI.</p></article>
+          <article class="plan-tile"><strong>Pro</strong><p>Dedicated AI Assistant tab for invoice drafts, PO/WO drafts, report summaries, payment tracking, and multiple businesses.</p></article>
+          <article class="plan-tile"><strong>Business</strong><p>Everything in Pro plus team access, approvals, API access, SMTP settings, compliance profile, analytics, and priority support.</p></article>
         </div>
       </section>
 

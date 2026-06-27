@@ -1,4 +1,4 @@
-import { apiClient, money, requireSession } from "./common.js?v=20260601-session";
+import { apiClient, money, mountAdminPlanPreview, requireSession } from "./common.js?v=20260601-session";
 
 const sessionContext = await requireSession("/apps/web/auth.html");
 const token = sessionContext?.token;
@@ -7,6 +7,7 @@ if (!sessionContext.session.admin?.authorized) {
   window.location.replace("/apps/web/access.html");
   throw new Error("Configured admin required");
 }
+mountAdminPlanPreview(sessionContext);
 document.getElementById("protectedContent")?.removeAttribute("hidden");
 
 const adminTotal = document.getElementById("adminTotal");
@@ -15,9 +16,12 @@ const adminCompany = document.getElementById("adminCompany");
 const adminIndividual = document.getElementById("adminIndividual");
 const adminGroup = document.getElementById("adminGroup");
 const adminSubscriptions = document.getElementById("adminSubscriptions");
+const billingOrderAudit = document.getElementById("billingOrderAudit");
 const gatewayManagement = document.getElementById("gatewayManagement");
+const recurringSchedulerPanel = document.getElementById("recurringSchedulerPanel");
 const adminUsers = document.getElementById("adminUsers");
 const kycReviewQueue = document.getElementById("kycReviewQueue");
+const persistenceStatus = document.getElementById("persistenceStatus");
 
 function badge(text, tone = "blue") {
   return `<span class="pill ${tone}">${escapeHtml(text)}</span>`;
@@ -29,6 +33,39 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function statusTone(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (["active", "paid", "verified", "consumed"].includes(normalized)) return "blue";
+  if (["failed", "rejected", "cancelled"].includes(normalized)) return "maroon";
+  return "gold";
+}
+
+function renderBillingOrderAudit(orders) {
+  if (!billingOrderAudit) return;
+  billingOrderAudit.innerHTML = orders.length
+    ? orders.slice().reverse().map((order) => {
+      const amount = Number(order.amount || 0);
+      const gatewayOrder = order.gatewayOrderId || "Not created";
+      const gatewayPayment = order.gatewayPaymentId || "Not verified";
+      const target = order.kind === "invoice"
+        ? `Invoice ${order.invoiceId || ""}`.trim()
+        : `Plan ${order.plan || ""}`.trim();
+      return `
+        <div class="invoice-card">
+          <div>
+            <strong>${escapeHtml(order.kind || "billing")} - ${escapeHtml(target || "Record")}</strong>
+            <div class="hint">User ${escapeHtml(order.userId || "unknown")} - ${escapeHtml(order.currency || "INR")} ${money(amount)} - ${escapeHtml(order.status || "created")}</div>
+            <div class="hint">Order: <code>${escapeHtml(gatewayOrder)}</code></div>
+            <div class="hint">Payment: <code>${escapeHtml(gatewayPayment)}</code></div>
+            <div class="hint">Created ${escapeHtml(order.createdAt || "-")} ${order.verifiedAt ? `- Verified ${escapeHtml(order.verifiedAt)}` : ""} ${order.consumedAt ? `- Consumed ${escapeHtml(order.consumedAt)}` : ""}</div>
+          </div>
+          <span class="pill ${statusTone(order.status)}">${escapeHtml(String(order.status || "created").toUpperCase())}</span>
+        </div>
+      `;
+    }).join("")
+    : "<p>No Razorpay billing orders yet.</p>";
 }
 
 function renderUserControls(users) {
@@ -144,12 +181,99 @@ function renderGatewayManagement(payload) {
   `;
 }
 
+function renderPersistenceStatus(payload) {
+  if (!persistenceStatus) return;
+  const persistence = payload?.persistence || {};
+  const records = payload?.records || {};
+  persistenceStatus.innerHTML = `
+    <div class="invoice-card gateway-card">
+      <div>
+        <div class="panel-head compact">
+          <div>
+            <strong>Persistence and Release Safety</strong>
+            <div class="hint">Use this before pushing live updates so registered users and billing records are not lost.</div>
+          </div>
+          ${badge(String(persistence.mode || "unknown").toUpperCase(), "gold")}
+        </div>
+        <div class="metric-grid gateway-metrics">
+          <article class="metric-card"><span>Users</span><strong>${escapeHtml(records.users ?? 0)}</strong></article>
+          <article class="metric-card"><span>Invoices</span><strong>${escapeHtml(records.invoices ?? 0)}</strong></article>
+          <article class="metric-card"><span>Subscriptions</span><strong>${escapeHtml(records.subscriptions ?? 0)}</strong></article>
+          <article class="metric-card"><span>Payments</span><strong>${escapeHtml(records.payments ?? 0)}</strong></article>
+        </div>
+        <div class="notice compact">
+          <strong>Data file</strong>
+          <div><code>${escapeHtml(persistence.dataFile || "Not available")}</code></div>
+        </div>
+        <div class="hint">${escapeHtml(payload?.warning || "")}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderRecurringScheduler(payload) {
+  if (!recurringSchedulerPanel) return;
+  recurringSchedulerPanel.innerHTML = `
+    <div class="invoice-card gateway-card">
+      <div>
+        <div class="panel-head compact">
+          <div>
+            <strong>Recurring Invoice Auto-Drafts</strong>
+            <div class="hint">Creates due invoice drafts for Standard, Pro, and Business users without changing subscriptions or user records.</div>
+          </div>
+          ${badge(payload?.enabled ? "AUTO ENABLED" : "MANUAL MODE", payload?.enabled ? "blue" : "gold")}
+        </div>
+        <div class="metric-grid gateway-metrics">
+          <article class="metric-card"><span>Interval</span><strong>${escapeHtml(payload?.intervalHours ?? 24)} hours</strong></article>
+          <article class="metric-card"><span>Max per Template</span><strong>${escapeHtml(payload?.maxPerTemplate ?? 12)}</strong></article>
+          <article class="metric-card"><span>Date Rule</span><strong>${escapeHtml(payload?.timezone || "UTC date-only")}</strong></article>
+          <article class="metric-card"><span>Eligible Plans</span><strong>Paid tiers</strong></article>
+        </div>
+        <div class="notice compact">${escapeHtml(payload?.note || "Run manually to generate due recurring drafts now.")}</div>
+        <p id="recurringSchedulerStatus" class="inline-status" hidden></p>
+      </div>
+      <div class="actions">
+        <button id="runAdminRecurringScheduler" class="primary" type="button">Run Now</button>
+      </div>
+    </div>
+  `;
+
+  const status = recurringSchedulerPanel.querySelector("#recurringSchedulerStatus");
+  const runButton = recurringSchedulerPanel.querySelector("#runAdminRecurringScheduler");
+  runButton?.addEventListener("click", async () => {
+    runButton.disabled = true;
+    if (status) {
+      status.hidden = false;
+      status.textContent = "Checking all paid recurring invoice templates...";
+      status.dataset.tone = "";
+    }
+    try {
+      const result = await apiClient.runAdminRecurringScheduler(token, {
+        targetDate: new Date().toISOString().slice(0, 10),
+      });
+      if (status) {
+        status.textContent = `${result.createdCount || 0} draft(s) created across ${result.usersProcessed || 0} paid user(s).`;
+        status.dataset.tone = "success";
+      }
+    } catch (error) {
+      if (status) {
+        status.textContent = error.message || "Could not run recurring scheduler.";
+        status.dataset.tone = "error";
+      }
+    } finally {
+      runButton.disabled = false;
+    }
+  });
+}
+
 Promise.all([
   apiClient.getAdminMoney(token),
   apiClient.listAdminUsers(token),
   apiClient.getAdminKycReview(token),
   apiClient.getAdminGateway(token),
-]).then(([payload, usersPayload, kycPayload, gatewayPayload]) => {
+  apiClient.getAdminPersistence(token),
+  apiClient.getAdminRecurringStatus(token),
+]).then(([payload, usersPayload, kycPayload, gatewayPayload, persistencePayload, recurringPayload]) => {
   const summary = payload.summary;
   if (adminTotal) adminTotal.textContent = money(summary.totalAmount);
   if (adminCount) adminCount.textContent = String(summary.count);
@@ -169,7 +293,10 @@ Promise.all([
       `).join("")
       : "<p>No subscriptions yet.</p>";
   }
+  renderBillingOrderAudit(payload.billingOrders || []);
   renderGatewayManagement(gatewayPayload);
+  renderRecurringScheduler(recurringPayload);
+  renderPersistenceStatus(persistencePayload);
   renderUserControls(usersPayload.users || []);
   renderKycQueue(kycPayload.companies || []);
 });

@@ -11,3 +11,5 @@ store_with_line_numbers.txt
 temp.txt
 .DS_Store
 Thumbs.db
+.idea/
+android/.idea/

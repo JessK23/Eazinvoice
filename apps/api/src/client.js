@@ -3,7 +3,12 @@ const API_BASE = typeof window !== "undefined" && window.location?.origin
   : "http://localhost:3001";
 
 function authHeaders(token) {
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  if (typeof window !== "undefined") {
+    const previewPlan = window.localStorage?.getItem("eazinvoice_admin_plan_preview") || "";
+    if (previewPlan) headers["X-Eazinvoice-Plan-Preview"] = previewPlan;
+  }
+  return headers;
 }
 
 async function request(path, { method = "GET", body, token } = {}) {
@@ -50,6 +55,9 @@ export const apiClient = {
   getPlan(token) {
     return request("/plan/free", { token });
   },
+  listPlans(token) {
+    return request("/plans", { token });
+  },
   listCompanies(token) {
     return request("/companies", { token });
   },
@@ -83,6 +91,9 @@ export const apiClient = {
   createInvoicePaymentLink(token, invoiceId, body = {}) {
     return request(`/invoices/${invoiceId}/payment-link`, { method: "POST", token, body });
   },
+  runRecurringInvoiceDrafts(token, body = {}) {
+    return request("/invoices/recurring/run", { method: "POST", token, body });
+  },
   createRazorpayOrder(token, body) {
     return request("/billing/razorpay/order", { method: "POST", token, body });
   },
@@ -113,6 +124,9 @@ export const apiClient = {
   createReport(token, body) {
     return request("/reports", { method: "POST", token, body });
   },
+  runAiCommand(token, body) {
+    return request("/ai/command", { method: "POST", token, body });
+  },
   uploadDocuments(token, files) {
     return request("/uploads", { method: "POST", token, body: { files } });
   },
@@ -121,6 +135,15 @@ export const apiClient = {
   },
   getAdminGateway(token) {
     return request("/admin/gateway", { token });
+  },
+  getAdminPersistence(token) {
+    return request("/admin/persistence", { token });
+  },
+  getAdminRecurringStatus(token) {
+    return request("/admin/recurring/status", { token });
+  },
+  runAdminRecurringScheduler(token, body = {}) {
+    return request("/admin/recurring/run", { method: "POST", token, body });
   },
   listAdminUsers(token) {
     return request("/admin/users", { token });
@@ -151,5 +174,44 @@ export const apiClient = {
   },
   listReports(token) {
     return request("/reports", { token });
+  },
+  listTeamMembers(token) {
+    return request("/business/team", { token });
+  },
+  createTeamMember(token, body) {
+    return request("/business/team", { method: "POST", token, body });
+  },
+  updateTeamMember(token, memberId, body) {
+    return request(`/business/team/${memberId}`, { method: "PATCH", token, body });
+  },
+  acceptTeamInvite(token, inviteToken) {
+    return request("/business/team/accept", { method: "POST", token, body: { inviteToken } });
+  },
+  getBusinessSettings(token) {
+    return request("/business/settings", { token });
+  },
+  updateBusinessSettings(token, body) {
+    return request("/business/settings", { method: "PATCH", token, body });
+  },
+  validateBusinessEmailSettings(token, body) {
+    return request("/business/settings/email/test", { method: "POST", token, body });
+  },
+  listApprovalRequests(token) {
+    return request("/business/approvals", { token });
+  },
+  createApprovalRequest(token, body) {
+    return request("/business/approvals", { method: "POST", token, body });
+  },
+  decideApprovalRequest(token, approvalId, body) {
+    return request(`/business/approvals/${approvalId}`, { method: "PATCH", token, body });
+  },
+  listApiKeys(token) {
+    return request("/business/api-keys", { token });
+  },
+  createApiKey(token, body) {
+    return request("/business/api-keys", { method: "POST", token, body });
+  },
+  revokeApiKey(token, apiKeyId) {
+    return request(`/business/api-keys/${apiKeyId}`, { method: "DELETE", token });
   },
 };

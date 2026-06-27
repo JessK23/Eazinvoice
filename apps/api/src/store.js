@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { loadPersistedState, savePersistedState } from "./persistence.js";
 
 function clone(value) {
@@ -36,6 +37,46 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function parseDateOnly(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatDateOnly(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function normalizeRecurringFrequency(value) {
+  const normalized = String(value || "monthly").trim().toLowerCase();
+  return ["weekly", "monthly", "quarterly", "yearly"].includes(normalized) ? normalized : "monthly";
+}
+
+function addMonthsClamped(date, months) {
+  const day = date.getUTCDate();
+  const target = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1));
+  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  target.setUTCDate(Math.min(day, lastDay));
+  return target;
+}
+
+function nextRecurringDate(date, frequency) {
+  const next = new Date(date.getTime());
+  if (frequency === "weekly") {
+    next.setUTCDate(next.getUTCDate() + 7);
+    return next;
+  }
+  if (frequency === "quarterly") return addMonthsClamped(date, 3);
+  if (frequency === "yearly") return addMonthsClamped(date, 12);
+  return addMonthsClamped(date, 1);
+}
+
+function dateDiffDays(from, to) {
+  if (!from || !to) return null;
+  return Math.round((to.getTime() - from.getTime()) / 86400000);
+}
+
 export function createStore(seed = {}, options = {}) {
   const usePersistence = options.persist !== false;
   const persisted = usePersistence ? loadPersistedState() : {};
@@ -47,8 +88,14 @@ export function createStore(seed = {}, options = {}) {
     purchaseOrders: [],
     payments: [],
     subscriptions: [],
+    billingOrders: [],
     monetization: [],
     reports: [],
+    aiUsageLogs: [],
+    teamMembers: [],
+    approvalRequests: [],
+    apiKeys: [],
+    businessSettings: [],
     counters: {
       user: 0,
       company: 0,
@@ -57,8 +104,14 @@ export function createStore(seed = {}, options = {}) {
       purchaseOrder: 0,
       payment: 0,
       subscription: 0,
+      billingOrder: 0,
       monetization: 0,
       report: 0,
+      aiUsageLog: 0,
+      teamMember: 0,
+      approvalRequest: 0,
+      apiKey: 0,
+      businessSetting: 0,
     },
     ...clone(seed),
     ...clone(persisted),
@@ -72,7 +125,14 @@ export function createStore(seed = {}, options = {}) {
     purchaseOrder: 0,
     payment: 0,
     subscription: 0,
+    billingOrder: 0,
     monetization: 0,
+    report: 0,
+    aiUsageLog: 0,
+    teamMember: 0,
+    approvalRequest: 0,
+    apiKey: 0,
+    businessSetting: 0,
     ...(clone(seed).counters || {}),
     ...(clone(persisted).counters || {}),
   };
@@ -87,8 +147,14 @@ export function createStore(seed = {}, options = {}) {
       purchaseOrders: state.purchaseOrders,
       payments: state.payments,
       subscriptions: state.subscriptions,
+      billingOrders: state.billingOrders,
       monetization: state.monetization,
       reports: state.reports,
+      aiUsageLogs: state.aiUsageLogs,
+      teamMembers: state.teamMembers,
+      approvalRequests: state.approvalRequests,
+      apiKeys: state.apiKeys,
+      businessSettings: state.businessSettings,
       counters: state.counters,
     });
   }
@@ -340,6 +406,12 @@ export function createStore(seed = {}, options = {}) {
       notes: input.notes?.trim() ?? "",
       paymentInstructions: input.paymentInstructions?.trim() ?? "",
       terms: input.terms?.trim() ?? "",
+      recurringEnabled: Boolean(input.recurringEnabled),
+      recurringFrequency: input.recurringFrequency ? normalizeRecurringFrequency(input.recurringFrequency) : "",
+      recurringNextDate: input.recurringNextDate?.trim() ?? "",
+      recurringSourceInvoiceId: input.recurringSourceInvoiceId?.trim() ?? "",
+      recurringGeneratedForDate: input.recurringGeneratedForDate?.trim() ?? "",
+      hideEazinvoiceBranding: Boolean(input.hideEazinvoiceBranding),
       billToName: input.billToName?.trim() ?? "",
       billToAddress: input.billToAddress?.trim() ?? "",
       items,
@@ -407,7 +479,23 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function createSubscription(input) {
+    const existingGatewaySubscription = input.gatewayOrderId || input.gatewayPaymentId
+      ? state.subscriptions.find((subscription) => (
+        (input.gatewayOrderId && subscription.gatewayOrderId === input.gatewayOrderId)
+        || (input.gatewayPaymentId && subscription.gatewayPaymentId === input.gatewayPaymentId)
+      ))
+      : null;
+    if (existingGatewaySubscription) return clone(existingGatewaySubscription);
+
     const amount = Number(input.amount ?? 0);
+    const billingCycle = input.billingCycle ?? "yearly";
+    const createdAt = new Date().toISOString();
+    const renewalDate = new Date(createdAt);
+    if (billingCycle === "monthly") {
+      renewalDate.setUTCMonth(renewalDate.getUTCMonth() + 1);
+    } else {
+      renewalDate.setUTCFullYear(renewalDate.getUTCFullYear() + 1);
+    }
     const subscription = {
       id: nextId("sub", ++state.counters.subscription),
       subscriberType: input.subscriberType ?? "individual",
@@ -417,14 +505,19 @@ export function createStore(seed = {}, options = {}) {
       groupName: input.groupName?.trim() ?? "",
       plan: input.plan ?? "free",
       amount,
+      monthlyAmount: toNumber(input.monthlyAmount),
+      annualAmount: toNumber(input.annualAmount ?? amount),
       currency: input.currency ?? "INR",
-      billingCycle: input.billingCycle ?? "monthly",
+      billingCycle,
       status: input.status ?? "active",
       adminUserId: input.adminUserId ?? null,
       gateway: input.gateway?.trim() || "",
       gatewayPaymentId: input.gatewayPaymentId?.trim() || "",
       gatewayOrderId: input.gatewayOrderId?.trim() || "",
-      createdAt: new Date().toISOString(),
+      startedAt: input.startedAt ?? createdAt,
+      expiresAt: input.expiresAt ?? renewalDate.toISOString(),
+      renewsAt: input.renewsAt ?? renewalDate.toISOString(),
+      createdAt,
     };
     state.subscriptions.push(subscription);
     state.monetization.push({
@@ -441,8 +534,61 @@ export function createStore(seed = {}, options = {}) {
     return clone(subscription);
   }
 
+  function createBillingOrder(input) {
+    const existing = state.billingOrders.find((order) => order.gatewayOrderId === input.gatewayOrderId);
+    if (existing) return clone(existing);
+    const order = {
+      id: nextId("bo", ++state.counters.billingOrder),
+      gateway: input.gateway?.trim() || "razorpay",
+      gatewayOrderId: input.gatewayOrderId?.trim() || "",
+      kind: input.kind?.trim() || "subscription",
+      userId: input.userId ?? null,
+      invoiceId: input.invoiceId ?? null,
+      companyId: input.companyId ?? null,
+      plan: input.plan ?? "",
+      amount: toNumber(input.amount),
+      monthlyAmount: toNumber(input.monthlyAmount),
+      annualAmount: toNumber(input.annualAmount ?? input.amount),
+      currency: input.currency ?? "INR",
+      billingCycle: input.billingCycle ?? "",
+      description: input.description ?? "",
+      status: input.status ?? "created",
+      gatewayPaymentId: input.gatewayPaymentId?.trim() || "",
+      verifiedAt: input.verifiedAt ?? "",
+      consumedAt: input.consumedAt ?? "",
+      createdAt: new Date().toISOString(),
+    };
+    state.billingOrders.push(order);
+    persist();
+    return clone(order);
+  }
+
+  function getBillingOrderByGatewayOrderId(gatewayOrderId) {
+    const order = state.billingOrders.find((entry) => entry.gatewayOrderId === gatewayOrderId);
+    return order ? clone(order) : null;
+  }
+
+  function updateBillingOrder(gatewayOrderId, updates) {
+    const order = state.billingOrders.find((entry) => entry.gatewayOrderId === gatewayOrderId);
+    if (!order) return null;
+    ["status", "gatewayPaymentId", "verifiedAt", "consumedAt", "description"].forEach((field) => {
+      if (updates[field] !== undefined) order[field] = String(updates[field] || "");
+    });
+    if (updates.amount !== undefined) order.amount = toNumber(updates.amount);
+    persist();
+    return clone(order);
+  }
+
+  function listBillingOrders() {
+    return clone(state.billingOrders);
+  }
+
   function listSubscriptions() {
     return clone(state.subscriptions);
+  }
+
+  function listSubscriptionsForUser(userId) {
+    return clone(state.subscriptions.filter((subscription) => subscription.userId === userId));
   }
 
   function listMonetization() {
@@ -487,8 +633,446 @@ export function createStore(seed = {}, options = {}) {
     return clone(state.reports.filter((report) => report.ownerUserId === user.id || companiesOwned.has(report.companyId)));
   }
 
+  function createAiUsageLog(input = {}) {
+    const log = {
+      id: nextId("ailog", ++state.counters.aiUsageLog),
+      ownerUserId: input.ownerUserId ?? null,
+      plan: String(input.plan || "free").trim().toLowerCase(),
+      provider: String(input.provider || "local").trim().toLowerCase(),
+      intent: String(input.intent || "unknown").trim().toLowerCase(),
+      status: String(input.status || "preview").trim().toLowerCase(),
+      billable: input.billable !== false,
+      commandPreview: String(input.command || "").trim().slice(0, 160),
+      createdAt: new Date().toISOString(),
+    };
+    state.aiUsageLogs.push(log);
+    persist();
+    return clone(log);
+  }
+
+  function listAiUsageLogsForUser(user) {
+    if (!user || user.role === "admin") return clone(state.aiUsageLogs);
+    return clone(state.aiUsageLogs.filter((entry) => entry.ownerUserId === user.id));
+  }
+
+  function countAiUsageForUser(user, month = new Date().toISOString().slice(0, 7)) {
+    const logs = listAiUsageLogsForUser(user);
+    return logs.filter((entry) => entry.billable && String(entry.createdAt || "").slice(0, 7) === month).length;
+  }
+
+  function normalizeBusinessSettings(input = {}) {
+    const emailSettings = input.emailSettings || {};
+    const paymentSettings = input.paymentSettings || {};
+    const complianceProfile = input.complianceProfile || {};
+    return {
+      emailSettings: {
+        smtpHost: String(emailSettings.smtpHost || "").trim(),
+        smtpPort: String(emailSettings.smtpPort || "").trim(),
+        smtpSecure: Boolean(emailSettings.smtpSecure),
+        smtpUser: String(emailSettings.smtpUser || "").trim(),
+        smtpPass: emailSettings.smtpPass !== undefined ? String(emailSettings.smtpPass || "") : undefined,
+        senderName: String(emailSettings.senderName || "").trim(),
+        fromEmail: String(emailSettings.fromEmail || "").trim().toLowerCase(),
+        replyToEmail: String(emailSettings.replyToEmail || "").trim().toLowerCase(),
+        inviteSubject: String(emailSettings.inviteSubject || "You have been invited to EazInvoice").trim(),
+        inviteTemplate: String(emailSettings.inviteTemplate || "Hi {{name}}, you have been invited to join {{businessName}} on EazInvoice.").trim(),
+      },
+      paymentSettings: {
+        provider: "razorpay",
+        keyId: String(paymentSettings.keyId || "").trim(),
+        keySecret: paymentSettings.keySecret !== undefined ? String(paymentSettings.keySecret || "") : undefined,
+        webhookSecret: paymentSettings.webhookSecret !== undefined ? String(paymentSettings.webhookSecret || "") : undefined,
+        paymentLinkEnabled: Boolean(paymentSettings.paymentLinkEnabled),
+      },
+      complianceProfile: {
+        legalName: String(complianceProfile.legalName || "").trim(),
+        gstRegistered: Boolean(complianceProfile.gstRegistered),
+        gstin: String(complianceProfile.gstin || "").trim().toUpperCase(),
+        pan: String(complianceProfile.pan || "").trim().toUpperCase(),
+        tan: String(complianceProfile.tan || "").trim().toUpperCase(),
+        state: String(complianceProfile.state || "").trim(),
+        address: String(complianceProfile.address || "").trim(),
+        placeOfBusiness: String(complianceProfile.placeOfBusiness || "").trim(),
+        invoicePrefix: String(complianceProfile.invoicePrefix || "").trim().toUpperCase(),
+        fiscalYearStartMonth: Math.min(12, Math.max(1, Number(complianceProfile.fiscalYearStartMonth || 4))),
+      },
+    };
+  }
+
+  function sanitizeBusinessSettings(settings) {
+    if (!settings) return null;
+    return clone({
+      ...settings,
+      emailSettings: {
+        ...settings.emailSettings,
+        smtpPass: "",
+        smtpPassConfigured: Boolean(settings.emailSettings?.smtpPass),
+      },
+      paymentSettings: {
+        ...settings.paymentSettings,
+        keySecret: "",
+        webhookSecret: "",
+        keySecretConfigured: Boolean(settings.paymentSettings?.keySecret),
+        webhookSecretConfigured: Boolean(settings.paymentSettings?.webhookSecret),
+        status: settings.paymentSettings?.keyId
+          ? (String(settings.paymentSettings.keyId).startsWith("rzp_live_") ? "live_ready" : "test_mode")
+          : "not_configured",
+      },
+    });
+  }
+
+  function getBusinessSettingsForUser(user, companyId = null) {
+    const ownerUserId = user?.role === "admin" && user?.id ? user.id : user?.id;
+    if (!ownerUserId) return null;
+    const settings = state.businessSettings.find((entry) => (
+      entry.ownerUserId === ownerUserId && (entry.companyId || null) === (companyId || null)
+    ));
+    return sanitizeBusinessSettings(settings);
+  }
+
+  function getRawBusinessSettingsForUser(user, companyId = null) {
+    const ownerUserId = user?.role === "admin" && user?.id ? user.id : user?.id;
+    if (!ownerUserId) return null;
+    const settings = state.businessSettings.find((entry) => (
+      entry.ownerUserId === ownerUserId && (entry.companyId || null) === (companyId || null)
+    ));
+    return clone(settings);
+  }
+
+  function upsertBusinessSettings(user, input = {}) {
+    if (!user?.id) throw new Error("Authentication required");
+    const companyId = input.companyId || null;
+    const now = new Date().toISOString();
+    const normalized = normalizeBusinessSettings(input);
+    let settings = state.businessSettings.find((entry) => (
+      entry.ownerUserId === user.id && (entry.companyId || null) === companyId
+    ));
+    if (!settings) {
+      settings = {
+        id: nextId("bset", ++state.counters.businessSetting),
+        ownerUserId: user.id,
+        companyId,
+        emailSettings: {},
+        paymentSettings: {},
+        complianceProfile: {},
+        createdAt: now,
+        updatedAt: now,
+      };
+      state.businessSettings.push(settings);
+    }
+    if (input.emailSettings) {
+      settings.emailSettings = {
+        ...settings.emailSettings,
+        ...normalized.emailSettings,
+        smtpPass: normalized.emailSettings.smtpPass === undefined || normalized.emailSettings.smtpPass === ""
+          ? settings.emailSettings.smtpPass || ""
+          : normalized.emailSettings.smtpPass,
+      };
+    }
+    if (input.paymentSettings) {
+      settings.paymentSettings = {
+        ...settings.paymentSettings,
+        ...normalized.paymentSettings,
+        keySecret: normalized.paymentSettings.keySecret === undefined || normalized.paymentSettings.keySecret === ""
+          ? settings.paymentSettings.keySecret || ""
+          : normalized.paymentSettings.keySecret,
+        webhookSecret: normalized.paymentSettings.webhookSecret === undefined || normalized.paymentSettings.webhookSecret === ""
+          ? settings.paymentSettings.webhookSecret || ""
+          : normalized.paymentSettings.webhookSecret,
+      };
+    }
+    if (input.complianceProfile) {
+      settings.complianceProfile = {
+        ...settings.complianceProfile,
+        ...normalized.complianceProfile,
+      };
+    }
+    settings.updatedAt = now;
+    persist();
+    return sanitizeBusinessSettings(settings);
+  }
+
+  function validateBusinessEmailSettings(user, input = {}) {
+    const settings = upsertBusinessSettings(user, input);
+    const email = settings.emailSettings || {};
+    const missing = ["smtpHost", "smtpPort", "smtpUser", "fromEmail"].filter((field) => !email[field]);
+    const issues = [];
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const port = Number(email.smtpPort || 0);
+    if (missing.length) issues.push(`missing:${missing.join(",")}`);
+    if (email.fromEmail && !emailPattern.test(email.fromEmail)) issues.push("fromEmail must be a valid email address");
+    if (email.replyToEmail && !emailPattern.test(email.replyToEmail)) issues.push("replyToEmail must be a valid email address");
+    if (email.smtpUser && !emailPattern.test(email.smtpUser)) {
+      issues.push("smtpUser should usually be the full mailbox email address");
+    }
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) issues.push("smtpPort must be a valid port number");
+    if (port === 465 && !email.smtpSecure) issues.push("port 465 should use secure SMTP");
+    if ([587, 25].includes(port) && email.smtpSecure) issues.push(`port ${port} usually starts without secure SMTP and upgrades with STARTTLS`);
+    if (email.fromEmail && email.smtpUser && email.fromEmail !== email.smtpUser) {
+      issues.push("fromEmail and smtpUser should normally match for mailbox SMTP");
+    }
+    const stored = state.businessSettings.find((entry) => entry.id === settings.id);
+    stored.emailSettings.lastTestAt = new Date().toISOString();
+    stored.emailSettings.lastTestStatus = issues.length ? issues.join("; ") : "ready";
+    persist();
+    return sanitizeBusinessSettings(stored);
+  }
+
+  function listTeamMembersForUser(user) {
+    if (!user || user.role === "admin") return clone(state.teamMembers);
+    return clone(state.teamMembers.filter((member) => (
+      member.ownerUserId === user.id
+      || member.invitedByUserId === user.id
+      || member.acceptedUserId === user.id
+      || String(member.email || "").toLowerCase() === String(user.email || "").toLowerCase()
+    )));
+  }
+
+  function createTeamMember(input = {}) {
+    const email = String(input.email || "").trim().toLowerCase();
+    if (!email) throw new Error("Team member email is required");
+    const existing = state.teamMembers.find((member) => (
+      member.ownerUserId === input.ownerUserId
+      && member.email === email
+      && member.status !== "removed"
+    ));
+    if (existing) return clone(existing);
+    const member = {
+      id: nextId("team", ++state.counters.teamMember),
+      ownerUserId: input.ownerUserId ?? null,
+      companyId: input.companyId ?? null,
+      name: String(input.name || email.split("@")[0]).trim(),
+      email,
+      role: ["owner", "admin", "accountant", "viewer"].includes(input.role) ? input.role : "viewer",
+      status: ["active", "invited"].includes(input.status) ? input.status : "invited",
+      invitedByUserId: input.invitedByUserId ?? input.ownerUserId ?? null,
+      acceptedUserId: input.acceptedUserId ?? null,
+      inviteToken: input.inviteToken || `invite_${crypto.randomBytes(16).toString("hex")}`,
+      inviteExpiresAt: input.inviteExpiresAt || new Date(Date.now() + 7 * 86400000).toISOString(),
+      inviteDeliveryStatus: input.inviteDeliveryStatus || "queued",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.teamMembers.push(member);
+    persist();
+    return clone(member);
+  }
+
+  function acceptTeamInvite(user, inviteToken) {
+    if (!user?.id) throw new Error("Authentication required");
+    const tokenValue = String(inviteToken || "").trim();
+    const member = state.teamMembers.find((entry) => entry.inviteToken === tokenValue && entry.status === "invited");
+    if (!member) return null;
+    if (String(member.email || "").toLowerCase() !== String(user.email || "").toLowerCase()) return null;
+    if (new Date(member.inviteExpiresAt).getTime() < Date.now()) throw new Error("Team invite has expired");
+    member.status = "active";
+    member.acceptedUserId = user.id;
+    member.updatedAt = new Date().toISOString();
+    persist();
+    return clone(member);
+  }
+
+  function updateTeamMember(memberId, updates = {}, user = null) {
+    const member = state.teamMembers.find((entry) => entry.id === memberId);
+    if (!member) return null;
+    if (user && user.role !== "admin" && member.ownerUserId !== user.id && member.invitedByUserId !== user.id) return null;
+    if (updates.name !== undefined) member.name = String(updates.name || member.name).trim();
+    if (["owner", "admin", "accountant", "viewer"].includes(updates.role)) member.role = updates.role;
+    if (["active", "invited", "removed"].includes(updates.status)) member.status = updates.status;
+    if (updates.acceptedUserId !== undefined) member.acceptedUserId = updates.acceptedUserId || null;
+    if (updates.inviteDeliveryStatus !== undefined) member.inviteDeliveryStatus = String(updates.inviteDeliveryStatus || "queued");
+    if (updates.inviteDeliveryMessage !== undefined) member.inviteDeliveryMessage = String(updates.inviteDeliveryMessage || "");
+    if (updates.inviteSentAt !== undefined) member.inviteSentAt = updates.inviteSentAt || null;
+    member.updatedAt = new Date().toISOString();
+    persist();
+    return clone(member);
+  }
+
+  function listApprovalRequestsForUser(user) {
+    if (!user || user.role === "admin") return clone(state.approvalRequests);
+    return clone(state.approvalRequests.filter((request) => (
+      request.ownerUserId === user.id
+      || request.requestedByUserId === user.id
+      || request.approverUserId === user.id
+    )));
+  }
+
+  function createApprovalRequest(input = {}) {
+    const documentType = ["invoice", "purchase_order", "work_order"].includes(input.documentType)
+      ? input.documentType
+      : "invoice";
+    const request = {
+      id: nextId("apr", ++state.counters.approvalRequest),
+      ownerUserId: input.ownerUserId ?? null,
+      companyId: input.companyId ?? null,
+      documentType,
+      documentId: input.documentId ?? null,
+      documentNumber: String(input.documentNumber || "Draft document").trim(),
+      requestedByUserId: input.requestedByUserId ?? input.ownerUserId ?? null,
+      approverUserId: input.approverUserId ?? null,
+      status: "pending",
+      notes: String(input.notes || "").trim(),
+      decisionNotes: "",
+      decidedAt: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.approvalRequests.push(request);
+    persist();
+    return clone(request);
+  }
+
+  function decideApprovalRequest(approvalId, updates = {}, user = null) {
+    const request = state.approvalRequests.find((entry) => entry.id === approvalId);
+    if (!request) return null;
+    if (user && user.role !== "admin" && request.ownerUserId !== user.id && request.approverUserId !== user.id) return null;
+    if (["pending", "approved", "rejected"].includes(updates.status)) request.status = updates.status;
+    request.approverUserId = updates.approverUserId ?? user?.id ?? request.approverUserId;
+    request.decisionNotes = String(updates.decisionNotes || updates.notes || request.decisionNotes || "").trim();
+    request.decidedAt = request.status === "pending" ? null : new Date().toISOString();
+    request.updatedAt = new Date().toISOString();
+    persist();
+    return clone(request);
+  }
+
+  function listApiKeysForUser(user, includeSecret = false) {
+    const keys = (!user || user.role === "admin")
+      ? state.apiKeys
+      : state.apiKeys.filter((key) => key.ownerUserId === user.id);
+    return clone(keys.map((key) => ({
+      ...key,
+      token: includeSecret ? key.token : "",
+    })));
+  }
+
+  function createApiKey(input = {}) {
+    const token = `eaz_live_${crypto.randomBytes(24).toString("hex")}`;
+    const key = {
+      id: nextId("key", ++state.counters.apiKey),
+      ownerUserId: input.ownerUserId ?? null,
+      companyId: input.companyId ?? null,
+      label: String(input.label || "Website integration").trim(),
+      token,
+      tokenPreview: `${token.slice(0, 12)}...${token.slice(-4)}`,
+      scopes: Array.isArray(input.scopes) && input.scopes.length
+        ? input.scopes.map((scope) => String(scope).trim()).filter(Boolean)
+        : ["invoices:write", "po:write", "reports:read"],
+      status: "active",
+      createdAt: new Date().toISOString(),
+      revokedAt: null,
+    };
+    state.apiKeys.push(key);
+    persist();
+    return clone(key);
+  }
+
+  function revokeApiKey(apiKeyId, user = null) {
+    const key = state.apiKeys.find((entry) => entry.id === apiKeyId);
+    if (!key) return null;
+    if (user && user.role !== "admin" && key.ownerUserId !== user.id) return null;
+    key.status = "revoked";
+    key.revokedAt = new Date().toISOString();
+    persist();
+    return clone({ ...key, token: "" });
+  }
+
   function listInvoices() {
     return clone(state.invoices);
+  }
+
+  function runRecurringInvoiceScheduler(input = {}) {
+    const ownerUserId = input.ownerUserId ?? null;
+    const target = parseDateOnly(input.targetDate) || parseDateOnly(new Date().toISOString().slice(0, 10));
+    const created = [];
+    const skipped = [];
+    const maxPerTemplate = Math.max(1, Math.min(24, Number(input.maxPerTemplate || 12)));
+    const sources = state.invoices.filter((invoice) => (
+      invoice.ownerUserId === ownerUserId
+      && invoice.recurringEnabled
+      && String(invoice.status || "").toLowerCase() !== "draft"
+      && String(invoice.status || "").toLowerCase() !== "deleted"
+    ));
+
+    sources.forEach((source) => {
+      let nextDate = parseDateOnly(source.recurringNextDate);
+      if (!nextDate) {
+        skipped.push({ invoiceId: source.id, invoiceNumber: source.invoiceNumber, reason: "missing_next_date" });
+        return;
+      }
+
+      const frequency = normalizeRecurringFrequency(source.recurringFrequency);
+      let generatedForTemplate = 0;
+      while (nextDate <= target && generatedForTemplate < maxPerTemplate) {
+        const generatedForDate = formatDateOnly(nextDate);
+        const duplicate = state.invoices.find((invoice) => (
+          invoice.recurringSourceInvoiceId === source.id
+          && invoice.recurringGeneratedForDate === generatedForDate
+        ));
+
+        if (duplicate) {
+          skipped.push({
+            invoiceId: source.id,
+            invoiceNumber: source.invoiceNumber,
+            generatedForDate,
+            reason: "already_generated",
+          });
+        } else {
+          const invoiceDate = parseDateOnly(source.invoiceDate);
+          const dueDate = parseDateOnly(source.dueDate);
+          const dueOffset = Math.max(0, dateDiffDays(invoiceDate, dueDate) ?? 7);
+          const generatedDueDate = new Date(nextDate.getTime());
+          generatedDueDate.setUTCDate(generatedDueDate.getUTCDate() + dueOffset);
+          const invoiceSequence = state.counters.invoice + 1;
+          const items = clone(source.items || []);
+          const totals = calculateInvoiceTotals(items, toNumber(source.taxRate), source);
+          const draft = {
+            ...clone(source),
+            id: nextId("inv", ++state.counters.invoice),
+            invoiceNumber: formatDocumentNumber(source.invoiceCode || "INV", generatedForDate, invoiceSequence),
+            status: "draft",
+            paymentStatus: "draft",
+            paidAmount: 0,
+            balanceAmount: totals.total,
+            paymentGateway: null,
+            paymentLink: null,
+            invoiceDate: generatedForDate,
+            dueDate: formatDateOnly(generatedDueDate),
+            recurringEnabled: false,
+            recurringFrequency: "",
+            recurringNextDate: "",
+            recurringSourceInvoiceId: source.id,
+            recurringGeneratedForDate: generatedForDate,
+            items,
+            ...totals,
+            createdAt: new Date().toISOString(),
+          };
+          state.invoices.push(draft);
+          created.push(clone(draft));
+        }
+
+        generatedForTemplate += 1;
+        nextDate = nextRecurringDate(nextDate, frequency);
+      }
+
+      source.recurringFrequency = frequency;
+      source.recurringNextDate = formatDateOnly(nextDate);
+      if (generatedForTemplate >= maxPerTemplate && nextDate <= target) {
+        skipped.push({
+          invoiceId: source.id,
+          invoiceNumber: source.invoiceNumber,
+          reason: "max_generation_limit_reached",
+          nextDate: formatDateOnly(nextDate),
+        });
+      }
+    });
+
+    if (created.length || skipped.length || sources.length) persist();
+    return {
+      targetDate: formatDateOnly(target),
+      templatesChecked: sources.length,
+      created,
+      skipped,
+    };
   }
 
   function refreshInvoicePaymentStatus(invoice) {
@@ -632,6 +1216,7 @@ export function createStore(seed = {}, options = {}) {
       invoicesPerMonth: state.invoices.length,
       invoiceItemsPerInvoice: Math.max(0, ...state.invoices.map((invoice) => invoice.items.length), 0),
       templates: 1,
+      aiCommandsPerMonth: state.aiUsageLogs.filter((entry) => entry.billable && String(entry.createdAt || "").slice(0, 7) === new Date().toISOString().slice(0, 7)).length,
     };
   }
 
@@ -645,7 +1230,32 @@ export function createStore(seed = {}, options = {}) {
       invoicesPerMonth: userInvoices.length,
       invoiceItemsPerInvoice: Math.max(0, ...userInvoices.map((invoice) => invoice.items.length), 0),
       templates: 1,
+      aiCommandsPerMonth: state.aiUsageLogs.filter((entry) => entry.ownerUserId === user.id && entry.billable && String(entry.createdAt || "").slice(0, 7) === new Date().toISOString().slice(0, 7)).length,
     };
+  }
+
+  function summarizeRecords() {
+    return {
+      users: state.users.length,
+      companies: state.companies.length,
+      customers: state.customers.length,
+      invoices: state.invoices.length,
+      purchaseOrders: state.purchaseOrders.length,
+      payments: state.payments.length,
+      subscriptions: state.subscriptions.length,
+      billingOrders: state.billingOrders.length,
+      monetization: state.monetization.length,
+      reports: state.reports.length,
+      aiUsageLogs: state.aiUsageLogs.length,
+      teamMembers: state.teamMembers.length,
+      approvalRequests: state.approvalRequests.length,
+      apiKeys: state.apiKeys.length,
+      businessSettings: state.businessSettings.length,
+    };
+  }
+
+  function exportState() {
+    return clone(state);
   }
 
   function updateInvoice(id, updates, limits) {
@@ -667,11 +1277,17 @@ export function createStore(seed = {}, options = {}) {
       "notes",
       "paymentInstructions",
       "terms",
+      "recurringNextDate",
       "billToName",
       "billToAddress",
     ].forEach((field) => {
       if (updates[field] !== undefined) invoice[field] = String(updates[field] || "").trim();
     });
+    if (updates.recurringEnabled !== undefined) invoice.recurringEnabled = Boolean(updates.recurringEnabled);
+    if (updates.recurringFrequency !== undefined) {
+      invoice.recurringFrequency = updates.recurringFrequency ? normalizeRecurringFrequency(updates.recurringFrequency) : "";
+    }
+    if (updates.hideEazinvoiceBranding !== undefined) invoice.hideEazinvoiceBranding = Boolean(updates.hideEazinvoiceBranding);
     if (updates.companyId !== undefined) invoice.companyId = updates.companyId || null;
     if (updates.taxRate !== undefined) invoice.taxRate = toNumber(updates.taxRate);
     if (updates.discount !== undefined) invoice.discount = toNumber(updates.discount);
@@ -793,11 +1409,34 @@ export function createStore(seed = {}, options = {}) {
     listCustomers,
     createInvoice,
     createPurchaseOrder,
+    runRecurringInvoiceScheduler,
     listInvoicesForUser,
     listPurchaseOrdersForUser,
     createSubscription,
+    createBillingOrder,
+    getBillingOrderByGatewayOrderId,
+    updateBillingOrder,
+    listBillingOrders,
     createReport,
+    createAiUsageLog,
+    listAiUsageLogsForUser,
+    countAiUsageForUser,
+    createTeamMember,
+    listTeamMembersForUser,
+    updateTeamMember,
+    acceptTeamInvite,
+    getBusinessSettingsForUser,
+    getRawBusinessSettingsForUser,
+    upsertBusinessSettings,
+    validateBusinessEmailSettings,
+    createApprovalRequest,
+    listApprovalRequestsForUser,
+    decideApprovalRequest,
+    createApiKey,
+    listApiKeysForUser,
+    revokeApiKey,
     listSubscriptions,
+    listSubscriptionsForUser,
     listMonetization,
     summarizeMonetization,
     listReportsForUser,
@@ -817,6 +1456,8 @@ export function createStore(seed = {}, options = {}) {
     listRestrictedUsers,
     countUsage,
     countUsageForUser,
+    summarizeRecords,
+    exportState,
   };
 }
 

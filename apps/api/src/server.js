@@ -8,6 +8,8 @@ import { URL } from "node:url";
 import { createApi } from "./index.js";
 import { createStore } from "./store.js";
 import { createSessionStore } from "./session-store.js";
+import { PLAN_CATALOG } from "./plans.js";
+import { sendSmtpMail } from "./smtp.js";
 
 function loadLocalEnv() {
   const envPath = [".env", ".env.example"]
@@ -31,12 +33,48 @@ function loadLocalEnv() {
 
 loadLocalEnv();
 
+function getPublicAppUrl(req = null) {
+  const configured = process.env.PUBLIC_APP_URL || process.env.APP_BASE_URL || "";
+  if (configured) return configured.replace(/\/+$/, "");
+  const host = req?.headers?.host || "localhost:3001";
+  const proto = host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https";
+  return `${proto}://${host}`;
+}
+
+function fillInviteTemplate(template, values = {}) {
+  return String(template || "")
+    .replace(/\{\{\s*name\s*\}\}/gi, values.name || "there")
+    .replace(/\{\{\s*businessName\s*\}\}/gi, values.businessName || "EazInvoice workspace")
+    .replace(/\{\{\s*role\s*\}\}/gi, values.role || "viewer")
+    .replace(/\{\{\s*inviteLink\s*\}\}/gi, values.inviteLink || "");
+}
+
+function buildTeamInviteMessage(emailSettings = {}, member = {}, user = {}, req = null) {
+  const appUrl = getPublicAppUrl(req);
+  const inviteLink = `${appUrl}/apps/web/auth.html?tab=signup&invite=${encodeURIComponent(member.inviteToken || "")}`;
+  const businessName = emailSettings.senderName || user.name || "EazInvoice";
+  const text = fillInviteTemplate(
+    emailSettings.inviteTemplate || "Hi {{name}},\n\nYou have been invited to join {{businessName}} on EazInvoice as {{role}}.\n\nAccept the invitation here:\n{{inviteLink}}\n\nEazInvoice",
+    {
+      name: member.name,
+      businessName,
+      role: member.role,
+      inviteLink,
+    },
+  );
+  return {
+    to: member.email,
+    subject: emailSettings.inviteSubject || `Invitation to join ${businessName} on EazInvoice`,
+    text,
+  };
+}
+
 function sendJson(res, status, payload) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Eazinvoice-Plan-Preview",
+    "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
   });
   res.end(JSON.stringify(payload));
 }
@@ -155,6 +193,12 @@ function isConfiguredAdminUser(user) {
   return Boolean(user?.email && adminRoleForEmail(user.email));
 }
 
+function getAdminPlanPreview(req, user) {
+  if (!isConfiguredAdminUser(user)) return "";
+  const requested = String(req.headers["x-eazinvoice-plan-preview"] || "").trim().toLowerCase();
+  return PLAN_CATALOG[requested] ? requested : "";
+}
+
 function hasSubmittedKyc(company) {
   return Boolean(
     String(company.panNumber || "").trim() ||
@@ -182,6 +226,25 @@ function currentUserPlan(api, user) {
 function hasActivePaidPlan(api, user) {
   const plan = currentUserPlan(api, user);
   return isPaidPlan(plan) && String(plan.status || "active").toLowerCase() === "active";
+}
+
+function hasPaidEntitlement(api, user, previewPlan = "") {
+  return (previewPlan && previewPlan !== "free") || hasActivePaidPlan(api, user);
+}
+
+function hasStandardEntitlement(api, user, previewPlan = "") {
+  return (previewPlan && previewPlan !== "free") || hasActivePaidPlan(api, user);
+}
+
+function sanitizeStandardInvoiceFeatures(api, user, previewPlan, body) {
+  if (hasStandardEntitlement(api, user, previewPlan)) return body;
+  return {
+    ...body,
+    recurringEnabled: false,
+    recurringFrequency: "",
+    recurringNextDate: "",
+    hideEazinvoiceBranding: false,
+  };
 }
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
@@ -324,11 +387,13 @@ function extractToken(req) {
   return null;
 }
 
-const PAID_PLAN_CATALOG = {
-  standard: { plan: "standard", label: "Standard", amount: 499, currency: "INR", billingCycle: "monthly" },
-  pro: { plan: "pro", label: "Pro", amount: 999, currency: "INR", billingCycle: "monthly" },
-  business: { plan: "business", label: "Business", amount: 1999, currency: "INR", billingCycle: "monthly" },
-};
+const PAID_PLAN_CATALOG = Object.fromEntries(
+  Object.entries(PLAN_CATALOG).filter(([plan]) => plan !== "free")
+);
+
+function annualPlanCharge(plan) {
+  return Number(plan.discountedAnnualAmount ?? plan.annualAmount ?? (Number(plan.amount || 0) * 12));
+}
 
 function getRazorpayConfig() {
   const keyId = process.env.RAZORPAY_KEY_ID || "";
@@ -390,7 +455,7 @@ function verifyRazorpaySignature({ orderId, paymentId, signature, keySecret }) {
 }
 
 function verifyRazorpayWebhook(rawBody, signature, webhookSecret) {
-  if (!webhookSecret) return true;
+  if (!webhookSecret) return false;
   const expected = crypto.createHmac("sha256", webhookSecret).update(rawBody).digest("hex");
   const expectedBuffer = Buffer.from(expected);
   const actualBuffer = Buffer.from(String(signature || ""));
@@ -461,12 +526,71 @@ export function createServer(options = {}) {
   const oauthStates = createOAuthStateStore();
   const emailOtps = createEmailOtpStore();
   const useSupabaseEmailOtp = options.useSupabaseEmailOtp ?? isSupabaseEmailOtpConfigured();
-  const pendingRazorpayOrders = new Map();
 
-  return http.createServer(async (req, res) => {
+  function activateVerifiedRazorpayOrder(orderMeta, paymentId, orderId) {
+    if (!orderMeta) return null;
+    const now = new Date().toISOString();
+    api.updateBillingOrder(orderId, {
+      status: "verified",
+      gatewayPaymentId: paymentId,
+      verifiedAt: now,
+    });
+
+    if (orderMeta.kind === "subscription") {
+      const existing = api.listSubscriptions().find((subscription) => (
+        subscription.gatewayOrderId === orderId || subscription.gatewayPaymentId === paymentId
+      ));
+      if (existing) return { ok: true, type: "subscription", subscription: existing, duplicate: true };
+      const subscriptionUser = api.getUserById(orderMeta.userId);
+      const subscription = api.createSubscription({
+        subscriberType: "individual",
+        subscriberName: subscriptionUser?.name || subscriptionUser?.email || "Subscriber",
+        companyId: orderMeta.companyId || null,
+        userId: orderMeta.userId,
+        amount: orderMeta.amount,
+        monthlyAmount: orderMeta.monthlyAmount,
+        annualAmount: orderMeta.annualAmount ?? orderMeta.amount,
+        currency: orderMeta.currency,
+        plan: orderMeta.plan,
+        billingCycle: orderMeta.billingCycle,
+        status: "active",
+        adminUserId: subscriptionUser && isConfiguredAdminUser(subscriptionUser) ? subscriptionUser.id : null,
+        gateway: "razorpay",
+        gatewayPaymentId: paymentId,
+        gatewayOrderId: orderId,
+      });
+      api.updateBillingOrder(orderId, { status: "consumed", consumedAt: new Date().toISOString() });
+      return { ok: true, type: "subscription", subscription };
+    }
+
+    if (orderMeta.kind === "invoice") {
+      const invoice = api.getInvoice(orderMeta.invoiceId);
+      const alreadyCaptured = api.listPayments()
+        .some((payment) => payment.gatewayOrderId === orderId || payment.gatewayPaymentId === paymentId);
+      if (alreadyCaptured && invoice) return { ok: true, type: "invoice", invoice, duplicate: true };
+      const recorded = api.recordInvoicePayment(orderMeta.invoiceId, {
+        amount: orderMeta.amount,
+        currency: orderMeta.currency,
+        mode: "payment_gateway",
+        reference: paymentId,
+        notes: "Verified Razorpay checkout payment",
+        status: "captured",
+        gateway: "razorpay",
+        gatewayPaymentId: paymentId,
+        gatewayOrderId: orderId,
+      });
+      if (!recorded) return null;
+      api.updateBillingOrder(orderId, { status: "consumed", consumedAt: new Date().toISOString() });
+      return { ok: true, type: "invoice", ...recorded };
+    }
+
+    return null;
+  }
+
+  const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
 
-    if ((url.pathname === "/" || url.pathname === "/index.html") && req.method === "GET") {
+    if ((url.pathname === "/" || url.pathname === "/index.html") && (req.method === "GET" || req.method === "HEAD")) {
       res.writeHead(302, {
         Location: "/apps/web/index.html",
         "Cache-Control": "no-store",
@@ -502,18 +626,25 @@ export function createServer(options = {}) {
           return;
         }
         const payload = body.payload?.payment?.entity || body.payload?.payment_link?.entity || body.payload || body;
-        const orderMeta = pendingRazorpayOrders.get(payload.order_id || payload.razorpay_order_id) || {};
-        if (orderMeta.kind === "subscription") {
-          sendJson(res, 200, { ok: true, subscriptionWebhook: true });
+        const orderId = payload.order_id || payload.razorpay_order_id || payload.notes?.gatewayOrderId || "";
+        const paymentId = payload.razorpay_payment_id || payload.payment_id || payload.id || "";
+        const orderMeta = orderId ? api.getBillingOrderByGatewayOrderId(orderId) : null;
+        if (orderMeta) {
+          const activated = activateVerifiedRazorpayOrder(orderMeta, paymentId, orderId);
+          if (!activated) {
+            sendJson(res, 404, { error: "Razorpay order could not be activated" });
+            return;
+          }
+          sendJson(res, 200, activated);
           return;
         }
         const recorded = api.recordGatewayPayment({
-          invoiceId: payload.invoiceId || payload.notes?.invoiceId || orderMeta.invoiceId,
+          invoiceId: payload.invoiceId || payload.notes?.invoiceId,
           paymentLinkId: payload.paymentLinkId || payload.payment_link_id || payload.id,
           amount: payload.amount ? Number(payload.amount) / 100 : payload.amountPaid,
           currency: payload.currency,
-          razorpay_payment_id: payload.razorpay_payment_id || payload.payment_id || payload.id,
-          razorpay_order_id: payload.razorpay_order_id || payload.order_id || orderMeta.orderId,
+          razorpay_payment_id: paymentId,
+          razorpay_order_id: orderId,
           gateway: "razorpay",
         });
         if (!recorded) {
@@ -772,6 +903,7 @@ export function createServer(options = {}) {
       sendJson(res, 401, { error: "Unauthorized" });
       return;
     }
+    const previewPlan = getAdminPlanPreview(req, user);
     if (user.accountStatus === "restricted" && !isConfiguredAdminUser(user)) {
       sendJson(res, 403, {
         error: "Account restricted by admin",
@@ -783,10 +915,11 @@ export function createServer(options = {}) {
     if (url.pathname === "/me" && req.method === "GET") {
       sendJson(res, 200, {
         user,
-        plan: api.getFreePlanSummary(user),
+        plan: api.getFreePlanSummary(user, { previewPlan }),
         admin: {
           authorized: isConfiguredAdminUser(user),
           email: getAdminIdentity().email,
+          planPreview: previewPlan,
         },
       });
       return;
@@ -820,10 +953,11 @@ export function createServer(options = {}) {
       }
       sendJson(res, 200, {
         user: updated,
-        plan: api.getFreePlanSummary(updated),
+        plan: api.getFreePlanSummary(updated, { previewPlan: getAdminPlanPreview(req, updated) }),
         admin: {
           authorized: isConfiguredAdminUser(updated),
           email: getAdminIdentity().email,
+          planPreview: getAdminPlanPreview(req, updated),
         },
       });
       return;
@@ -838,6 +972,7 @@ export function createServer(options = {}) {
         admin: user,
         summary: api.summarizeMonetization(),
         subscriptions: api.listSubscriptions(),
+        billingOrders: api.listBillingOrders(),
         monetization: api.listMonetization(),
       });
       return;
@@ -849,6 +984,15 @@ export function createServer(options = {}) {
         return;
       }
       sendJson(res, 200, getGatewayStatus());
+      return;
+    }
+
+    if (url.pathname === "/admin/persistence" && req.method === "GET") {
+      if (!isConfiguredAdminUser(user)) {
+        sendJson(res, 403, { error: "Forbidden" });
+        return;
+      }
+      sendJson(res, 200, api.getPersistenceStatus());
       return;
     }
 
@@ -948,7 +1092,15 @@ export function createServer(options = {}) {
     }
 
     if (url.pathname === "/plan/free" && req.method === "GET") {
-      sendJson(res, 200, api.getFreePlanSummary(user));
+      sendJson(res, 200, api.getFreePlanSummary(user, { previewPlan }));
+      return;
+    }
+
+    if (url.pathname === "/plans" && req.method === "GET") {
+      sendJson(res, 200, {
+        active: api.getFreePlanSummary(user, { previewPlan }),
+        catalog: api.listPlans(),
+      });
       return;
     }
 
@@ -978,12 +1130,13 @@ export function createServer(options = {}) {
           return;
         }
       }
-      const kycStatus = body.kycStatus || (isOnboardingProfile ? "not_submitted" : "pending");
       sendJson(res, 201, api.createCompany({
         ...body,
         ownerUserId: user.id,
         entityType,
-        kycStatus,
+        kycStatus: isOnboardingProfile ? "not_submitted" : "pending",
+        reviewStatus: "pending",
+        reviewedAt: "",
         kycMode: "document-review",
         kycDocumentType: requiresAadhaar ? "aadhaar-pan-address-proof" : "company-pan-or-gst",
       }));
@@ -1047,13 +1200,15 @@ export function createServer(options = {}) {
             userId: user.id,
             companyId: body.companyId || kycProfile.id,
             plan: selectedPlan.plan,
-            amount: selectedPlan.amount,
+            amount: annualPlanCharge(selectedPlan),
+            monthlyAmount: selectedPlan.discountedAmount ?? selectedPlan.monthlyAmount ?? selectedPlan.amount,
+            annualAmount: annualPlanCharge(selectedPlan),
             currency: selectedPlan.currency,
-            billingCycle: selectedPlan.billingCycle,
-            description: `${selectedPlan.label} plan - ${selectedPlan.billingCycle}`,
+            billingCycle: "yearly",
+            description: `${selectedPlan.label} plan - ${selectedPlan.currency} ${selectedPlan.discountedAmount ?? selectedPlan.monthlyAmount ?? selectedPlan.amount}/month billed yearly`,
           };
         } else if (kind === "invoice") {
-          if (!hasActivePaidPlan(api, user)) {
+          if (!hasPaidEntitlement(api, user, previewPlan)) {
             sendJson(res, 402, { error: "Payment gateway links and automatic payment updates are available only in paid tiers." });
             return;
           }
@@ -1091,13 +1246,16 @@ export function createServer(options = {}) {
             invoiceId: orderContext.invoiceId || "",
             companyId: orderContext.companyId || "",
             plan: orderContext.plan || "",
+            billingCycle: orderContext.billingCycle || "",
           },
         });
-        pendingRazorpayOrders.set(order.id, {
+        api.createBillingOrder({
           ...orderContext,
+          gateway: "razorpay",
+          gatewayOrderId: order.id,
           orderId: order.id,
           amount: amountInPaise / 100,
-          createdAt: new Date().toISOString(),
+          status: "created",
         });
         sendJson(res, 201, {
           keyId: config.keyId,
@@ -1130,54 +1288,17 @@ export function createServer(options = {}) {
           sendJson(res, 401, { error: "Razorpay payment signature verification failed." });
           return;
         }
-        const orderMeta = pendingRazorpayOrders.get(orderId);
+        const orderMeta = api.getBillingOrderByGatewayOrderId(orderId);
         if (!orderMeta || orderMeta.userId !== user.id) {
           sendJson(res, 404, { error: "Razorpay order was not found for this user session." });
           return;
         }
-        pendingRazorpayOrders.delete(orderId);
-
-        if (orderMeta.kind === "subscription") {
-          const subscription = api.createSubscription({
-            subscriberType: "individual",
-            subscriberName: user.name || user.email || "Subscriber",
-            companyId: orderMeta.companyId || null,
-            userId: user.id,
-            amount: orderMeta.amount,
-            currency: orderMeta.currency,
-            plan: orderMeta.plan,
-            billingCycle: orderMeta.billingCycle,
-            status: "active",
-            adminUserId: isConfiguredAdminUser(user) ? user.id : null,
-            gateway: "razorpay",
-            gatewayPaymentId: paymentId,
-            gatewayOrderId: orderId,
-          });
-          sendJson(res, 200, { ok: true, type: "subscription", subscription });
+        const activated = activateVerifiedRazorpayOrder(orderMeta, paymentId, orderId);
+        if (!activated) {
+          sendJson(res, 404, { error: "Razorpay order could not be activated." });
           return;
         }
-
-        if (orderMeta.kind === "invoice") {
-          const recorded = api.recordInvoicePayment(orderMeta.invoiceId, {
-            amount: orderMeta.amount,
-            currency: orderMeta.currency,
-            mode: "payment_gateway",
-            reference: paymentId,
-            notes: "Verified Razorpay checkout payment",
-            status: "captured",
-            gateway: "razorpay",
-            gatewayPaymentId: paymentId,
-            gatewayOrderId: orderId,
-          });
-          if (!recorded) {
-            sendJson(res, 404, { error: "Invoice not found for verified Razorpay payment." });
-            return;
-          }
-          sendJson(res, 200, { ok: true, type: "invoice", ...recorded });
-          return;
-        }
-
-        sendJson(res, 400, { error: "Unsupported verified Razorpay order type." });
+        sendJson(res, 200, activated);
       } catch (error) {
         sendJson(res, 400, { error: error.message });
       }
@@ -1202,7 +1323,15 @@ export function createServer(options = {}) {
           return;
         }
         body.companyId = body.companyId || kycProfile.id;
-        body.status = kycProfile.kycStatus === "verified" ? "active" : "kyc_pending";
+        body.status = kycProfile.kycStatus === "verified" ? "payment_pending" : "kyc_pending";
+        const selectedPlan = PAID_PLAN_CATALOG[String(body.plan || "").toLowerCase()];
+        if (selectedPlan) {
+          body.amount = annualPlanCharge(selectedPlan);
+          body.monthlyAmount = selectedPlan.discountedAmount ?? selectedPlan.monthlyAmount ?? selectedPlan.amount;
+          body.annualAmount = annualPlanCharge(selectedPlan);
+          body.currency = selectedPlan.currency;
+          body.billingCycle = "yearly";
+        }
       }
       const subscription = api.createSubscription({
         ...body,
@@ -1233,6 +1362,251 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/business/team" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listTeamMembers(user, { previewPlan }));
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/business/settings" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.getBusinessSettings(user, {
+          previewPlan,
+          companyId: url.searchParams.get("companyId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/business/settings" && req.method === "PATCH") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 200, api.updateBusinessSettings(user, body, { previewPlan }));
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/business/settings/email/test" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        const validated = api.validateBusinessEmailSettings(user, body, { previewPlan });
+        const status = validated.emailSettings?.lastTestStatus || "ready";
+        if (body.sendTestEmail && status === "ready") {
+          const deliverySettings = api.getBusinessEmailDeliverySettings(user, {
+            previewPlan,
+            companyId: body.companyId || null,
+          });
+          const recipient = String(
+            body.testRecipient
+            || deliverySettings.replyToEmail
+            || deliverySettings.fromEmail
+            || user.email
+            || "",
+          ).trim();
+          try {
+            await sendSmtpMail(deliverySettings, {
+              to: recipient,
+              subject: "EazInvoice SMTP test email",
+              text: `Hi,\n\nThis is a test email from EazInvoice Business Workspace for ${deliverySettings.senderName || user.name || "your business"}.\n\nIf you received this, SMTP delivery is working.\n\nEazInvoice`,
+            });
+            sendJson(res, 200, {
+              ...validated,
+              emailSettings: {
+                ...validated.emailSettings,
+                lastDeliveryStatus: "sent",
+                lastDeliveryMessage: `Test email sent to ${recipient}`,
+              },
+            });
+          } catch (deliveryError) {
+            sendJson(res, 400, {
+              error: `SMTP settings validated, but test email failed: ${deliveryError.message}`,
+              emailSettings: {
+                ...validated.emailSettings,
+                lastDeliveryStatus: "failed",
+                lastDeliveryMessage: deliveryError.message,
+              },
+            });
+          }
+          return;
+        }
+        sendJson(res, 200, validated);
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/business/team" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        let member = api.createTeamMember(user, body, { previewPlan });
+        let deliveryStatus = member.inviteDeliveryStatus || "queued";
+        let deliveryMessage = "Invite saved. Configure SMTP to send the external email.";
+        try {
+          const deliverySettings = api.getBusinessEmailDeliverySettings(user, {
+            previewPlan,
+            companyId: body.companyId || null,
+          });
+          const emailReady = deliverySettings.smtpHost
+            && deliverySettings.smtpPort
+            && deliverySettings.smtpUser
+            && deliverySettings.smtpPass
+            && deliverySettings.fromEmail;
+          if (emailReady) {
+            await sendSmtpMail(deliverySettings, buildTeamInviteMessage(deliverySettings, member, user, req));
+            deliveryStatus = "sent";
+            deliveryMessage = `Invitation email sent to ${member.email}`;
+            member = api.updateTeamMember(user, member.id, {
+              inviteDeliveryStatus: deliveryStatus,
+              inviteDeliveryMessage: deliveryMessage,
+              inviteSentAt: new Date().toISOString(),
+            }, { previewPlan });
+          }
+        } catch (deliveryError) {
+          deliveryStatus = "failed";
+          deliveryMessage = `Invite saved, but email delivery failed: ${deliveryError.message}`;
+          member = api.updateTeamMember(user, member.id, {
+            inviteDeliveryStatus: deliveryStatus,
+            inviteDeliveryMessage: deliveryMessage,
+          }, { previewPlan });
+        }
+        sendJson(res, 201, {
+          ...member,
+          inviteDeliveryStatus: deliveryStatus,
+          inviteDeliveryMessage: deliveryMessage,
+        });
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/business/team/") && req.method === "PATCH") {
+      try {
+        const id = url.pathname.split("/")[3];
+        const body = await readBody(req);
+        sendJson(res, 200, api.updateTeamMember(user, id, body, { previewPlan }));
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 404, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/business/team/accept" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 200, api.acceptTeamInvite(user, body.inviteToken, { previewPlan }));
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 404, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/business/approvals" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listApprovalRequests(user, { previewPlan }));
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/business/approvals" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.createApprovalRequest(user, body, { previewPlan }));
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/business/approvals/") && req.method === "PATCH") {
+      try {
+        const id = url.pathname.split("/")[3];
+        const body = await readBody(req);
+        sendJson(res, 200, api.decideApprovalRequest(user, id, body, { previewPlan }));
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 404, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/business/api-keys" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listApiKeys(user, { previewPlan }));
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/business/api-keys" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.createApiKey(user, body, { previewPlan }));
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/business/api-keys/") && req.method === "DELETE") {
+      try {
+        const id = url.pathname.split("/")[3];
+        sendJson(res, 200, api.revokeApiKey(user, id, { previewPlan }));
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 404, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/ai/command" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, await api.runAiCommandAsync(user, body, { previewPlan }));
+      } catch (error) {
+        const status = /pro|business|ai/i.test(error.message) ? 402 : 400;
+        sendJson(res, status, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/admin/recurring/run" && req.method === "POST") {
+      if (!isConfiguredAdminUser(user)) {
+        sendJson(res, 403, { error: "Forbidden" });
+        return;
+      }
+      const body = await readBody(req).catch(() => ({}));
+      sendJson(res, 201, api.runRecurringInvoiceSchedulerForAllUsers({
+        targetDate: body.targetDate,
+        maxPerTemplate: body.maxPerTemplate,
+      }));
+      return;
+    }
+
+    if (url.pathname === "/admin/recurring/status" && req.method === "GET") {
+      if (!isConfiguredAdminUser(user)) {
+        sendJson(res, 403, { error: "Forbidden" });
+        return;
+      }
+      sendJson(res, 200, {
+        enabled: String(process.env.RECURRING_SCHEDULER_ENABLED || "").toLowerCase() === "true",
+        intervalHours: Number(process.env.RECURRING_SCHEDULER_INTERVAL_HOURS || 24),
+        maxPerTemplate: Number(process.env.RECURRING_SCHEDULER_MAX_PER_TEMPLATE || 12),
+        timezone: "UTC date-only",
+        note: "Recurring draft generation is idempotent and only processes active paid users whose plan includes recurringInvoices.",
+      });
+      return;
+    }
+
     if (url.pathname === "/subscriptions" && req.method === "GET") {
       if (!isConfiguredAdminUser(user)) {
         sendJson(res, 403, { error: "Forbidden" });
@@ -1253,8 +1627,8 @@ export function createServer(options = {}) {
     }
 
     if (url.pathname === "/invoices" && req.method === "POST") {
-      const body = await readBody(req);
-      const summary = api.getFreePlanSummary(user);
+      const body = sanitizeStandardInvoiceFeatures(api, user, previewPlan, await readBody(req));
+      const summary = api.getFreePlanSummary(user, { previewPlan });
       if (!summary.status.allowed) {
         sendJson(res, 402, { error: summary.status.reason });
         return;
@@ -1263,9 +1637,25 @@ export function createServer(options = {}) {
         sendJson(res, 201, api.createInvoice({
           ...body,
           ownerUserId: user.id,
-        }));
+        }, { previewPlan }));
       } catch (error) {
         sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/invoices/recurring/run" && req.method === "POST") {
+      try {
+        const body = await readBody(req).catch(() => ({}));
+        const result = api.runRecurringInvoiceScheduler(user, {
+          previewPlan,
+          targetDate: body.targetDate,
+          maxPerTemplate: body.maxPerTemplate,
+        });
+        sendJson(res, 201, result);
+      } catch (error) {
+        const status = /standard/i.test(error.message) ? 402 : 400;
+        sendJson(res, status, { error: error.message });
       }
       return;
     }
@@ -1318,7 +1708,7 @@ export function createServer(options = {}) {
         sendJson(res, 404, { error: "Not found" });
         return;
       }
-      if (!hasActivePaidPlan(api, user)) {
+      if (!hasPaidEntitlement(api, user, previewPlan)) {
         sendJson(res, 402, { error: "Payment gateway links and automatic payment updates are available only in paid tiers." });
         return;
       }
@@ -1338,9 +1728,9 @@ export function createServer(options = {}) {
         sendJson(res, 404, { error: "Not found" });
         return;
       }
-      const body = await readBody(req);
+      const body = sanitizeStandardInvoiceFeatures(api, user, previewPlan, await readBody(req));
       try {
-        sendJson(res, 200, api.updateInvoice(id, body));
+        sendJson(res, 200, api.updateInvoice(id, body, { previewPlan }));
       } catch (error) {
         sendJson(res, 400, { error: error.message });
       }
@@ -1369,7 +1759,7 @@ export function createServer(options = {}) {
         sendJson(res, 201, api.createPurchaseOrder({
           ...body,
           ownerUserId: user.id,
-        }));
+        }, { previewPlan }));
       } catch (error) {
         sendJson(res, 400, { error: error.message });
       }
@@ -1396,7 +1786,7 @@ export function createServer(options = {}) {
       }
       const body = await readBody(req);
       try {
-        sendJson(res, 200, api.updatePurchaseOrder(id, body));
+        sendJson(res, 200, api.updatePurchaseOrder(id, body, { previewPlan }));
       } catch (error) {
         sendJson(res, 400, { error: error.message });
       }
@@ -1416,11 +1806,40 @@ export function createServer(options = {}) {
 
     sendJson(res, 404, { error: "Not found" });
   });
+  server.eazinvoiceApi = api;
+  return server;
 }
 
 export function startServer(port = 3001) {
   const server = createServer();
   server.listen(port);
+  const recurringEnabled = String(process.env.RECURRING_SCHEDULER_ENABLED || "").toLowerCase() === "true";
+  if (recurringEnabled) {
+    const intervalHours = Math.max(1, Number(process.env.RECURRING_SCHEDULER_INTERVAL_HOURS || 24));
+    const maxPerTemplate = Math.max(1, Number(process.env.RECURRING_SCHEDULER_MAX_PER_TEMPLATE || 12));
+    const intervalMs = intervalHours * 60 * 60 * 1000;
+    const run = () => {
+      try {
+        const api = server.eazinvoiceApi;
+        const result = api.runRecurringInvoiceSchedulerForAllUsers({
+          targetDate: new Date().toISOString().slice(0, 10),
+          maxPerTemplate,
+        });
+        if (result.createdCount > 0) {
+          console.log(`Eazinvoice recurring scheduler created ${result.createdCount} draft(s).`);
+        }
+      } catch (error) {
+        console.error("Eazinvoice recurring scheduler failed:", error.message);
+      }
+    };
+    const startupDelayMs = Math.min(60000, Math.max(1000, Number(process.env.RECURRING_SCHEDULER_STARTUP_DELAY_MS || 10000)));
+    const startupTimer = setTimeout(run, startupDelayMs);
+    const intervalTimer = setInterval(run, intervalMs);
+    server.on("close", () => {
+      clearTimeout(startupTimer);
+      clearInterval(intervalTimer);
+    });
+  }
   return server;
 }
 

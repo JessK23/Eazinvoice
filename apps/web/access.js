@@ -44,6 +44,7 @@ const accessDraftInvoicesList = document.getElementById("accessDraftInvoicesList
 const accessCreatedInvoicesList = document.getElementById("accessCreatedInvoicesList");
 const accessDraftPoCount = document.getElementById("accessDraftPoCount");
 const accessCreatedPoCount = document.getElementById("accessCreatedPoCount");
+const accessPlanFeatureGrid = document.getElementById("accessPlanFeatureGrid");
 
 let currentUser = null;
 let companies = [];
@@ -54,7 +55,46 @@ let plan = null;
 let adminAuthorized = false;
 
 function authHeaders() {
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const previewPlan = localStorage.getItem("eazinvoice_admin_plan_preview") || "";
+  if (previewPlan) headers["X-Eazinvoice-Plan-Preview"] = previewPlan;
+  return headers;
+}
+
+function mountAdminPlanPreview() {
+  if (!adminAuthorized || document.getElementById("adminPlanPreviewControl")) return;
+  const container = document.querySelector(".topnav") || document.querySelector(".topbar");
+  if (!container) return;
+  const currentPreview = localStorage.getItem("eazinvoice_admin_plan_preview") || "";
+  const control = document.createElement("label");
+  control.id = "adminPlanPreviewControl";
+  control.className = "admin-preview-control";
+  control.innerHTML = `
+    <span>Admin Preview</span>
+    <select id="adminPlanPreviewSelect" aria-label="Admin plan preview">
+      <option value="">Real plan</option>
+      <option value="free">Free</option>
+      <option value="standard">Standard</option>
+      <option value="pro">Pro</option>
+      <option value="business">Business</option>
+    </select>
+  `;
+  container.append(control);
+  const select = control.querySelector("select");
+  select.value = currentPreview;
+  select.addEventListener("change", () => {
+    const selected = select.value;
+    if (selected) localStorage.setItem("eazinvoice_admin_plan_preview", selected);
+    else localStorage.removeItem("eazinvoice_admin_plan_preview");
+    window.location.reload();
+  });
+
+  if (!plan?.preview?.enabled) return;
+  const banner = document.createElement("div");
+  banner.id = "adminPlanPreviewBanner";
+  banner.className = "admin-preview-banner";
+  banner.textContent = `Admin Preview Mode: ${plan.label} plan. No billing or subscription record is being changed.`;
+  document.querySelector(".topbar")?.after(banner);
 }
 
 async function request(path, { method = "GET", body } = {}) {
@@ -90,6 +130,39 @@ function setText(id, value) {
 
 function badge(text, tone = "blue") {
   return `<span class="pill ${tone}">${text}</span>`;
+}
+
+function renderPlanFeatures(catalog = []) {
+  if (!accessPlanFeatureGrid) return;
+  const activePlan = plan?.plan || "free";
+  const plans = catalog.length ? catalog : [
+    { plan: "free", label: "Free", amount: 0, highlights: ["Limited invoices", "Basic GST invoices", "PDF-ready print", "No AI"] },
+    { plan: "standard", label: "Standard", amount: 499, highlights: ["WhatsApp sharing", "Razorpay collection links", "Recurring invoice drafts"] },
+    { plan: "pro", label: "Pro", amount: 999, highlights: ["AI invoice assist", "AI PO assist", "Advanced reports", "Multiple businesses"] },
+    { plan: "business", label: "Business", amount: 1999, highlights: ["Team access", "Approvals", "API access", "Advanced analytics"] },
+  ];
+  accessPlanFeatureGrid.innerHTML = plans.map((entry) => {
+    const features = entry.features || {};
+    const highlights = entry.highlights || [];
+    const implementation = entry.implementation || {};
+    const pending = implementation.pending || [];
+    const selected = entry.plan === activePlan;
+    return `
+      <article class="plan-tile ${selected ? "selected" : ""}">
+        <strong>${escapeHtml(entry.label || entry.plan)}</strong>
+        <p>${escapeHtml(entry.description || highlights.join(", "))}</p>
+        <small>${escapeHtml(highlights.join(", "))}</small>
+        <div class="badge-row">
+          ${features.aiInvoiceAssist ? badge("AI invoice", "blue") : badge("AI locked", "gold")}
+          ${features.razorpayCollections ? badge("Gateway", "blue") : badge("Manual payments", "gold")}
+          ${features.apiAccess ? badge("API", "blue") : ""}
+          ${implementation.status ? badge(implementation.status.replace(/_/g, " "), pending.length ? "gold" : "green") : ""}
+          ${selected ? badge("Current", "maroon") : ""}
+        </div>
+        ${pending.length ? `<div class="hint">Next build: ${escapeHtml(pending.slice(0, 2).join(", "))}</div>` : ""}
+      </article>
+    `;
+  }).join("");
 }
 
 const validTabs = new Set(Array.from(tabs).map((tab) => tab.dataset.tab).filter(Boolean));
@@ -382,6 +455,9 @@ async function loadAccess() {
     currentUser = me.user;
     plan = me.plan;
     adminAuthorized = Boolean(me.admin?.authorized);
+    mountAdminPlanPreview();
+    const planPayload = await request("/plans").catch(() => ({ catalog: [] }));
+    renderPlanFeatures(planPayload.catalog || []);
     companies = await request("/companies");
     customers = await request("/customers");
     invoices = await request("/invoices");

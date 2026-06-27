@@ -45,6 +45,16 @@ const customerCodePreview = document.getElementById("customerCodePreview");
 const taxCodeHead = document.getElementById("taxCodeHead");
 const taxRateHead = document.getElementById("taxRateHead");
 const summaryTaxLabel = document.getElementById("summaryTaxLabel");
+const standardFeaturesPanel = document.getElementById("standardFeaturesPanel");
+const standardFeatureBadge = document.getElementById("standardFeatureBadge");
+const standardFeatureHint = document.getElementById("standardFeatureHint");
+const recurringInvoiceWrap = document.getElementById("recurringInvoiceWrap");
+const recurringFrequencyWrap = document.getElementById("recurringFrequencyWrap");
+const recurringNextDateWrap = document.getElementById("recurringNextDateWrap");
+const recurringInvoiceToggle = document.getElementById("recurringInvoiceToggle");
+const recurringFrequency = document.getElementById("recurringFrequency");
+const recurringNextDate = document.getElementById("recurringNextDate");
+const hideBrandingToggle = document.getElementById("hideBrandingToggle");
 
 const previewCompany = document.getElementById("previewCompany");
 const previewCompanyMeta = document.getElementById("previewCompanyMeta");
@@ -72,6 +82,7 @@ let invoices = [];
 let lastSavedInvoice = null;
 let customerMode = "";
 let customerLocked = false;
+let activePlanKey = sessionContext?.session?.plan?.active?.plan || sessionContext?.session?.plan?.plan || "free";
 
 const currencyRules = {
   INR: {
@@ -149,13 +160,40 @@ function moneyWithSymbol(value, currency = selectedCurrency()) {
 function currentPlan() {
   const active = subscriptions.slice().reverse().find((subscription) => {
     const status = String(subscription.status || "active").toLowerCase();
-    return status === "active" || status === "kyc_pending";
+    return status === "active";
   });
-  return String(active?.plan || "free").toLowerCase();
+  return String(active?.plan || activePlanKey || "free").toLowerCase();
 }
 
 function canUseWhatsappShare() {
   return ["standard", "pro", "business"].includes(currentPlan());
+}
+
+function canUseStandardFeatures() {
+  return ["standard", "pro", "business"].includes(currentPlan());
+}
+
+function updateStandardFeatureControls() {
+  const allowed = canUseStandardFeatures();
+  if (standardFeaturesPanel) standardFeaturesPanel.dataset.locked = allowed ? "false" : "true";
+  if (standardFeatureBadge) {
+    standardFeatureBadge.className = `pill ${allowed ? "blue" : "gold"}`;
+    standardFeatureBadge.textContent = allowed ? "Included" : "Upgrade";
+  }
+  if (standardFeatureHint) {
+    standardFeatureHint.textContent = allowed
+      ? "Standard features are active for this session. Recurring details are saved with the invoice and branding removal applies to print/PDF."
+      : "Recurring drafts and branding removal are available on Standard and higher plans.";
+  }
+  [recurringInvoiceToggle, recurringFrequency, recurringNextDate, hideBrandingToggle].forEach((field) => {
+    if (!field) return;
+    field.disabled = !allowed;
+    if (!allowed && field.type === "checkbox") field.checked = false;
+  });
+  [recurringInvoiceWrap, recurringFrequencyWrap, recurringNextDateWrap].forEach((node) => {
+    if (node) node.hidden = false;
+  });
+  document.getElementById("documentPreview")?.classList.toggle("branding-removed", allowed && Boolean(hideBrandingToggle?.checked));
 }
 
 function setStatus(message) {
@@ -623,6 +661,7 @@ function renderPreview() {
   if (previewPaymentInstructions) previewPaymentInstructions.textContent = data.get("paymentInstructions") || "-";
   if (previewTerms) previewTerms.textContent = data.get("terms") || "-";
   if (previewNotes) previewNotes.textContent = data.get("paymentInstructions") || "";
+  document.getElementById("documentPreview")?.classList.toggle("branding-removed", canUseStandardFeatures() && Boolean(hideBrandingToggle?.checked));
   updateWhatsappShare(total, data);
 }
 
@@ -779,6 +818,10 @@ customerModeSelect?.addEventListener("change", () => setCustomerMode(customerMod
 newCustomerCategory?.addEventListener("change", updateNewCustomerTaxFields);
 addNewCustomerBtn?.addEventListener("click", addNewCustomerToList);
 cancelNewCustomerBtn?.addEventListener("click", () => setCustomerMode("", { force: true }));
+recurringInvoiceToggle?.addEventListener("change", renderPreview);
+recurringFrequency?.addEventListener("change", renderPreview);
+recurringNextDate?.addEventListener("change", renderPreview);
+hideBrandingToggle?.addEventListener("change", renderPreview);
 issuerCompanySelect?.addEventListener("change", () => {
   populateIssuerFields();
   maybeOpenIssuerSetup();
@@ -836,7 +879,7 @@ document.getElementById("printInvoice")?.addEventListener("click", () => window.
 whatsappShare?.addEventListener("click", (event) => {
   if (canUseWhatsappShare()) return;
   event.preventDefault();
-  setStatus("WhatsApp sharing is available on Standard and Pro plans. Please upgrade to use this feature.");
+  setStatus("WhatsApp sharing is available on Standard and higher plans. Please upgrade to use this feature.");
 });
 
 form?.addEventListener("submit", async (event) => {
@@ -873,6 +916,10 @@ form?.addEventListener("submit", async (event) => {
       notes: "",
       paymentInstructions: data.get("paymentInstructions"),
       terms: data.get("terms"),
+      recurringEnabled: canUseStandardFeatures() && data.get("recurringEnabled") === "on",
+      recurringFrequency: canUseStandardFeatures() ? data.get("recurringFrequency") : "",
+      recurringNextDate: canUseStandardFeatures() ? data.get("recurringNextDate") : "",
+      hideEazinvoiceBranding: canUseStandardFeatures() && data.get("hideEazinvoiceBranding") === "on",
       billToName: customerNameFromForm(data, originalCustomerMode, invoiceCustomer),
       billToAddress: customerAddressFromForm(data, originalCustomerMode, invoiceCustomer),
       items: readItems(),
@@ -911,6 +958,7 @@ async function initializeInvoicePage() {
       itemsEl?.appendChild(createItemRow({ description: "Website design", hsnSac: "9983", quantity: 1, rate: 15000, discount: 0, gstRate: 18 }));
     }
     updateTaxLabels();
+    updateStandardFeatureControls();
     renderPreview();
     if (status && !companies.length) status.textContent = "You can raise invoices using your registered name. Add PAN if asked before continuing.";
   } catch (error) {

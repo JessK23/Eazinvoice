@@ -1,9 +1,10 @@
-import { apiClient, clearToken, money, requireSession } from "./common.js?v=20260601-session";
+import { apiClient, clearToken, money, mountAdminPlanPreview, requireSession } from "./common.js?v=20260601-session";
 
 const sessionContext = await requireSession();
 const token = sessionContext?.token;
 const currentUser = sessionContext?.session?.user;
 if (!token) throw new Error("Authentication required");
+mountAdminPlanPreview(sessionContext);
 document.getElementById("appShell")?.removeAttribute("hidden");
 
 const planSummary = document.getElementById("planSummary");
@@ -39,6 +40,8 @@ const createdInvoiceCount = document.getElementById("createdInvoiceCount");
 const invoiceRevenueTotal = document.getElementById("invoiceRevenueTotal");
 const draftInvoicesList = document.getElementById("draftInvoicesList");
 const createdInvoicesList = document.getElementById("createdInvoicesList");
+const runRecurringDraftsBtn = document.getElementById("runRecurringDraftsBtn");
+const recurringDraftStatus = document.getElementById("recurringDraftStatus");
 const draftPoCount = document.getElementById("draftPoCount");
 const createdPoCount = document.getElementById("createdPoCount");
 const poValueTotal = document.getElementById("poValueTotal");
@@ -86,20 +89,65 @@ const reportDetailChartBadge = document.getElementById("reportDetailChartBadge")
 const mainRevenueChart = document.getElementById("mainRevenueChart");
 const mainProfitChart = document.getElementById("mainProfitChart");
 const detailFilterFields = document.querySelectorAll("[data-report-filter]");
+const aiAssistantPanel = document.getElementById("aiAssistantPanel");
+const aiAssistantPlanBadge = document.getElementById("aiAssistantPlanBadge");
+const aiCommandInput = document.getElementById("aiCommandInput");
+const aiCommandRun = document.getElementById("aiCommandRun");
+const aiInvoiceExample = document.getElementById("aiInvoiceExample");
+const aiPoExample = document.getElementById("aiPoExample");
+const aiReportExample = document.getElementById("aiReportExample");
+const aiVoiceButton = document.getElementById("aiVoiceButton");
+const aiAssistantStatus = document.getElementById("aiAssistantStatus");
+const aiAssistantResult = document.getElementById("aiAssistantResult");
+const businessWorkspaceBadge = document.getElementById("businessWorkspaceBadge");
+const businessWorkspaceNotice = document.getElementById("businessWorkspaceNotice");
+const businessWorkspaceNavGroup = document.getElementById("businessWorkspaceNavGroup");
+const teamMemberCount = document.getElementById("teamMemberCount");
+const approvalRequestCount = document.getElementById("approvalRequestCount");
+const apiKeyCount = document.getElementById("apiKeyCount");
+const teamInviteForm = document.getElementById("teamInviteForm");
+const teamInviteStatus = document.getElementById("teamInviteStatus");
+const teamMembersList = document.getElementById("teamMembersList");
+const businessEmailSettingsForm = document.getElementById("businessEmailSettingsForm");
+const businessEmailTestButton = document.getElementById("businessEmailTestButton");
+const businessEmailStatus = document.getElementById("businessEmailStatus");
+const businessPaymentSettingsForm = document.getElementById("businessPaymentSettingsForm");
+const businessPaymentStatus = document.getElementById("businessPaymentStatus");
+const businessComplianceForm = document.getElementById("businessComplianceForm");
+const businessComplianceStatus = document.getElementById("businessComplianceStatus");
+const smtpConfiguredBadge = document.getElementById("smtpConfiguredBadge");
+const businessGatewayBadge = document.getElementById("businessGatewayBadge");
+const apiKeyForm = document.getElementById("apiKeyForm");
+const apiKeyStatus = document.getElementById("apiKeyStatus");
+const apiKeysList = document.getElementById("apiKeysList");
+const approvalRequestForm = document.getElementById("approvalRequestForm");
+const approvalRequestStatus = document.getElementById("approvalRequestStatus");
+const approvalRequestsList = document.getElementById("approvalRequestsList");
+const workspaceTargetLinks = document.querySelectorAll("[data-workspace-target]");
+const workspaceGroups = document.querySelectorAll(".workspace-group");
 
-const planCatalog = [
-  { id: "free", label: "Free", amount: 0, billingCycle: "monthly", description: "Basic invoice creation and tracking", features: ["1 company", "limited invoices", "basic reports", "dashboard access", "free WordPress CTA plugin"] },
-  { id: "standard", label: "Standard", amount: 499, billingCycle: "monthly", description: "For growing small businesses", features: ["more invoices", "better reports", "company branding", "WordPress Pro for 1 website"] },
-  { id: "pro", label: "Pro", amount: 999, billingCycle: "monthly", description: "For teams and frequent billing", features: ["higher limits", "more reports", "multi-user ready", "WordPress Pro for up to 3 websites"] },
+let planCatalog = [
+  { id: "free", label: "Free", amount: 0, monthlyAmount: 0, annualAmount: 0, billingCycle: "yearly", description: "Basic invoice creation and tracking", features: ["1 company", "limited invoices", "basic reports", "dashboard access", "free WordPress CTA plugin"] },
+  { id: "standard", label: "Standard", amount: 499, monthlyAmount: 499, discountedAmount: 299, annualAmount: 5988, discountedAnnualAmount: 3588, billingCycle: "yearly", description: "For growing small businesses", features: ["more invoices", "better reports", "company branding", "WordPress Pro for 1 website"] },
+  { id: "pro", label: "Pro", amount: 999, monthlyAmount: 999, discountedAmount: 699, annualAmount: 11988, discountedAnnualAmount: 8388, billingCycle: "yearly", description: "For teams and frequent billing", features: ["higher limits", "more reports", "multi-user ready", "WordPress Pro for up to 3 websites"] },
+  { id: "business", label: "Business", amount: 1999, monthlyAmount: 1999, discountedAmount: 1499, annualAmount: 23988, discountedAnnualAmount: 17988, billingCycle: "yearly", description: "For teams, approvals, API access, and analytics", features: ["team access", "approval workflows", "API access", "advanced analytics"] },
 ];
 
 let currentSubscription = { plan: "free", amount: 0, status: "active" };
+let activePlanSummary = { plan: "free", label: "Free", amount: 0, features: {}, subscription: currentSubscription };
 let dashboardInvoices = [];
 let dashboardCompanies = [];
 let dashboardPurchaseOrders = [];
 let dashboardCustomers = [];
 let dashboardPayments = [];
+let dashboardTeamMembers = [];
+let dashboardApprovalRequests = [];
+let dashboardApiKeys = [];
+let dashboardBusinessSettings = { emailSettings: {}, paymentSettings: {}, complianceProfile: {} };
 let razorpayCheckoutPromise = null;
+let pendingAiDraftCommand = null;
+let pendingAiDraftResult = null;
+let aiThinkingMessage = null;
 
 function currentDashboardPage() {
   const page = (window.location.hash || "#reports").replace(/^#/, "");
@@ -119,6 +167,9 @@ function showDashboardPage(page = currentDashboardPage()) {
     if (isActive) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   });
+  if (businessWorkspaceNavGroup) {
+    businessWorkspaceNavGroup.open = visiblePage === "business-workspace";
+  }
   document.title = page === "reports" ? "Eazinvoice Reports" : `Eazinvoice ${page.replace(/-/g, " ")}`;
   if (page.startsWith("report-")) {
     syncDetailFilterVisibility();
@@ -127,8 +178,218 @@ function showDashboardPage(page = currentDashboardPage()) {
   if (page === "reports") renderMainReportCharts();
 }
 
+function openWorkspaceGroup(groupId, scrollIntoView = false) {
+  if (!groupId) return;
+  workspaceGroups.forEach((group) => {
+    group.open = group.id === groupId;
+  });
+  const target = document.getElementById(groupId);
+  if (scrollIntoView && target) {
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
 function isPaidSubscription(subscription) {
-  return String(subscription?.plan || "free").toLowerCase() !== "free" || Number(subscription?.amount || 0) > 0;
+  return String(subscription?.status || "").toLowerCase() === "active" &&
+    (String(subscription?.plan || "free").toLowerCase() !== "free" || Number(subscription?.amount || 0) > 0);
+}
+
+function activePlanAllows(featureName) {
+  return Boolean(activePlanSummary?.features?.[featureName]);
+}
+
+function canUseAiAssistant() {
+  return activePlanAllows("aiInvoiceAssist") || activePlanAllows("aiPoAssist") || activePlanAllows("advancedReports");
+}
+
+function setAiAssistantStatus(message, tone = "") {
+  if (!aiAssistantStatus) return;
+  aiAssistantStatus.hidden = !message;
+  aiAssistantStatus.textContent = message || "";
+  aiAssistantStatus.dataset.tone = tone;
+}
+
+function appendAiChatMessage(role, content, { html = false, thinking = false } = {}) {
+  if (!aiAssistantResult) return null;
+  const message = document.createElement("div");
+  message.className = `ai-chat-message ${role}${thinking ? " thinking" : ""}`;
+  const avatar = document.createElement("div");
+  avatar.className = "ai-avatar";
+  avatar.textContent = role === "user" ? "You" : "AI";
+  const bubble = document.createElement("div");
+  bubble.className = "ai-bubble";
+  if (html) bubble.innerHTML = content;
+  else bubble.textContent = content;
+  message.append(avatar, bubble);
+  aiAssistantResult.append(message);
+  aiAssistantResult.scrollTop = aiAssistantResult.scrollHeight;
+  return message;
+}
+
+function showAiThinking() {
+  removeAiThinking();
+  aiThinkingMessage = appendAiChatMessage("assistant", "<span class=\"ai-dot\"></span><span class=\"ai-dot\"></span><span class=\"ai-dot\"></span> Thinking through your records...", { html: true, thinking: true });
+}
+
+function removeAiThinking() {
+  aiThinkingMessage?.remove();
+  aiThinkingMessage = null;
+}
+
+function setInlineStatus(element, message, tone = "") {
+  if (!element) return;
+  element.hidden = !message;
+  element.textContent = message || "";
+  element.dataset.tone = tone;
+}
+
+function attachFormValidityStatus(form, statusElement, message) {
+  form?.addEventListener("invalid", () => {
+    setInlineStatus(statusElement, message, "error");
+  }, true);
+}
+
+function renderAiAssistantAccess() {
+  if (!aiAssistantPanel) return;
+  const allowed = canUseAiAssistant();
+  if (aiAssistantPlanBadge) {
+    aiAssistantPlanBadge.textContent = allowed
+      ? `${activePlanSummary.label || "Pro"} AI enabled`
+      : "Pro / Business";
+    aiAssistantPlanBadge.className = `pill ${allowed ? "blue" : "gold"}`;
+  }
+  if (aiCommandRun) aiCommandRun.disabled = !allowed;
+  if (aiCommandInput) aiCommandInput.disabled = !allowed;
+  [aiInvoiceExample, aiPoExample, aiReportExample].forEach((button) => {
+    if (button) button.disabled = !allowed;
+  });
+  if (aiVoiceButton) {
+    aiVoiceButton.disabled = !allowed || !("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
+    aiVoiceButton.title = aiVoiceButton.disabled && allowed
+      ? "Voice input is not available in this browser. Typed commands still work."
+      : "Speak an invoice, PO, or report command";
+  }
+  if (!allowed) {
+    setAiAssistantStatus("AI command drafting and AI report summaries are available on Pro and Business plans. Admin plan preview can be used to test this locally.", "error");
+  } else {
+    setAiAssistantStatus("");
+  }
+}
+
+function renderAiResult(result) {
+  if (!aiAssistantResult) return;
+  if (result.intent === "report") {
+    pendingAiDraftResult = null;
+    const metrics = result.metrics || {};
+    appendAiChatMessage("assistant", `
+      <div class="ai-result-card ai-agent-card">
+        <div>
+          <strong>${escapeHtml(result.title || "AI Report Summary")}</strong>
+          <div class="hint">${escapeHtml(result.summary || "Report generated from current records.")}</div>
+          <div class="badge-row">
+            <span class="pill blue">${escapeHtml(result.provider === "openai" ? "OpenAI assisted" : "Local rules assisted")}</span>
+            <span class="pill blue">Revenue INR ${money(metrics.totalAmount || 0)}</span>
+            <span class="pill gold">Expenses INR ${money(metrics.expenseAmount || 0)}</span>
+            <span class="pill blue">Profit INR ${money(metrics.profit || 0)}</span>
+          </div>
+        </div>
+        <a class="ghost small" href="/apps/web/dashboard.html#reports">Open reports</a>
+      </div>
+    `, { html: true });
+    return;
+  }
+  if (result.intent === "clarification") {
+    pendingAiDraftCommand = null;
+    pendingAiDraftResult = null;
+    appendAiChatMessage("assistant", `
+      <div class="ai-result-card ai-agent-card">
+        <div>
+          <strong>More details needed</strong>
+          <div class="hint">${escapeHtml(result.question || result.message || "Please add a little more detail before I prepare this draft.")}</div>
+          <div class="badge-row">
+            ${(result.missingFields || []).map((field) => `<span class="pill gold">${escapeHtml(field)}</span>`).join("")}
+          </div>
+        </div>
+      </div>
+    `, { html: true });
+    return;
+  }
+  const record = result.createdRecord || result.proposedRecord || {};
+  const isPo = result.intent === "purchase_order";
+  const recordNumber = isPo ? record.poNumber : record.invoiceNumber;
+  const href = isPo
+    ? `/apps/web/invoice.html?type=po&po=${encodeURIComponent(record.id || "")}`
+    : `/apps/web/invoice.html?invoice=${encodeURIComponent(record.id || "")}`;
+  const isSaved = Boolean(result.createdRecord?.id);
+  const customerMissing = result.customerMatch?.status === "missing";
+  const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+  const providerLabel = result.provider === "openai" ? "OpenAI assisted" : "Local rules assisted";
+  const message = appendAiChatMessage("assistant", `
+    <div class="ai-result-card ai-agent-card">
+      <div>
+        <strong>${escapeHtml(recordNumber || (isSaved ? (isPo ? "PO / WO draft created" : "Invoice draft created") : (isPo ? "Proposed PO / WO draft" : "Proposed invoice draft")))}</strong>
+        ${customerMissing ? `<div class="notice ai-result-notice"><strong>Customer not saved yet:</strong> ${escapeHtml(result.customerMatch?.name || record.billToName || "This customer")} is not in your customer list. Add the customer first if you want saved customer details, PAN, GST, address, and future auto-fill.</div>` : ""}
+        ${warnings.length ? `<div class="badge-row">${warnings.map((warning) => `<span class="pill gold">${escapeHtml(warning)}</span>`).join("")}</div>` : ""}
+        <div class="hint">${escapeHtml(isSaved ? (result.message || "Draft created. Review before final creation.") : "Review this AI proposal. Save it only if the customer/vendor, item, tax, and amount look correct.")}</div>
+        <div class="hint">${escapeHtml(record.billToName || (isPo ? "Vendor" : "Customer"))} - ${escapeHtml(record.currency || "INR")} ${money(record.total || 0)} - ${escapeHtml(String(record.status || "draft"))}</div>
+        <div class="badge-row">
+          <span class="pill blue">${escapeHtml(providerLabel)}</span>
+          <span class="pill blue">${escapeHtml(record.items?.[0]?.description || "Item")}</span>
+          <span class="pill gold">Tax ${money(record.taxAmount || 0)}</span>
+          <span class="pill blue">Total ${escapeHtml(record.currency || "INR")} ${money(record.total || 0)}</span>
+        </div>
+      </div>
+      <div class="row-actions">
+        ${customerMissing ? '<a class="ghost small" href="/apps/web/invoice.html">Add customer in invoice flow</a>' : ""}
+        ${isSaved ? `<a class="ghost small" href="${href}">Open draft</a>` : '<button class="primary small ai-save-draft-button" type="button">Create Draft</button>'}
+        ${isSaved ? "" : '<button class="ghost small ai-discard-draft-button" type="button">Discard</button>'}
+      </div>
+    </div>
+  `, { html: true });
+  message?.querySelector(".ai-save-draft-button")?.addEventListener("click", savePendingAiDraft);
+  message?.querySelector(".ai-discard-draft-button")?.addEventListener("click", () => {
+    pendingAiDraftCommand = null;
+    pendingAiDraftResult = null;
+    appendAiChatMessage("assistant", "Proposal discarded. Send a fresh instruction whenever you are ready.");
+    setAiAssistantStatus("AI proposal discarded.", "");
+  });
+}
+
+async function savePendingAiDraft() {
+  if (!pendingAiDraftCommand) {
+    setAiAssistantStatus("No AI proposal is waiting to be saved.", "error");
+    return;
+  }
+  setAiAssistantStatus("Creating draft from AI proposal...", "");
+  try {
+    const result = await apiClient.runAiCommand(token, {
+      command: pendingAiDraftCommand,
+      approvedDraft: pendingAiDraftResult
+        ? {
+          intent: pendingAiDraftResult.intent,
+          confidence: pendingAiDraftResult.confidence,
+          payload: pendingAiDraftResult.payload,
+        }
+        : undefined,
+      saveDraft: true,
+    });
+    if (result.intent === "invoice" && result.createdRecord) replaceInvoice(result.createdRecord);
+    if (result.intent === "purchase_order" && result.createdRecord) replacePurchaseOrder(result.createdRecord);
+    pendingAiDraftCommand = null;
+    pendingAiDraftResult = null;
+    rerenderDashboardData();
+    renderAiResult(result);
+    setAiAssistantStatus("AI draft saved. You can open and edit it before final creation.", "success");
+  } catch (error) {
+    setAiAssistantStatus(error.message || "Could not create draft from AI proposal.", "error");
+  }
+}
+
+function subscriptionStatusTone(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "active") return "blue";
+  if (["failed", "rejected", "cancelled"].includes(normalized)) return "maroon";
+  return "gold";
 }
 
 function loadRazorpayCheckout() {
@@ -202,21 +463,36 @@ function renderProfile(user, organization) {
 
 function renderPlanCards(currentPlan) {
   if (!subscriptionArea) return;
-  subscriptionArea.innerHTML = planCatalog.map((plan) => `
-    <div class="plan-tile ${plan.id === currentPlan ? "selected" : ""}">
+  subscriptionArea.innerHTML = planCatalog.map((plan) => {
+    const planId = plan.id || plan.plan;
+    const featureList = Array.isArray(plan.features) ? plan.features : plan.highlights || [];
+    const featureFlags = Array.isArray(plan.features) ? {} : plan.features || {};
+    const isCurrent = planId === currentPlan;
+    const monthlyAmount = Number(plan.discountedAmount ?? plan.monthlyAmount ?? plan.amount ?? 0);
+    const annualAmount = Number(plan.discountedAnnualAmount ?? plan.annualAmount ?? (monthlyAmount * 12));
+    const priceLabel = planId === "free" ? "INR 0" : `INR ${money(monthlyAmount)}/mo`;
+    const billingHint = planId === "free" ? "No yearly billing" : `Billed yearly: INR ${money(annualAmount)}`;
+    return `
+    <div class="plan-tile ${isCurrent ? "selected" : ""}">
       <div class="panel-head">
         <div>
-          <strong>${plan.label}</strong>
-          <div class="hint">${plan.description}</div>
+          <strong>${escapeHtml(plan.label)}</strong>
+          <div class="hint">${escapeHtml(plan.description || (plan.highlights || []).join(", "))}</div>
+          <div class="hint">${escapeHtml(billingHint)}</div>
         </div>
-        <span class="pill ${plan.id === "free" ? "gold" : plan.id === "standard" ? "blue" : "maroon"}">INR ${money(plan.amount)}</span>
+        <span class="pill ${planId === "free" ? "gold" : planId === "standard" ? "blue" : "maroon"}">${escapeHtml(priceLabel)}</span>
       </div>
       <ul class="feature-list">
-        ${plan.features.map((feature) => `<li>${feature}</li>`).join("")}
+        ${featureList.map((feature) => `<li>${escapeHtml(feature)}</li>`).join("")}
       </ul>
-      <button type="button" class="primary plan-switch" data-plan="${plan.id}" data-amount="${plan.amount}">${plan.id === currentPlan ? "Current Plan" : `Switch to ${plan.label}`}</button>
+      <div class="badge-row">
+        ${featureFlags.aiInvoiceAssist ? '<span class="pill blue">AI invoice</span>' : '<span class="pill gold">AI locked</span>'}
+        ${featureFlags.razorpayCollections ? '<span class="pill blue">Gateway</span>' : '<span class="pill gold">Manual payments</span>'}
+        ${featureFlags.apiAccess ? '<span class="pill blue">API</span>' : ""}
+      </div>
+      <button type="button" class="primary plan-switch" data-plan="${escapeHtml(planId)}" data-amount="${annualAmount}">${isCurrent ? "Current Plan" : `Switch to ${escapeHtml(plan.label)}`}</button>
     </div>
-  `).join("");
+  `; }).join("");
 
   subscriptionArea.querySelectorAll(".plan-switch").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -239,7 +515,7 @@ function renderPlanCards(currentPlan) {
             amount,
             currency: "INR",
             plan,
-            billingCycle: "monthly",
+            billingCycle: "yearly",
             status: "active",
           });
           if (subscriptionStatus) subscriptionStatus.textContent = `Switched to ${plan} plan.`;
@@ -377,6 +653,49 @@ function escapeHtml(value) {
 
 function metricCard(label, value) {
   return `<article class="metric-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`;
+}
+
+function groupRecordsByName(records, nameSelector, valueSelector) {
+  const groups = new Map();
+  records.forEach((record) => {
+    const name = nameSelector(record) || "Unknown";
+    const current = groups.get(name) || { name, count: 0, value: 0 };
+    current.count += 1;
+    current.value += Number(valueSelector(record) || 0);
+    groups.set(name, current);
+  });
+  return [...groups.values()].sort((first, second) => second.value - first.value);
+}
+
+function daysPastDue(invoice) {
+  const dueDate = parseDate(invoice.dueDate);
+  if (!dueDate) return 0;
+  const diff = Date.now() - dueDate.getTime();
+  return diff > 0 ? Math.floor(diff / 86400000) : 0;
+}
+
+function agingBucketLabel(invoice) {
+  const days = daysPastDue(invoice);
+  if (days <= 0) return "Current";
+  if (days <= 30) return "1-30 days";
+  if (days <= 60) return "31-60 days";
+  return "60+ days";
+}
+
+function buildCustomerAging(invoices) {
+  const buckets = new Map();
+  invoices.forEach((invoice) => {
+    const balance = Number(invoice.balanceAmount ?? invoice.total ?? 0);
+    if (balance <= 0) return;
+    const customer = invoice.billToName || "Customer";
+    const bucket = agingBucketLabel(invoice);
+    const key = `${customer}|${bucket}`;
+    const current = buckets.get(key) || { customer, bucket, invoices: 0, amount: 0 };
+    current.invoices += 1;
+    current.amount += balance;
+    buckets.set(key, current);
+  });
+  return [...buckets.values()].sort((first, second) => second.amount - first.amount);
 }
 
 function syncDetailFilterVisibility() {
@@ -612,17 +931,54 @@ function renderReportDetail(rawType = "revenue") {
     return;
   }
 
+  const gstOutput = invoices.reduce((sum, invoice) => sum + Number(invoice.taxAmount || 0), 0);
+  const gstInput = purchaseOrders.reduce((sum, po) => sum + Number(po.taxAmount || 0), 0);
+  const netGst = gstOutput - gstInput;
+  const receivables = unpaidTotal;
+  const customerTotals = groupRecordsByName(
+    invoices,
+    (invoice) => invoice.billToName || "Customer",
+    (invoice) => invoice.total || 0,
+  );
+  const vendorTotals = groupRecordsByName(
+    purchaseOrders,
+    (po) => po.billToName || "Vendor",
+    (po) => po.total || 0,
+  );
+  const topCustomer = customerTotals[0];
+  const topVendor = vendorTotals[0];
+  const customerAging = buildCustomerAging(invoices);
+
+  if (!activePlanAllows("advancedReports")) {
+    if (reportDetailMetrics) reportDetailMetrics.innerHTML = [
+      metricCard("Available Now", "Upgrade"),
+      metricCard("Current Revenue", `INR ${money(invoiceTotal)}`),
+      metricCard("Current Expenses", `INR ${money(expenseTotal)}`),
+      metricCard("Advanced Reports", "Pro or Business"),
+    ].join("");
+    renderReportTable(["Report", "Status", "What unlocks"], [
+      ["Balance Sheet Snapshot", "Locked", "Pro and Business reports show receivables, payables and net position."],
+      ["GST Position", "Locked", "Output GST, input GST and net GST payable for selected periods."],
+      ["Customer Aging", "Locked", "Outstanding receivables grouped by customer and age bucket."],
+      ["Vendor Spend", "Locked", "Vendor-wise PO and WO spend from purchase records."],
+      ["Growth Analytics", "Locked", "Revenue, expense and profit trend charts."],
+    ]);
+    return;
+  }
+
   if (reportDetailMetrics) reportDetailMetrics.innerHTML = [
-    metricCard("Available Now", "Basic"),
-    metricCard("Paid Reports", "GST, aging, balance sheet"),
-    metricCard("Current Revenue", `INR ${money(invoiceTotal)}`),
-    metricCard("Current Expenses", `INR ${money(expenseTotal)}`),
+    metricCard("Net Profit", `INR ${money(profit)}`),
+    metricCard("GST Position", `INR ${money(netGst)}`),
+    metricCard("Receivables", `INR ${money(receivables)}`),
+    metricCard("Top Customer", topCustomer ? `${topCustomer.name} - INR ${money(topCustomer.value)}` : "No invoices"),
   ].join("");
-  renderReportTable(["Report", "Status", "Notes"], [
-    ["Balance Sheet", "Paid tier", "Assets, liabilities and capital summary"],
-    ["GST Report", "Paid tier", "GST output/input summaries and tax period views"],
-    ["Customer Aging", "Paid tier", "Outstanding by customer and age bucket"],
-    ["Growth Graphs", "Paid tier", "Revenue, expenses and profit trend analytics"],
+  renderReportTable(["Advanced Report", "Current Insight", "Value"], [
+    ["Balance Sheet Snapshot", "Receivables minus purchase commitments", `INR ${money(receivables - expenseTotal)}`],
+    ["GST Summary", `Output INR ${money(gstOutput)} less input INR ${money(gstInput)}`, `INR ${money(netGst)}`],
+    ["Customer Aging", customerAging[0] ? `${customerAging[0].customer} - ${customerAging[0].bucket}` : "No outstanding balances", customerAging[0] ? `INR ${money(customerAging[0].amount)}` : "INR 0.00"],
+    ["Vendor Spend", topVendor ? topVendor.name : "No PO/WO records", topVendor ? `INR ${money(topVendor.value)}` : "INR 0.00"],
+    ["Growth Analytics", "Filtered revenue and profit chart above", `Margin ${invoiceTotal > 0 ? ((profit / invoiceTotal) * 100).toFixed(2) : "0.00"}%`],
+    ["Profit and Loss", `Revenue INR ${money(invoiceTotal)} less expenses INR ${money(expenseTotal)}`, `INR ${money(profit)}`],
   ]);
 }
 
@@ -832,6 +1188,13 @@ function setPaymentModalStatus(message, tone = "") {
   paymentModalStatus.dataset.tone = tone;
 }
 
+function setRecurringDraftStatus(message, tone = "") {
+  if (!recurringDraftStatus) return;
+  recurringDraftStatus.hidden = !message;
+  recurringDraftStatus.textContent = message || "";
+  recurringDraftStatus.dataset.tone = tone;
+}
+
 function paymentsForInvoice(invoiceId) {
   return dashboardPayments
     .filter((payment) => payment.invoiceId === invoiceId && String(payment.status || "captured").toLowerCase() === "captured")
@@ -961,6 +1324,14 @@ function renderInvoiceWorkspace(invoices) {
   if (draftInvoiceCount) draftInvoiceCount.textContent = String(drafts.length);
   if (createdInvoiceCount) createdInvoiceCount.textContent = String(createdInvoices.length);
   if (invoiceRevenueTotal) invoiceRevenueTotal.textContent = `INR ${money(total)}`;
+  if (runRecurringDraftsBtn) {
+    const canRunRecurring = activePlanAllows("recurringInvoices");
+    runRecurringDraftsBtn.disabled = !canRunRecurring;
+    runRecurringDraftsBtn.textContent = canRunRecurring ? "Generate Recurring Drafts" : "Recurring Drafts in Standard";
+    runRecurringDraftsBtn.title = canRunRecurring
+      ? "Create due draft invoices from recurring invoice templates"
+      : "Recurring invoice drafts are available on Standard and higher plans";
+  }
 
   const renderInvoiceRow = (invoice, tone = "gold") => {
     const isDraft = String(invoice.status || "").toLowerCase() === "draft";
@@ -979,7 +1350,7 @@ function renderInvoiceWorkspace(invoices) {
         <div class="row-actions">
           <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoiceId)}">${isDraft ? "Edit Draft" : "Open / Edit"}</a>
           ${!isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-invoice="${escapeHtml(invoiceId)}" data-balance="${balance}">Record Payment</button>` : ""}
-          ${!isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-link="${escapeHtml(invoiceId)}">${isPaidSubscription(currentSubscription) ? "Collect Online" : "Gateway Paid Tier"}</button>` : ""}
+          ${!isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-link="${escapeHtml(invoiceId)}">${activePlanAllows("razorpayCollections") ? "Collect Online" : "Upgrade for Gateway"}</button>` : ""}
           <button class="ghost small danger" type="button" data-delete-invoice="${escapeHtml(invoiceId)}">Delete</button>
           <span class="pill ${paymentTone(rawPaymentStatus)}">${escapeHtml(paymentStatus.toUpperCase())}</span>
         </div>
@@ -1010,6 +1381,10 @@ function renderInvoiceWorkspace(invoices) {
   document.querySelectorAll("[data-payment-link]").forEach((button) => {
     button.addEventListener("click", async () => {
       const invoiceId = button.getAttribute("data-payment-link");
+      if (!activePlanAllows("razorpayCollections")) {
+        setPaymentModalStatus("Razorpay payment collection is available on Standard and higher plans. Upgrade before using gateway links.", "error");
+        return;
+      }
       try {
         setPaymentModalStatus("Opening Razorpay checkout...", "");
         const orderPayload = await apiClient.createRazorpayOrder(token, { kind: "invoice", invoiceId });
@@ -1111,25 +1486,217 @@ function renderPoWorkspace(purchaseOrders) {
   });
 }
 
+function renderBusinessWorkspace() {
+  const enabled = activePlanAllows("teamAccess") && activePlanAllows("approvals") && activePlanAllows("apiAccess");
+  if (businessWorkspaceBadge) {
+    businessWorkspaceBadge.textContent = enabled ? "Business active" : "Business required";
+    businessWorkspaceBadge.className = `pill ${enabled ? "blue" : "gold"}`;
+  }
+  if (businessWorkspaceNotice) {
+    businessWorkspaceNotice.textContent = enabled
+      ? "Business controls are enabled for this account. Admin preview can be used locally to test each tier safely."
+      : "Upgrade to Business, or use Admin plan preview locally, to test team access, approvals, and API keys.";
+  }
+  [teamInviteForm, apiKeyForm, approvalRequestForm, businessEmailSettingsForm, businessPaymentSettingsForm, businessComplianceForm].forEach((form) => {
+    if (!form) return;
+    [...form.elements].forEach((element) => { element.disabled = !enabled; });
+  });
+  if (businessEmailTestButton) businessEmailTestButton.disabled = !enabled;
+  if (teamMemberCount) teamMemberCount.textContent = String(dashboardTeamMembers.length);
+  if (approvalRequestCount) approvalRequestCount.textContent = String(dashboardApprovalRequests.length);
+  if (apiKeyCount) apiKeyCount.textContent = String(dashboardApiKeys.filter((key) => key.status !== "revoked").length);
+  const emailSettings = dashboardBusinessSettings.emailSettings || {};
+  const paymentSettings = dashboardBusinessSettings.paymentSettings || {};
+  const complianceProfile = dashboardBusinessSettings.complianceProfile || {};
+  if (smtpConfiguredBadge) {
+    const configured = Boolean(emailSettings.smtpHost && emailSettings.smtpUser && emailSettings.fromEmail);
+    smtpConfiguredBadge.textContent = configured ? "SMTP ready" : "SMTP not set";
+    smtpConfiguredBadge.className = `pill ${configured ? "blue" : "gold"}`;
+  }
+  if (businessGatewayBadge) {
+    const status = paymentSettings.status || "not_configured";
+    businessGatewayBadge.textContent = status === "live_ready" ? "Live ready" : status === "test_mode" ? "Test key" : "Not configured";
+    businessGatewayBadge.className = `pill ${status === "live_ready" ? "blue" : "gold"}`;
+  }
+  if (businessEmailSettingsForm && !businessEmailSettingsForm.matches(":focus-within")) {
+    businessEmailSettingsForm.senderName.value = emailSettings.senderName || "";
+    businessEmailSettingsForm.fromEmail.value = emailSettings.fromEmail || "";
+    businessEmailSettingsForm.replyToEmail.value = emailSettings.replyToEmail || "";
+    businessEmailSettingsForm.smtpHost.value = emailSettings.smtpHost || "";
+    businessEmailSettingsForm.smtpPort.value = emailSettings.smtpPort || "";
+    businessEmailSettingsForm.smtpUser.value = emailSettings.smtpUser || "";
+    businessEmailSettingsForm.smtpPass.value = "";
+    businessEmailSettingsForm.smtpSecure.checked = Boolean(emailSettings.smtpSecure);
+    businessEmailSettingsForm.inviteSubject.value = emailSettings.inviteSubject || "";
+    businessEmailSettingsForm.inviteTemplate.value = emailSettings.inviteTemplate || "";
+  }
+  if (businessPaymentSettingsForm && !businessPaymentSettingsForm.matches(":focus-within")) {
+    businessPaymentSettingsForm.keyId.value = paymentSettings.keyId || "";
+    businessPaymentSettingsForm.keySecret.value = "";
+    businessPaymentSettingsForm.webhookSecret.value = "";
+    businessPaymentSettingsForm.paymentLinkEnabled.checked = Boolean(paymentSettings.paymentLinkEnabled);
+  }
+  if (businessComplianceForm && !businessComplianceForm.matches(":focus-within")) {
+    businessComplianceForm.legalName.value = complianceProfile.legalName || "";
+    businessComplianceForm.pan.value = complianceProfile.pan || "";
+    businessComplianceForm.tan.value = complianceProfile.tan || "";
+    businessComplianceForm.gstin.value = complianceProfile.gstin || "";
+    businessComplianceForm.state.value = complianceProfile.state || "";
+    businessComplianceForm.placeOfBusiness.value = complianceProfile.placeOfBusiness || "";
+    businessComplianceForm.invoicePrefix.value = complianceProfile.invoicePrefix || "";
+    businessComplianceForm.fiscalYearStartMonth.value = String(complianceProfile.fiscalYearStartMonth || 4);
+    businessComplianceForm.gstRegistered.checked = Boolean(complianceProfile.gstRegistered);
+    businessComplianceForm.address.value = complianceProfile.address || "";
+  }
+
+  if (teamMembersList) {
+    teamMembersList.innerHTML = dashboardTeamMembers.length
+      ? dashboardTeamMembers.map((member) => `
+        <div class="invoice-card">
+          <div>
+            <strong>${escapeHtml(member.name || member.email)}</strong>
+            <div class="hint">${escapeHtml(member.email)} - ${escapeHtml(member.role || "viewer")} - ${escapeHtml(member.status || "invited")}</div>
+          </div>
+          ${member.status !== "removed" ? `<button class="ghost danger small" type="button" data-remove-team="${escapeHtml(member.id)}">Remove</button>` : "<span class=\"pill gold\">Removed</span>"}
+        </div>
+      `).join("")
+      : `<p>${enabled ? "No team members invited yet." : "Team access unlocks in Business."}</p>`;
+  }
+
+  if (apiKeysList) {
+    apiKeysList.innerHTML = dashboardApiKeys.length
+      ? dashboardApiKeys.map((key) => `
+        <div class="invoice-card">
+          <div>
+            <strong>${escapeHtml(key.label || "API key")}</strong>
+            <div class="hint"><code>${escapeHtml(key.tokenPreview || "hidden")}</code> - ${escapeHtml(key.status || "active")}</div>
+            ${key.token ? `<div class="notice"><strong>Copy now:</strong> <code>${escapeHtml(key.token)}</code></div>` : ""}
+          </div>
+          ${key.status === "active" ? `<button class="ghost danger small" type="button" data-revoke-key="${escapeHtml(key.id)}">Revoke</button>` : "<span class=\"pill gold\">Revoked</span>"}
+        </div>
+      `).join("")
+      : `<p>${enabled ? "No API keys created yet." : "API access unlocks in Business."}</p>`;
+  }
+
+  if (approvalRequestsList) {
+    approvalRequestsList.innerHTML = dashboardApprovalRequests.length
+      ? dashboardApprovalRequests.map((request) => `
+        <div class="invoice-card">
+          <div>
+            <strong>${escapeHtml(request.documentNumber || request.documentType)}</strong>
+            <div class="hint">${escapeHtml(String(request.documentType || "").replace(/_/g, " "))} - ${escapeHtml(request.status || "pending")}</div>
+            ${request.notes ? `<div class="hint">${escapeHtml(request.notes)}</div>` : ""}
+          </div>
+          <div class="row-actions">
+            <button class="ghost small" type="button" data-approval-decision="${escapeHtml(request.id)}" data-status="approved">Approve</button>
+            <button class="ghost danger small" type="button" data-approval-decision="${escapeHtml(request.id)}" data-status="rejected">Reject</button>
+          </div>
+        </div>
+      `).join("")
+      : `<p>${enabled ? "No approval requests yet." : "Approval workflows unlock in Business."}</p>`;
+  }
+
+  document.querySelectorAll("[data-remove-team]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        const member = await apiClient.updateTeamMember(token, button.getAttribute("data-remove-team"), { status: "removed" });
+        dashboardTeamMembers = dashboardTeamMembers.map((item) => (item.id === member.id ? member : item));
+        renderBusinessWorkspace();
+      } catch (error) {
+        if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not update team member.";
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-revoke-key]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        const key = await apiClient.revokeApiKey(token, button.getAttribute("data-revoke-key"));
+        dashboardApiKeys = dashboardApiKeys.map((item) => (item.id === key.id ? key : item));
+        renderBusinessWorkspace();
+      } catch (error) {
+        if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not revoke API key.";
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-approval-decision]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        const request = await apiClient.decideApprovalRequest(token, button.getAttribute("data-approval-decision"), {
+          status: button.getAttribute("data-status"),
+        });
+        dashboardApprovalRequests = dashboardApprovalRequests.map((item) => (item.id === request.id ? request : item));
+        renderBusinessWorkspace();
+      } catch (error) {
+        if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not update approval request.";
+      }
+    });
+  });
+}
+
+async function loadBusinessWorkspace() {
+  if (!activePlanAllows("teamAccess") && !activePlanAllows("approvals") && !activePlanAllows("apiAccess")) {
+    dashboardTeamMembers = [];
+    dashboardApprovalRequests = [];
+    dashboardApiKeys = [];
+    dashboardBusinessSettings = { emailSettings: {}, paymentSettings: {}, complianceProfile: {} };
+    renderBusinessWorkspace();
+    return;
+  }
+  const [members, approvals, apiKeys, settings] = await Promise.all([
+    apiClient.listTeamMembers(token).catch(() => []),
+    apiClient.listApprovalRequests(token).catch(() => []),
+    apiClient.listApiKeys(token).catch(() => []),
+    apiClient.getBusinessSettings(token).catch(() => ({ emailSettings: {}, paymentSettings: {}, complianceProfile: {} })),
+  ]);
+  dashboardTeamMembers = members;
+  dashboardApprovalRequests = approvals;
+  dashboardApiKeys = apiKeys;
+  dashboardBusinessSettings = settings;
+  renderBusinessWorkspace();
+}
+
 async function loadSubscriptionPanel(existingSubscriptions) {
   const subscriptions = existingSubscriptions || await apiClient.listMySubscriptions(token);
-  const current = subscriptions[subscriptions.length - 1] || { plan: "free", amount: 0 };
-  currentSubscription = current;
-  if (currentPlanBadge) currentPlanBadge.textContent = `Current: ${current.plan || "free"} · INR ${money(current.amount || 0)}`;
+  const plansPayload = await apiClient.listPlans(token).catch(() => null);
+  if (Array.isArray(plansPayload?.catalog)) {
+    planCatalog = plansPayload.catalog.map((plan) => ({
+      ...plan,
+      id: plan.plan,
+      description: (plan.highlights || []).join(", "),
+    }));
+  }
+  const activePlan = plansPayload?.active || null;
+  const activeSubscription = subscriptions.slice().reverse().find((subscription) => String(subscription.status || "").toLowerCase() === "active");
+  currentSubscription = activePlan?.subscription || activeSubscription || { plan: "free", amount: 0, status: "active" };
+  activePlanSummary = activePlan || {
+    plan: currentSubscription.plan || "free",
+    label: currentSubscription.plan || "Free",
+    amount: currentSubscription.amount || 0,
+    features: {},
+    subscription: currentSubscription,
+  };
+  if (currentPlanBadge) currentPlanBadge.textContent = `Current: ${activePlanSummary.label || activePlanSummary.plan || "Free"} - INR ${money(activePlanSummary.amount || 0)}`;
+  renderAiAssistantAccess();
   if (subscriptionHistory) {
     subscriptionHistory.innerHTML = subscriptions.length
       ? subscriptions.slice().reverse().map((subscription) => `
         <div class="invoice-card">
           <div>
             <strong>${escapeHtml(subscription.plan || "Subscription")}</strong>
-            <div class="hint">${escapeHtml(subscription.billingCycle || "monthly")} - INR ${money(subscription.amount || 0)} - ${escapeHtml(subscription.status || "active")}</div>
+            <div class="hint">${escapeHtml(subscription.billingCycle || "yearly")} - INR ${money(subscription.amount || 0)} collected${subscription.monthlyAmount ? ` - INR ${money(subscription.monthlyAmount)}/mo equivalent` : ""} - ${escapeHtml(subscription.status || "active")}</div>
+            ${subscription.renewsAt ? `<div class="hint">Renews on ${escapeHtml(String(subscription.renewsAt).slice(0, 10))}</div>` : ""}
+            ${subscription.gatewayOrderId ? `<div class="hint">Order: <code>${escapeHtml(subscription.gatewayOrderId)}</code></div>` : ""}
+            ${subscription.gatewayPaymentId ? `<div class="hint">Payment: <code>${escapeHtml(subscription.gatewayPaymentId)}</code></div>` : ""}
           </div>
-          <span class="pill blue">${escapeHtml(subscription.subscriberType || "user")}</span>
+          <span class="pill ${subscriptionStatusTone(subscription.status)}">${escapeHtml(String(subscription.status || "active").toUpperCase())}</span>
         </div>
       `).join("")
       : "<p>No subscription history yet.</p>";
   }
-  renderPlanCards(current.plan || "free");
+  renderPlanCards(activePlanSummary.plan || "free");
+  await loadBusinessWorkspace().catch(() => renderBusinessWorkspace());
 }
 
 profileMenuButton?.addEventListener("click", () => {
@@ -1149,6 +1716,293 @@ document.addEventListener("click", (event) => {
 profileLogoutBtn?.addEventListener("click", () => {
   clearToken();
   window.location.href = "/apps/web/index.html";
+});
+
+aiInvoiceExample?.addEventListener("click", () => {
+  if (aiCommandInput) aiCommandInput.value = "Create invoice for Rahul Sharma for website design INR 15000 plus 18% GST due in 7 days";
+  aiCommandInput?.focus();
+});
+
+aiPoExample?.addEventListener("click", () => {
+  if (aiCommandInput) aiCommandInput.value = "Generate PO for Dell laptops quantity 5 INR 50000 plus 18% GST";
+  aiCommandInput?.focus();
+});
+
+aiReportExample?.addEventListener("click", () => {
+  if (aiCommandInput) aiCommandInput.value = "Show profit and loss report summary";
+  aiCommandInput?.focus();
+});
+
+aiVoiceButton?.addEventListener("click", () => {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    setAiAssistantStatus("Voice input is not available in this browser. Please type the command.", "error");
+    return;
+  }
+  const recognition = new SpeechRecognition();
+  recognition.lang = "en-IN";
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+  aiVoiceButton.disabled = true;
+  aiVoiceButton.textContent = "Listening...";
+  setAiAssistantStatus("Listening. Speak the invoice, PO, or report command clearly.", "");
+  recognition.onresult = (event) => {
+    const transcript = event.results?.[0]?.[0]?.transcript || "";
+    if (aiCommandInput) aiCommandInput.value = transcript;
+    setAiAssistantStatus("Voice command captured. Review the text, then send it.", "success");
+  };
+  recognition.onerror = () => {
+    setAiAssistantStatus("Could not capture voice command. Typed commands still work.", "error");
+  };
+  recognition.onend = () => {
+    aiVoiceButton.disabled = !canUseAiAssistant();
+    aiVoiceButton.textContent = "Voice input";
+  };
+  recognition.start();
+});
+
+async function sendAiCommand() {
+  if (!canUseAiAssistant()) {
+    setAiAssistantStatus("AI assistant is available on Pro and Business plans.", "error");
+    return;
+  }
+  const command = aiCommandInput?.value?.trim() || "";
+  if (!command) {
+    setAiAssistantStatus("Enter a command for invoice, PO/WO, or report generation.", "error");
+    return;
+  }
+  aiCommandRun.disabled = true;
+  if (aiCommandInput) aiCommandInput.value = "";
+  appendAiChatMessage("user", command);
+  showAiThinking();
+  setAiAssistantStatus("AI is reviewing your command...", "");
+  try {
+    const result = await apiClient.runAiCommand(token, { command, previewOnly: true });
+    removeAiThinking();
+    pendingAiDraftCommand = result.intent === "invoice" || result.intent === "purchase_order" ? command : null;
+    pendingAiDraftResult = pendingAiDraftCommand ? result : null;
+    renderAiResult(result);
+    const missingCustomer = result.customerMatch?.status === "missing";
+    setAiAssistantStatus(
+      result.intent === "report"
+        ? "AI report summary ready."
+        : missingCustomer
+          ? "AI proposal ready, but this customer is not saved yet. Add the customer first or create the draft and complete details later."
+          : "AI proposal ready. Review it, then create the draft if it looks correct.",
+      missingCustomer ? "" : "success"
+    );
+  } catch (error) {
+    const message = error.message === "Not found"
+      ? "AI command route was not found on the running server. Restart the EazInvoice server and try again."
+      : error.message || "Could not run AI command.";
+    removeAiThinking();
+    appendAiChatMessage("assistant", message);
+    setAiAssistantStatus(message, "error");
+  } finally {
+    aiCommandRun.disabled = !canUseAiAssistant();
+  }
+}
+
+aiCommandRun?.addEventListener("click", sendAiCommand);
+
+aiCommandInput?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey) return;
+  event.preventDefault();
+  sendAiCommand();
+});
+
+attachFormValidityStatus(
+  businessEmailSettingsForm,
+  businessEmailStatus,
+  "Please fix the highlighted email/SMTP fields first. Reply-to must be a complete email address, for example info@eazinvoice.com.",
+);
+attachFormValidityStatus(teamInviteForm, teamInviteStatus, "Please enter a valid invitee email address.");
+attachFormValidityStatus(apiKeyForm, apiKeyStatus, "Please enter an API key label.");
+attachFormValidityStatus(approvalRequestForm, approvalRequestStatus, "Please enter a document number or draft name.");
+
+teamInviteForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setInlineStatus(teamInviteStatus, "Inviting team member...", "");
+  const formData = new FormData(teamInviteForm);
+  try {
+    const member = await apiClient.createTeamMember(token, {
+      name: formData.get("name"),
+      email: formData.get("email"),
+      role: formData.get("role"),
+    });
+    dashboardTeamMembers = [member, ...dashboardTeamMembers.filter((item) => item.id !== member.id)];
+    teamInviteForm.reset();
+    const deliveryStatus = member.inviteDeliveryStatus || "queued";
+    const deliveryMessage = member.inviteDeliveryMessage || "Team member invitation saved in the Business workspace.";
+    setInlineStatus(
+      teamInviteStatus,
+      deliveryMessage,
+      deliveryStatus === "failed" ? "error" : "success",
+    );
+    renderBusinessWorkspace();
+  } catch (error) {
+    if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not invite team member.";
+    setInlineStatus(teamInviteStatus, error.message || "Could not invite team member.", "error");
+  }
+});
+
+businessEmailSettingsForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setInlineStatus(businessEmailStatus, "Saving email settings...", "");
+  const formData = new FormData(businessEmailSettingsForm);
+  try {
+    dashboardBusinessSettings = await apiClient.updateBusinessSettings(token, {
+      emailSettings: {
+        senderName: formData.get("senderName"),
+        fromEmail: formData.get("fromEmail"),
+        replyToEmail: formData.get("replyToEmail"),
+        smtpHost: formData.get("smtpHost"),
+        smtpPort: formData.get("smtpPort"),
+        smtpUser: formData.get("smtpUser"),
+        smtpPass: formData.get("smtpPass"),
+        smtpSecure: formData.get("smtpSecure") === "on",
+        inviteSubject: formData.get("inviteSubject"),
+        inviteTemplate: formData.get("inviteTemplate"),
+      },
+    });
+    if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = "Business email settings saved. SMTP password is hidden after saving.";
+    setInlineStatus(businessEmailStatus, "Business email settings saved. SMTP password is hidden after saving.", "success");
+    renderBusinessWorkspace();
+  } catch (error) {
+    if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not save email settings.";
+    setInlineStatus(businessEmailStatus, error.message || "Could not save email settings.", "error");
+  }
+});
+
+businessEmailTestButton?.addEventListener("click", async () => {
+  if (!businessEmailSettingsForm?.reportValidity()) {
+    setInlineStatus(businessEmailStatus, "Please fix the highlighted email/SMTP fields first. Reply-to must be a complete email address.", "error");
+    return;
+  }
+  setInlineStatus(businessEmailStatus, "Validating SMTP settings and sending a test email when possible...", "");
+  const formData = new FormData(businessEmailSettingsForm);
+  const hasPassword = Boolean(String(formData.get("smtpPass") || "").trim());
+  try {
+    dashboardBusinessSettings = await apiClient.validateBusinessEmailSettings(token, {
+      sendTestEmail: hasPassword,
+      testRecipient: formData.get("replyToEmail") || formData.get("fromEmail"),
+      emailSettings: {
+        senderName: formData.get("senderName"),
+        fromEmail: formData.get("fromEmail"),
+        replyToEmail: formData.get("replyToEmail"),
+        smtpHost: formData.get("smtpHost"),
+        smtpPort: formData.get("smtpPort"),
+        smtpUser: formData.get("smtpUser"),
+        smtpPass: formData.get("smtpPass"),
+        smtpSecure: formData.get("smtpSecure") === "on",
+        inviteSubject: formData.get("inviteSubject"),
+        inviteTemplate: formData.get("inviteTemplate"),
+      },
+    });
+    const status = dashboardBusinessSettings.emailSettings?.lastTestStatus || "ready";
+    const deliveryStatus = dashboardBusinessSettings.emailSettings?.lastDeliveryStatus || "";
+    const deliveryMessage = dashboardBusinessSettings.emailSettings?.lastDeliveryMessage || "";
+    if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = status === "ready"
+      ? (deliveryStatus === "sent" ? deliveryMessage : "SMTP settings look complete. Re-enter the mailbox password/app password and click Validate to send a real test email.")
+      : `SMTP settings need attention: ${status}`;
+    setInlineStatus(
+      businessEmailStatus,
+      status === "ready"
+        ? (deliveryStatus === "sent" ? deliveryMessage : "SMTP fields are valid. Enter the mailbox password/app password before sending a real test email.")
+        : `SMTP settings need attention: ${status}`,
+      status === "ready" ? "success" : "error",
+    );
+    renderBusinessWorkspace();
+  } catch (error) {
+    if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not validate SMTP settings.";
+    setInlineStatus(businessEmailStatus, error.message || "Could not validate SMTP settings.", "error");
+  }
+});
+
+businessPaymentSettingsForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setInlineStatus(businessPaymentStatus, "Saving gateway settings...", "");
+  const formData = new FormData(businessPaymentSettingsForm);
+  try {
+    dashboardBusinessSettings = await apiClient.updateBusinessSettings(token, {
+      paymentSettings: {
+        keyId: formData.get("keyId"),
+        keySecret: formData.get("keySecret"),
+        webhookSecret: formData.get("webhookSecret"),
+        paymentLinkEnabled: formData.get("paymentLinkEnabled") === "on",
+      },
+    });
+    if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = "Business Razorpay settings saved. Secrets are hidden after saving.";
+    setInlineStatus(businessPaymentStatus, "Business Razorpay settings saved. Secrets are hidden after saving.", "success");
+    renderBusinessWorkspace();
+  } catch (error) {
+    if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not save payment gateway settings.";
+    setInlineStatus(businessPaymentStatus, error.message || "Could not save payment gateway settings.", "error");
+  }
+});
+
+businessComplianceForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setInlineStatus(businessComplianceStatus, "Saving compliance profile...", "");
+  const formData = new FormData(businessComplianceForm);
+  try {
+    dashboardBusinessSettings = await apiClient.updateBusinessSettings(token, {
+      complianceProfile: {
+        legalName: formData.get("legalName"),
+        pan: formData.get("pan"),
+        tan: formData.get("tan"),
+        gstin: formData.get("gstin"),
+        state: formData.get("state"),
+        placeOfBusiness: formData.get("placeOfBusiness"),
+        invoicePrefix: formData.get("invoicePrefix"),
+        fiscalYearStartMonth: formData.get("fiscalYearStartMonth"),
+        gstRegistered: formData.get("gstRegistered") === "on",
+        address: formData.get("address"),
+      },
+    });
+    if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = "Compliance profile saved for reports, audit trails, and future GST exports.";
+    setInlineStatus(businessComplianceStatus, "Compliance profile saved for reports, audit trails, and future GST exports.", "success");
+    renderBusinessWorkspace();
+  } catch (error) {
+    if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not save compliance profile.";
+    setInlineStatus(businessComplianceStatus, error.message || "Could not save compliance profile.", "error");
+  }
+});
+
+apiKeyForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setInlineStatus(apiKeyStatus, "Generating API key...", "");
+  const formData = new FormData(apiKeyForm);
+  try {
+    const key = await apiClient.createApiKey(token, { label: formData.get("label") });
+    dashboardApiKeys = [key, ...dashboardApiKeys];
+    apiKeyForm.reset();
+    setInlineStatus(apiKeyStatus, "API key generated. Copy the secret now; it will be hidden after refresh.", "success");
+    renderBusinessWorkspace();
+  } catch (error) {
+    if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not create API key.";
+    setInlineStatus(apiKeyStatus, error.message || "Could not create API key.", "error");
+  }
+});
+
+approvalRequestForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setInlineStatus(approvalRequestStatus, "Creating approval request...", "");
+  const formData = new FormData(approvalRequestForm);
+  try {
+    const request = await apiClient.createApprovalRequest(token, {
+      documentType: formData.get("documentType"),
+      documentNumber: formData.get("documentNumber"),
+      notes: formData.get("notes"),
+    });
+    dashboardApprovalRequests = [request, ...dashboardApprovalRequests];
+    approvalRequestForm.reset();
+    setInlineStatus(approvalRequestStatus, "Approval request created.", "success");
+    renderBusinessWorkspace();
+  } catch (error) {
+    if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not create approval request.";
+    setInlineStatus(approvalRequestStatus, error.message || "Could not create approval request.", "error");
+  }
 });
 
 paymentModalClose?.addEventListener("click", closePaymentModal);
@@ -1206,6 +2060,33 @@ paymentForm?.addEventListener("submit", async (event) => {
   }
 });
 
+runRecurringDraftsBtn?.addEventListener("click", async () => {
+  if (!activePlanAllows("recurringInvoices")) {
+    setRecurringDraftStatus("Recurring draft generation is available on Standard and higher plans.", "error");
+    return;
+  }
+  runRecurringDraftsBtn.disabled = true;
+  setRecurringDraftStatus("Checking due recurring invoices...", "");
+  try {
+    const result = await apiClient.runRecurringInvoiceDrafts(token, {
+      targetDate: new Date().toISOString().slice(0, 10),
+    });
+    (result.created || []).forEach(replaceInvoice);
+    const createdCount = result.created?.length || 0;
+    rerenderDashboardData();
+    setRecurringDraftStatus(
+      createdCount
+        ? `${createdCount} recurring draft${createdCount === 1 ? "" : "s"} created. Open Draft Invoices to continue.`
+        : "No due recurring invoices found for today.",
+      createdCount ? "success" : ""
+    );
+  } catch (error) {
+    setRecurringDraftStatus(error.message || "Could not generate recurring drafts.", "error");
+  } finally {
+    runRecurringDraftsBtn.disabled = !activePlanAllows("recurringInvoices");
+  }
+});
+
 [reportMonth, reportYear].forEach((filter) => {
   filter?.addEventListener("change", () => {
     renderDashboardMetrics(dashboardInvoices);
@@ -1218,6 +2099,30 @@ paymentForm?.addEventListener("submit", async (event) => {
   filter?.addEventListener("change", () => {
     syncDetailFilterVisibility();
     if (currentDashboardPage().startsWith("report-")) renderReportDetail(currentDashboardPage().replace("report-", ""));
+  });
+});
+
+workspaceTargetLinks.forEach((link) => {
+  link.addEventListener("click", (event) => {
+    const targetId = link.getAttribute("data-workspace-target");
+    if (!targetId) return;
+    event.preventDefault();
+    if (window.location.hash !== "#business-workspace") {
+      window.location.hash = "#business-workspace";
+      window.setTimeout(() => openWorkspaceGroup(targetId, true), 40);
+      return;
+    }
+    showDashboardPage("business-workspace");
+    openWorkspaceGroup(targetId, true);
+  });
+});
+
+workspaceGroups.forEach((group) => {
+  group.addEventListener("toggle", () => {
+    if (!group.open) return;
+    workspaceGroups.forEach((otherGroup) => {
+      if (otherGroup !== group) otherGroup.open = false;
+    });
   });
 });
 
@@ -1301,4 +2206,5 @@ async function initializeDashboard() {
 }
 
 showDashboardPage();
+renderAiAssistantAccess();
 initializeDashboard();

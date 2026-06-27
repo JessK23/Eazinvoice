@@ -1,6 +1,6 @@
-=== EazInvoice - Invoicing for MSMEs ===
+=== EazInvoice Billing Workspace for MSMEs ===
 Contributors: eazinvoice
-Tags: invoice, invoicing, gst, billing, msme, freelancer, small business
+Tags: invoice, billing, gst, msme, freelancer
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
@@ -8,7 +8,7 @@ Stable tag: 1.0.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Simple EazInvoice connection and automatic invoice call-to-action for WordPress service businesses, freelancers, agencies, consultants, B2B sellers, and Indian MSMEs.
+Embedded EazInvoice billing workspace for WordPress MSMEs, freelancers, service businesses, and B2B sellers.
 
 == Description ==
 
@@ -48,7 +48,7 @@ The paid version is sold independently from eazinvoice.com and can include:
 
 == Installation ==
 
-1. Upload the `eazinvoice` folder to `/wp-content/plugins/`.
+1. Upload the `eazinvoice-invoicing-for-msmes` folder to `/wp-content/plugins/`.
 2. Activate the plugin through the WordPress Plugins screen.
 3. Open `EazInvoice` from the admin menu.
 4. Add your account email and workspace URL.

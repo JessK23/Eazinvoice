@@ -1,4 +1,4 @@
-import { apiClient, clearToken, getTokenCandidates, saveToken } from "./common.js?v=20260601-session";
+import { apiClient, clearToken, getTokenCandidates, mountAdminPlanPreview, saveToken } from "./common.js?v=20260601-session";
 
 const navLinks = document.querySelectorAll(".landing-nav a[href^='#']");
 navLinks.forEach((link) => {
@@ -118,6 +118,7 @@ if (tokenCandidates.length) {
       saveToken(candidate);
       localStorage.setItem("eazinvoice_user", JSON.stringify(user));
       showLoggedInHome(user);
+      mountAdminPlanPreview({ token: candidate, session }, { containerSelector: ".landing-nav" });
       matchedSession = true;
       break;
     } catch {

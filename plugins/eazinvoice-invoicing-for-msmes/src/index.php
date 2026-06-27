@@ -447,8 +447,8 @@ final class EazInvoice_Plugin {
 		echo '<label class="eazinvoice-admin-menu-toggle" for="' . esc_attr( $menu_id ) . '"><span class="eazinvoice-admin-menu-icon"><span></span><span></span><span></span></span><strong>' . esc_html__( 'Menu', 'eazinvoice-invoicing-for-msmes' ) . '</strong></label>';
 		echo '<nav class="eazinvoice-admin-nav" aria-label="' . esc_attr__( 'EazInvoice sections', 'eazinvoice-invoicing-for-msmes' ) . '">';
 		foreach ( $links as $key => $link ) {
-			$class = $active === $key ? ' class="is-active"' : '';
-			echo '<a' . $class . ' href="' . esc_url( $link[1] ) . '">' . esc_html( $link[0] ) . '</a>';
+			$class = $active === $key ? 'is-active' : '';
+			echo '<a class="' . esc_attr( $class ) . '" href="' . esc_url( $link[1] ) . '">' . esc_html( $link[0] ) . '</a>';
 		}
 		echo '</nav>';
 		echo '</div>';
@@ -540,14 +540,19 @@ final class EazInvoice_Plugin {
 	 * Render a document saved notice.
 	 */
 	private function render_saved_notice() {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only admin notice parameters after a nonce-validated redirect.
 		if ( empty( $_GET['eazinvoice_saved'] ) ) {
 			return;
 		}
 
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only admin notice parameters after a nonce-validated redirect.
 		$saved_status = sanitize_key( wp_unslash( $_GET['eazinvoice_saved'] ) );
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only admin notice parameters after a nonce-validated redirect.
 		$status       = 'created' === $saved_status ? __( 'created', 'eazinvoice-invoicing-for-msmes' ) : __( 'saved as draft', 'eazinvoice-invoicing-for-msmes' );
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only admin notice parameters after a nonce-validated redirect.
 		$number = sanitize_text_field( wp_unslash( $_GET['eazinvoice_no'] ?? '' ) );
 
+		/* translators: 1: document number, 2: saved status. */
 		echo '<div class="notice notice-success is-dismissible"><p>' . esc_html( sprintf( __( '%1$s %2$s successfully.', 'eazinvoice-invoicing-for-msmes' ), $number, $status ) ) . '</p></div>';
 	}
 
@@ -920,10 +925,10 @@ final class EazInvoice_Plugin {
 			'eazinvoice_button'
 		);
 
-		$url   = esc_url( $atts['url'] );
-		$label = esc_html( $atts['label'] );
+		$url   = (string) $atts['url'];
+		$label = (string) $atts['label'];
 
-		return '<div class="eazinvoice-shortcode"><a class="eazinvoice-shortcode-button" href="' . $url . '" target="_blank" rel="noopener noreferrer">' . $label . '</a></div>';
+		return '<div class="eazinvoice-shortcode"><a class="eazinvoice-shortcode-button" href="' . esc_url( $url ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $label ) . '</a></div>';
 	}
 
 	/**
@@ -936,10 +941,10 @@ final class EazInvoice_Plugin {
 			return;
 		}
 
-		$url      = esc_url( $this->get_create_invoice_url() );
-		$label    = esc_html( $settings['button_label'] );
+		$url      = $this->get_create_invoice_url();
+		$label    = $settings['button_label'];
 		$position = 'bottom-left' === $settings['button_position'] ? 'bottom-left' : 'bottom-right';
 
-		echo '<div class="eazinvoice-floating-cta eazinvoice-floating-cta-' . esc_attr( $position ) . '"><a href="' . $url . '" target="_blank" rel="noopener noreferrer">' . $label . '</a></div>';
+		echo '<div class="eazinvoice-floating-cta eazinvoice-floating-cta-' . esc_attr( $position ) . '"><a href="' . esc_url( $url ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $label ) . '</a></div>';
 	}
 }

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Eazinvoice Reports Dashboard</title>
+  <title>Eazinvoice Reports</title>
   <link rel="stylesheet" href="./styles.css?v=20260603-report-charts" />
   <script src="./nav.js?v=20260614-responsive-menu" defer></script>
 </head>
@@ -45,13 +45,31 @@
           <div class="brand-sub">Reports</div>
         </div>
       </div>
-      <nav class="nav">
+      <nav class="nav nav-groups">
+        <a class="nav-item nav-item-featured" href="/apps/web/dashboard.html#ai-assistant" data-page-link="ai-assistant">AI Assistant</a>
         <a class="nav-item active" href="/apps/web/dashboard.html#reports" data-page-link="reports">Reports</a>
         <a class="nav-item" href="/apps/web/dashboard.html#invoices" data-page-link="invoices">Invoices</a>
         <a class="nav-item" href="/apps/web/dashboard.html#purchase-orders" data-page-link="purchase-orders">Purchase / Work Order</a>
-        <a class="nav-item" href="/apps/web/dashboard.html#business-profiles" data-page-link="business-profiles">Business Profiles</a>
-        <a class="nav-item" href="/apps/web/dashboard.html#customers" data-page-link="customers">Customers</a>
-        <a class="nav-item" href="/apps/web/dashboard.html#vendors" data-page-link="vendors">Vendors</a>
+        <details class="nav-group">
+          <summary class="nav-item nav-item-toggle">Records</summary>
+          <div class="nav-subitems">
+            <a class="nav-subitem" href="/apps/web/dashboard.html#business-profiles" data-page-link="business-profiles">Business Profiles</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#customers" data-page-link="customers">Customers</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#vendors" data-page-link="vendors">Vendors</a>
+          </div>
+        </details>
+        <details class="nav-group" id="businessWorkspaceNavGroup">
+          <summary class="nav-item nav-item-toggle">Business Workspace</summary>
+          <div class="nav-subitems">
+            <a class="nav-subitem" href="/apps/web/dashboard.html#business-workspace" data-page-link="business-workspace">Workspace Overview</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#business-workspace" data-page-link="business-workspace" data-workspace-target="workspace-email-settings">Email and SMTP</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#business-workspace" data-page-link="business-workspace" data-workspace-target="workspace-gateway-settings">Gateway Settings</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#business-workspace" data-page-link="business-workspace" data-workspace-target="workspace-compliance-profile">Compliance Profile</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#business-workspace" data-page-link="business-workspace" data-workspace-target="workspace-team-access">Team Access</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#business-workspace" data-page-link="business-workspace" data-workspace-target="workspace-api-access">API Access</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#business-workspace" data-page-link="business-workspace" data-workspace-target="workspace-approval-queue">Approval Queue</a>
+          </div>
+        </details>
         <a class="nav-item" href="/apps/web/dashboard.html#subscription" data-page-link="subscription">Subscription Upgrade</a>
       </nav>
       <div class="plan-card">
@@ -65,6 +83,53 @@
       </div>
     </aside>
     <main class="main">
+      <section id="ai-assistant" class="panel dashboard-page ai-workspace-page" data-dashboard-page="ai-assistant">
+        <div class="dashboard-head">
+          <div>
+            <span class="pill blue">Paid feature</span>
+            <h1>AI Assistant</h1>
+            <p class="hint">Use one command window to draft invoices, create PO/WO drafts, or summarize reports from your saved records.</p>
+          </div>
+          <a class="ghost" href="/apps/web/subscription.html">View AI plans</a>
+        </div>
+        <section id="aiAssistantPanel" class="ai-assistant-card ai-assistant-card-hero">
+          <div class="panel-head">
+            <div>
+              <span class="pill blue">Pro AI Assistant</span>
+              <h2>AI Agent Workspace</h2>
+              <p class="hint">Ask naturally. The assistant can prepare invoice drafts, PO/WO drafts, and report summaries from your saved EazInvoice records.</p>
+            </div>
+            <span id="aiAssistantPlanBadge" class="pill gold">Pro / Business</span>
+          </div>
+          <div id="aiAssistantResult" class="ai-chat-transcript" aria-live="polite">
+            <div class="ai-chat-message assistant">
+              <div class="ai-avatar">AI</div>
+              <div class="ai-bubble">
+                <strong>Hello, I am your EazInvoice assistant.</strong>
+                <p>I can draft invoices, create PO or WO drafts, explain missing customer details, and summarize your reports. I will ask for missing information before creating anything important.</p>
+              </div>
+            </div>
+          </div>
+          <p id="aiAssistantStatus" class="inline-status" hidden></p>
+          <div class="ai-prompt-chips">
+            <button id="aiInvoiceExample" class="ghost small" type="button">Draft invoice</button>
+            <button id="aiPoExample" class="ghost small" type="button">Draft PO / WO</button>
+            <button id="aiReportExample" class="ghost small" type="button">Summarize reports</button>
+          </div>
+          <div class="ai-composer">
+            <textarea id="aiCommandInput" rows="3" placeholder="Message EazInvoice AI, e.g. Create invoice for Rachel Antony amount 40000 plus 18% GST"></textarea>
+            <div class="row-actions">
+              <button id="aiVoiceButton" class="ghost small" type="button">Voice input</button>
+              <button id="aiCommandRun" class="primary" type="button">Send</button>
+            </div>
+          </div>
+        </section>
+        <div class="quick-grid ai-feature-strip">
+          <article class="quick-card"><strong>AI Invoice Drafts</strong><span>Prepare invoice drafts using customer, item, tax, due date, and amount clues.</span></article>
+          <article class="quick-card"><strong>AI PO / WO Drafts</strong><span>Create purchase or work order drafts for vendor-side workflows.</span></article>
+          <article class="quick-card"><strong>AI Report Summary</strong><span>Summarize revenue, expenses, unpaid balances, and profit using saved records.</span></article>
+        </div>
+      </section>
       <section id="reports" class="panel dashboard-page" data-dashboard-page="reports">
         <div class="dashboard-head">
           <div>
@@ -204,8 +269,12 @@
             <span class="pill blue">Invoice workspace</span>
             <h2>Invoice Summary</h2>
           </div>
-          <a class="primary" href="/apps/web/invoice.html">Generate New Invoice</a>
+          <div class="row-actions">
+            <button id="runRecurringDraftsBtn" class="ghost" type="button">Generate Recurring Drafts</button>
+            <a class="primary" href="/apps/web/invoice.html">Generate New Invoice</a>
+          </div>
         </div>
+        <p id="recurringDraftStatus" class="inline-status" hidden></p>
         <div class="quick-grid">
           <article class="quick-card">
             <strong>Generate New Invoice</strong>
@@ -331,6 +400,180 @@
         </div>
         <div class="notice">Vendors are currently derived from saved PO/WO records. A dedicated vendor master can be added once backend vendor routes are created.</div>
         <div id="vendorsList" class="management-list"></div>
+      </section>
+      <section id="business-workspace" class="panel dashboard-page" data-dashboard-page="business-workspace">
+        <div class="panel-head">
+          <div>
+            <span class="pill blue">Business tier</span>
+            <h2>Business Workspace</h2>
+            <p class="hint">Each workspace tool is kept separate below, so it is clear that they are connected but not all mandatory at once.</p>
+          </div>
+          <span id="businessWorkspaceBadge" class="pill gold">Business required</span>
+        </div>
+        <div id="businessWorkspaceNotice" class="notice">Business features unlock team access, approval workflows, API access, and business-side integrations.</div>
+        <div class="quick-grid">
+          <article class="quick-card">
+            <strong>Team Members</strong>
+            <span>Invite accountants, admins, and view-only users.</span>
+            <strong id="teamMemberCount">0</strong>
+          </article>
+          <article class="quick-card">
+            <strong>Approval Queue</strong>
+            <span>Route invoices, POs, and WOs for review.</span>
+            <strong id="approvalRequestCount">0</strong>
+          </article>
+          <article class="quick-card">
+            <strong>API Keys</strong>
+            <span>Connect WordPress or external business tools.</span>
+            <strong id="apiKeyCount">0</strong>
+          </article>
+        </div>
+
+        <details id="workspace-email-settings" class="workspace-group" open>
+          <summary class="workspace-group-summary">
+            <div>
+              <h3>Business Email Settings</h3>
+              <p class="hint">Use this only if you want external invites, approvals, and business communication to go through your mailbox.</p>
+            </div>
+            <span id="smtpConfiguredBadge" class="pill gold">SMTP not set</span>
+          </summary>
+          <div class="workspace-group-body">
+            <form id="businessEmailSettingsForm" class="stacked-form grid two">
+              <input name="senderName" placeholder="Sender name, e.g. Acme Accounts" />
+              <input name="fromEmail" type="email" placeholder="From email" />
+              <input name="replyToEmail" type="email" placeholder="Reply-to email" />
+              <input name="smtpHost" placeholder="SMTP host" />
+              <input name="smtpPort" placeholder="SMTP port" />
+              <input name="smtpUser" placeholder="SMTP username" />
+              <input name="smtpPass" type="password" placeholder="SMTP password/app password" />
+              <label class="check-row"><input name="smtpSecure" type="checkbox" /> Use secure SMTP</label>
+              <input name="inviteSubject" placeholder="Invite email subject" />
+              <textarea name="inviteTemplate" placeholder="Invite template. Use {{name}} and {{businessName}}"></textarea>
+              <button class="primary" type="submit">Save Email Settings</button>
+              <button id="businessEmailTestButton" class="ghost" type="button">Validate SMTP Settings</button>
+              <div id="businessEmailStatus" class="inline-status full" aria-live="polite"></div>
+            </form>
+          </div>
+        </details>
+
+        <details id="workspace-gateway-settings" class="workspace-group">
+          <summary class="workspace-group-summary">
+            <div>
+              <h3>Business Razorpay Gateway</h3>
+              <p class="hint">Connect business-side payment collection without mixing it up with EazInvoice subscription billing.</p>
+            </div>
+            <span id="businessGatewayBadge" class="pill gold">Not configured</span>
+          </summary>
+          <div class="workspace-group-body">
+            <form id="businessPaymentSettingsForm" class="stacked-form">
+              <input name="keyId" placeholder="Razorpay Key ID, e.g. rzp_live_..." />
+              <input name="keySecret" type="password" placeholder="Razorpay Key Secret" />
+              <input name="webhookSecret" type="password" placeholder="Webhook secret" />
+              <label class="check-row"><input name="paymentLinkEnabled" type="checkbox" /> Enable payment links on invoices</label>
+              <button class="primary" type="submit">Save Gateway Settings</button>
+              <div id="businessPaymentStatus" class="inline-status" aria-live="polite"></div>
+            </form>
+            <div class="notice">These credentials belong to the business account. EazInvoice subscription billing remains separate.</div>
+          </div>
+        </details>
+
+        <details id="workspace-compliance-profile" class="workspace-group">
+          <summary class="workspace-group-summary">
+            <div>
+              <h3>Compliance Profile</h3>
+              <p class="hint">Keep the company’s financial-year and compliance data separate from invites, API keys, and gateway settings.</p>
+            </div>
+            <span class="pill blue">GST / audit</span>
+          </summary>
+          <div class="workspace-group-body">
+            <form id="businessComplianceForm" class="stacked-form grid two">
+              <input name="legalName" placeholder="Legal name" />
+              <input name="pan" placeholder="PAN" />
+              <input name="tan" placeholder="TAN" />
+              <input name="gstin" placeholder="GSTIN" />
+              <input name="state" placeholder="State" />
+              <input name="placeOfBusiness" placeholder="Place of business" />
+              <input name="invoicePrefix" placeholder="Invoice prefix" />
+              <select name="fiscalYearStartMonth">
+                <option value="4">Financial year starts in April</option>
+                <option value="1">Financial year starts in January</option>
+                <option value="7">Financial year starts in July</option>
+              </select>
+              <label class="check-row"><input name="gstRegistered" type="checkbox" /> GST registered</label>
+              <textarea name="address" placeholder="Registered address"></textarea>
+              <button class="primary" type="submit">Save Compliance Profile</button>
+              <div id="businessComplianceStatus" class="inline-status full" aria-live="polite"></div>
+            </form>
+          </div>
+        </details>
+
+        <div class="grid two">
+          <details id="workspace-team-access" class="workspace-group">
+            <summary class="workspace-group-summary">
+              <div>
+                <h3>Invite Team Member</h3>
+                <p class="hint">Invite external users here without making SMTP, compliance, API, and approvals feel like one mandatory block.</p>
+              </div>
+              <span class="pill blue">Roles</span>
+            </summary>
+            <div class="workspace-group-body">
+              <form id="teamInviteForm" class="stacked-form">
+                <input name="name" placeholder="Name" />
+                <input name="email" type="email" placeholder="Email address" required />
+                <select name="role">
+                  <option value="admin">Admin</option>
+                  <option value="accountant">Accountant</option>
+                  <option value="viewer">Viewer</option>
+                </select>
+                <button class="primary" type="submit">Invite Member</button>
+                <div id="teamInviteStatus" class="inline-status" aria-live="polite"></div>
+              </form>
+              <div id="teamMembersList" class="list"></div>
+            </div>
+          </details>
+
+          <details id="workspace-api-access" class="workspace-group">
+            <summary class="workspace-group-summary">
+              <div>
+                <h3>API Access</h3>
+                <p class="hint">Generate keys for WordPress sites, internal tools, and future integrations.</p>
+              </div>
+              <span class="pill gold">Integration</span>
+            </summary>
+            <div class="workspace-group-body">
+              <form id="apiKeyForm" class="stacked-form">
+                <input name="label" placeholder="Key label, e.g. WordPress website" required />
+                <button class="primary" type="submit">Generate API Key</button>
+                <div id="apiKeyStatus" class="inline-status" aria-live="polite"></div>
+              </form>
+              <div id="apiKeysList" class="list"></div>
+            </div>
+          </details>
+        </div>
+
+        <details id="workspace-approval-queue" class="workspace-group">
+          <summary class="workspace-group-summary">
+            <div>
+              <h3>Approval Requests</h3>
+              <p class="hint">Create review requests only when a document needs approval, without mixing it with the rest of the setup.</p>
+            </div>
+            <span class="pill blue">Queue</span>
+          </summary>
+          <div class="workspace-group-body">
+            <form id="approvalRequestForm" class="stacked-form grid two">
+              <select name="documentType">
+                <option value="invoice">Invoice</option>
+                <option value="purchase_order">Purchase Order</option>
+                <option value="work_order">Work Order</option>
+              </select>
+              <input name="documentNumber" placeholder="Document number or draft name" required />
+              <textarea name="notes" placeholder="Approval note"></textarea>
+              <button class="primary" type="submit">Request Approval</button>
+              <div id="approvalRequestStatus" class="inline-status full" aria-live="polite"></div>
+            </form>
+            <div id="approvalRequestsList" class="list"></div>
+          </div>
+        </details>
       </section>
       <section class="panel dashboard-page" data-dashboard-page="reports">
         <div class="panel-head">

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 import { createApi } from "../apps/api/src/index.js";
 import { createStore } from "../apps/api/src/store.js";
@@ -704,8 +705,928 @@ test("paid subscriptions require submitted KYC documents while free does not", a
     assert.equal(paidPending.response.status, 201);
     assert.equal(paidPending.payload.status, "kyc_pending");
     assert.equal(paidPending.payload.companyId, companyResult.payload.id);
+    assert.equal(paidPending.payload.amount, 3588);
+    assert.equal(paidPending.payload.monthlyAmount, 299);
+    assert.equal(paidPending.payload.billingCycle, "yearly");
+
+    const planAfterPending = await request("/plans", { token });
+    assert.equal(planAfterPending.response.status, 200);
+    assert.equal(planAfterPending.payload.active.plan, "free");
+    assert.equal(planAfterPending.payload.active.features.razorpayCollections, false);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("razorpay subscription activation requires verified signature and is idempotent", async () => {
+  const previousKeyId = process.env.RAZORPAY_KEY_ID;
+  const previousKeySecret = process.env.RAZORPAY_KEY_SECRET;
+  const previousWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  process.env.RAZORPAY_KEY_ID = "rzp_test_eazinvoice";
+  process.env.RAZORPAY_KEY_SECRET = "test_secret_for_signature";
+  process.env.RAZORPAY_WEBHOOK_SECRET = "webhook_secret_for_signature";
+
+  const originalFetch = globalThis.fetch;
+  let capturedRazorpayOrderBody = null;
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url).startsWith("https://api.razorpay.com/v1/orders")) {
+      const body = JSON.parse(options.body || "{}");
+      capturedRazorpayOrderBody = body;
+      return new Response(JSON.stringify({
+        id: "order_test_standard",
+        amount: body.amount,
+        currency: body.currency,
+        status: "created",
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return originalFetch(url, options);
+  };
+
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await originalFetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  try {
+    const otpResult = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: {
+        mode: "signup",
+        email: "razorpay-user@example.com",
+        phone: "9123456780",
+      },
+    });
+    const signupResult = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "Razorpay User",
+        email: "razorpay-user@example.com",
+        password: "Secure123",
+        phone: "9123456780",
+        otp: otpResult.payload.devOtp,
+      },
+    });
+    assert.equal(signupResult.response.status, 201);
+    const token = signupResult.payload.token;
+
+    const companyResult = await request("/companies", {
+      method: "POST",
+      token,
+      body: {
+        name: "Razorpay Co",
+        entityType: "company",
+        address: "1 Billing Street",
+        panNumber: "ABCDE1234F",
+        documentNames: ["pan.pdf"],
+      },
+    });
+    assert.equal(companyResult.response.status, 201);
+
+    const orderResult = await request("/billing/razorpay/order", {
+      method: "POST",
+      token,
+      body: { kind: "subscription", plan: "standard" },
+    });
+    assert.equal(orderResult.response.status, 201);
+    assert.equal(orderResult.payload.order.id, "order_test_standard");
+    assert.equal(capturedRazorpayOrderBody.amount, 358800);
+    assert.equal(orderResult.payload.description, "Standard plan - INR 299/month billed yearly");
+
+    const invalidVerify = await request("/billing/razorpay/verify", {
+      method: "POST",
+      token,
+      body: {
+        razorpay_order_id: "order_test_standard",
+        razorpay_payment_id: "pay_test_standard",
+        razorpay_signature: "invalid",
+      },
+    });
+    assert.equal(invalidVerify.response.status, 401);
+
+    const stillFree = await request("/plans", { token });
+    assert.equal(stillFree.payload.active.plan, "free");
+
+    const validSignature = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .update("order_test_standard|pay_test_standard")
+      .digest("hex");
+    const verified = await request("/billing/razorpay/verify", {
+      method: "POST",
+      token,
+      body: {
+        razorpay_order_id: "order_test_standard",
+        razorpay_payment_id: "pay_test_standard",
+        razorpay_signature: validSignature,
+      },
+    });
+    assert.equal(verified.response.status, 200);
+    assert.equal(verified.payload.subscription.plan, "standard");
+    assert.equal(verified.payload.subscription.status, "active");
+    assert.equal(verified.payload.subscription.amount, 3588);
+    assert.equal(verified.payload.subscription.monthlyAmount, 299);
+    assert.equal(verified.payload.subscription.annualAmount, 3588);
+    assert.equal(verified.payload.subscription.billingCycle, "yearly");
+    assert.ok(verified.payload.subscription.renewsAt);
+
+    const paidPlan = await request("/plans", { token });
+    assert.equal(paidPlan.payload.active.plan, "standard");
+    assert.equal(paidPlan.payload.active.features.razorpayCollections, true);
+
+    const duplicate = await request("/billing/razorpay/verify", {
+      method: "POST",
+      token,
+      body: {
+        razorpay_order_id: "order_test_standard",
+        razorpay_payment_id: "pay_test_standard",
+        razorpay_signature: validSignature,
+      },
+    });
+    assert.equal(duplicate.response.status, 200);
+    assert.equal(duplicate.payload.duplicate, true);
+
+    const subscriptions = await request("/subscriptions/me", { token });
+    assert.equal(subscriptions.payload.length, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    globalThis.fetch = originalFetch;
+    if (previousKeyId === undefined) delete process.env.RAZORPAY_KEY_ID;
+    else process.env.RAZORPAY_KEY_ID = previousKeyId;
+    if (previousKeySecret === undefined) delete process.env.RAZORPAY_KEY_SECRET;
+    else process.env.RAZORPAY_KEY_SECRET = previousKeySecret;
+    if (previousWebhookSecret === undefined) delete process.env.RAZORPAY_WEBHOOK_SECRET;
+    else process.env.RAZORPAY_WEBHOOK_SECRET = previousWebhookSecret;
+  }
+});
+
+test("manual paid subscription requests remain pending even when kyc is verified", async () => {
+  const restoreAdminEmail = useTestAdminEmail();
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  async function signup({ name, email, password, phone }) {
+    const otpResult = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email, phone },
+    });
+    const signupResult = await request("/auth/signup", {
+      method: "POST",
+      body: { name, email, password, phone, otp: otpResult.payload.devOtp },
+    });
+    assert.equal(signupResult.response.status, 201);
+    return signupResult.payload;
+  }
+
+  try {
+    const admin = await signup({
+      name: "Support Admin",
+      email: TEST_ADMIN_EMAIL,
+      password: "AdminSecure123",
+      phone: "9665444554",
+    });
+    const signupResult = await signup({
+      name: "Verified KYC",
+      email: "verified-kyc@example.com",
+      password: "Secure123",
+      phone: "9123456780",
+    });
+    const token = signupResult.token;
+
+    const companyResult = await request("/companies", {
+      method: "POST",
+      token,
+      body: {
+        name: "Verified KYC Co",
+        entityType: "company",
+        address: "1 Verified Street",
+        panNumber: "ABCDE1234F",
+        documentNames: ["pan.pdf"],
+      },
+    });
+    assert.equal(companyResult.response.status, 201);
+    assert.equal(companyResult.payload.kycStatus, "pending");
+
+    const approved = await request(`/admin/kyc-review/${companyResult.payload.id}?action=approve`, {
+      method: "PATCH",
+      token: admin.token,
+      body: { notes: "Approved for payment-pending test" },
+    });
+    assert.equal(approved.response.status, 200);
+    assert.equal(approved.payload.kycStatus, "verified");
+
+    const paidPending = await request("/subscriptions", {
+      method: "POST",
+      token,
+      body: {
+        plan: "standard",
+        amount: 499,
+        subscriberType: "company",
+      },
+    });
+    assert.equal(paidPending.response.status, 201);
+    assert.equal(paidPending.payload.status, "payment_pending");
+    assert.equal(paidPending.payload.amount, 3588);
+    assert.equal(paidPending.payload.monthlyAmount, 299);
+    assert.equal(paidPending.payload.billingCycle, "yearly");
+
+    const planAfterPending = await request("/plans", { token });
+    assert.equal(planAfterPending.payload.active.plan, "free");
+    assert.equal(planAfterPending.payload.active.features.razorpayCollections, false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    restoreAdminEmail();
+  }
+});
+
+test("razorpay webhooks require configured signature verification", async () => {
+  const previousWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  process.env.RAZORPAY_WEBHOOK_SECRET = "webhook_secret_for_signature";
+
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const rawBody = JSON.stringify({
+    event: "payment.captured",
+    payload: {
+      payment: {
+        entity: {
+          id: "pay_unsigned",
+          order_id: "order_unsigned",
+          amount: 10000,
+          currency: "INR",
+        },
+      },
+    },
+  });
+
+  try {
+    const unsigned = await fetch(`${baseUrl}/webhooks/razorpay`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: rawBody,
+    });
+    assert.equal(unsigned.status, 401);
+
+    const signature = crypto
+      .createHmac("sha256", process.env.RAZORPAY_WEBHOOK_SECRET)
+      .update(rawBody)
+      .digest("hex");
+    const signed = await fetch(`${baseUrl}/webhooks/razorpay`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Razorpay-Signature": signature,
+      },
+      body: rawBody,
+    });
+    assert.equal(signed.status, 404);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (previousWebhookSecret === undefined) delete process.env.RAZORPAY_WEBHOOK_SECRET;
+    else process.env.RAZORPAY_WEBHOOK_SECRET = previousWebhookSecret;
+  }
+});
+
+test("active paid plans change limits and unlock feature flags", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Pro User", email: "pro@example.com" });
+  api.createSubscription({
+    userId: user.id,
+    subscriberType: "individual",
+    subscriberName: user.name,
+    plan: "pro",
+    amount: 999,
+    status: "active",
+  });
+
+  const summary = api.getFreePlanSummary(user);
+  assert.equal(summary.plan, "pro");
+  assert.equal(summary.features.aiInvoiceAssist, true);
+  assert.equal(summary.features.razorpayCollections, true);
+  assert.equal(summary.limits.companies, 5);
+  assert.equal(api.userCanUseFeature(user, "aiPoAssist"), true);
+});
+
+test("admin plan preview unlocks tiers without creating a subscription", async () => {
+  const restoreAdminEmail = useTestAdminEmail();
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body, previewPlan } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(previewPlan ? { "X-Eazinvoice-Plan-Preview": previewPlan } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  async function signup({ name, email, password, phone }) {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email, phone },
+    });
+    const result = await request("/auth/signup", {
+      method: "POST",
+      body: { name, email, password, phone, otp: otp.payload.devOtp },
+    });
+    assert.equal(result.response.status, 201);
+    return result.payload;
+  }
+
+  const manyItems = Array.from({ length: 30 }, (_, index) => ({
+    description: `Service ${index + 1}`,
+    quantity: 1,
+    rate: 100,
+    gstRate: 18,
+  }));
+
+  try {
+    const admin = await signup({
+      name: "Support Admin",
+      email: TEST_ADMIN_EMAIL,
+      password: "AdminSecure123",
+      phone: "9665444554",
+    });
+    const user = await signup({
+      name: "Preview User",
+      email: "preview-user@example.com",
+      password: "UserSecure123",
+      phone: "9876543210",
+    });
+
+    const adminPlans = await request("/plans", { token: admin.token, previewPlan: "pro" });
+    assert.equal(adminPlans.response.status, 200);
+    assert.equal(adminPlans.payload.active.plan, "pro");
+    assert.equal(adminPlans.payload.active.preview.enabled, true);
+    assert.equal(adminPlans.payload.active.features.aiPoAssist, true);
+
+    const userPlans = await request("/plans", { token: user.token, previewPlan: "pro" });
+    assert.equal(userPlans.response.status, 200);
+    assert.equal(userPlans.payload.active.plan, "free");
+    assert.equal(userPlans.payload.active.preview.enabled, false);
+
+    const blockedUserInvoice = await request("/invoices", {
+      method: "POST",
+      token: user.token,
+      previewPlan: "pro",
+      body: { billToName: "Blocked Customer", items: manyItems },
+    });
+    assert.equal(blockedUserInvoice.response.status, 400);
+    assert.match(blockedUserInvoice.payload.error, /free plan limit/);
+
+    const adminInvoice = await request("/invoices", {
+      method: "POST",
+      token: admin.token,
+      previewPlan: "pro",
+      body: { billToName: "Admin Preview Customer", items: manyItems },
+    });
+    assert.equal(adminInvoice.response.status, 201);
+    assert.equal(adminInvoice.payload.items.length, 30);
+
+    const subscriptions = await request("/subscriptions/me", { token: admin.token });
+    assert.equal(subscriptions.response.status, 200);
+    assert.equal(subscriptions.payload.length, 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    restoreAdminEmail();
+  }
+});
+
+test("paid tier catalog keeps promised feature gates explicit", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const plans = Object.fromEntries(api.listPlans().map((plan) => [plan.plan, plan]));
+
+  assert.equal(plans.free.amount, 0);
+  assert.equal(plans.free.features.whatsappShare, false);
+  assert.equal(plans.free.features.aiInvoiceAssist, false);
+  assert.equal(plans.free.features.razorpayCollections, false);
+  assert.equal(plans.free.billingCycle, "yearly");
+  assert.equal(plans.free.implementation.status, "active");
+
+  assert.equal(plans.standard.billingCycle, "yearly");
+  assert.equal(plans.standard.monthlyAmount, 499);
+  assert.equal(plans.standard.discountedAmount, 299);
+  assert.equal(plans.standard.annualAmount, 5988);
+  assert.equal(plans.standard.discountedAnnualAmount, 3588);
+  assert.equal(plans.standard.features.whatsappShare, true);
+  assert.equal(plans.standard.features.razorpayCollections, true);
+  assert.equal(plans.standard.features.aiInvoiceAssist, false);
+  assert.equal(plans.standard.implementation.ready.includes("Recurring invoice metadata"), true);
+  assert.equal(plans.standard.implementation.ready.includes("Branding removal controls"), true);
+  assert.equal(plans.standard.implementation.ready.includes("Automatic recurring scheduler"), true);
+  assert.equal(plans.standard.implementation.pending.length, 0);
+
+  assert.equal(plans.pro.features.aiInvoiceAssist, true);
+  assert.equal(plans.pro.features.aiPoAssist, true);
+  assert.equal(plans.pro.features.advancedReports, true);
+  assert.equal(plans.pro.features.multiBusiness, true);
+  assert.equal(plans.pro.billingCycle, "yearly");
+  assert.equal(plans.pro.discountedAnnualAmount, 8388);
+  assert.equal(plans.pro.implementation.pending.length, 0);
+
+  assert.equal(plans.business.features.teamAccess, true);
+  assert.equal(plans.business.features.apiAccess, true);
+  assert.equal(plans.business.features.approvals, true);
+  assert.equal(plans.business.implementation.pending.includes("Customer API key portal"), true);
+});
+
+test("paid tier inheritance flows upward only", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const plans = Object.fromEntries(api.listPlans().map((plan) => [plan.plan, plan]));
+  const freeFeatures = ["basicInvoices", "gstInvoices", "pdfPrint", "manualPayments", "emailOtp", "wordpressFree"];
+  const standardFeatures = ["whatsappShare", "razorpayCollections", "recurringInvoices", "wordpressPaid"];
+  const proFeatures = ["aiInvoiceAssist", "aiPoAssist", "advancedReports", "multiBusiness"];
+  const businessFeatures = ["teamAccess", "apiAccess", "approvals"];
+
+  freeFeatures.forEach((feature) => {
+    assert.equal(plans.free.features[feature], true);
+    assert.equal(plans.standard.features[feature], true);
+    assert.equal(plans.pro.features[feature], true);
+    assert.equal(plans.business.features[feature], true);
+  });
+
+  standardFeatures.forEach((feature) => {
+    assert.equal(plans.free.features[feature], false);
+    assert.equal(plans.standard.features[feature], true);
+    assert.equal(plans.pro.features[feature], true);
+    assert.equal(plans.business.features[feature], true);
+  });
+
+  proFeatures.forEach((feature) => {
+    assert.equal(plans.free.features[feature], false);
+    assert.equal(plans.standard.features[feature], false);
+    assert.equal(plans.pro.features[feature], true);
+    assert.equal(plans.business.features[feature], true);
+  });
+
+  businessFeatures.forEach((feature) => {
+    assert.equal(plans.free.features[feature], false);
+    assert.equal(plans.standard.features[feature], false);
+    assert.equal(plans.pro.features[feature], false);
+    assert.equal(plans.business.features[feature], true);
+  });
+});
+
+test("standard tier recurring scheduler creates due invoice drafts once", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Recurring User", email: "recurring@example.com" });
+
+  assert.throws(
+    () => api.runRecurringInvoiceScheduler(user, { targetDate: "2026-06-20" }),
+    /Standard and higher/
+  );
+
+  api.createSubscription({
+    userId: user.id,
+    subscriberName: user.name,
+    plan: "standard",
+    amount: 499,
+    status: "active",
+  });
+
+  const source = api.createInvoice({
+    ownerUserId: user.id,
+    billToName: "Monthly Client",
+    invoiceDate: "2026-05-15",
+    dueDate: "2026-05-22",
+    status: "created",
+    taxRate: 18,
+    items: [{ description: "Retainer", quantity: 1, rate: 1000, gstRate: 18 }],
+    recurringEnabled: true,
+    recurringFrequency: "monthly",
+    recurringNextDate: "2026-06-15",
+  });
+
+  const firstRun = api.runRecurringInvoiceScheduler(user, { targetDate: "2026-06-20" });
+  assert.equal(firstRun.created.length, 1);
+  assert.equal(firstRun.created[0].status, "draft");
+  assert.equal(firstRun.created[0].paymentStatus, "draft");
+  assert.equal(firstRun.created[0].recurringSourceInvoiceId, source.id);
+  assert.equal(firstRun.created[0].recurringGeneratedForDate, "2026-06-15");
+  assert.equal(firstRun.created[0].recurringEnabled, false);
+  assert.equal(firstRun.created[0].dueDate, "2026-06-22");
+
+  const secondRun = api.runRecurringInvoiceScheduler(user, { targetDate: "2026-06-20" });
+  assert.equal(secondRun.created.length, 0);
+
+  const invoices = api.listInvoices(user);
+  assert.equal(invoices.filter((invoice) => invoice.recurringSourceInvoiceId === source.id).length, 1);
+  const updatedSource = invoices.find((invoice) => invoice.id === source.id);
+  assert.equal(updatedSource.recurringNextDate, "2026-07-15");
+});
+
+test("admin recurring scheduler endpoint processes paid users only", async () => {
+  const restoreAdminEmail = useTestAdminEmail();
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  async function signup({ name, email, password, phone }) {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email, phone },
+    });
+    const result = await request("/auth/signup", {
+      method: "POST",
+      body: { name, email, password, phone, otp: otp.payload.devOtp },
+    });
+    assert.equal(result.response.status, 201);
+    return result.payload;
+  }
+
+  try {
+    const admin = await signup({
+      name: "Support Admin",
+      email: TEST_ADMIN_EMAIL,
+      password: "AdminSecure123",
+      phone: "9665444554",
+    });
+    const paid = await signup({
+      name: "Paid Recurring",
+      email: "paid-recurring@example.com",
+      password: "PaidSecure123",
+      phone: "9123456780",
+    });
+    const free = await signup({
+      name: "Free Recurring",
+      email: "free-recurring@example.com",
+      password: "FreeSecure123",
+      phone: "9123456781",
+    });
+
+    server.eazinvoiceApi.createSubscription({
+      userId: paid.user.id,
+      subscriberName: paid.user.name,
+      plan: "standard",
+      amount: 499,
+      status: "active",
+      subscriberType: "individual",
+    });
+
+    const paidInvoice = await request("/invoices", {
+      method: "POST",
+      token: paid.token,
+      body: {
+        status: "created",
+        billToName: "Paid Customer",
+        invoiceDate: "2026-06-01",
+        dueDate: "2026-06-08",
+        recurringEnabled: true,
+        recurringFrequency: "weekly",
+        recurringNextDate: "2026-06-15",
+        items: [{ description: "Weekly Work", quantity: 1, rate: 1000, gstRate: 18 }],
+      },
+    });
+    assert.equal(paidInvoice.response.status, 201);
+
+    const freeInvoice = await request("/invoices", {
+      method: "POST",
+      token: free.token,
+      body: {
+        status: "created",
+        billToName: "Free Customer",
+        invoiceDate: "2026-06-01",
+        dueDate: "2026-06-08",
+        recurringEnabled: true,
+        recurringFrequency: "weekly",
+        recurringNextDate: "2026-06-15",
+        items: [{ description: "Free Work", quantity: 1, rate: 1000, gstRate: 18 }],
+      },
+    });
+    assert.equal(freeInvoice.response.status, 201);
+    assert.equal(freeInvoice.payload.recurringEnabled, false);
+
+    const status = await request("/admin/recurring/status", { token: admin.token });
+    assert.equal(status.response.status, 200);
+    assert.equal(status.payload.note.includes("idempotent"), true);
+
+    const run = await request("/admin/recurring/run", {
+      method: "POST",
+      token: admin.token,
+      body: { targetDate: "2026-06-20" },
+    });
+    assert.equal(run.response.status, 201);
+    assert.equal(run.payload.createdCount, 1);
+    assert.equal(run.payload.usersProcessed, 1);
+
+    const paidInvoices = await request("/invoices", { token: paid.token });
+    assert.equal(paidInvoices.payload.filter((invoice) => invoice.recurringSourceInvoiceId === paidInvoice.payload.id).length, 1);
+    const freeInvoices = await request("/invoices", { token: free.token });
+    assert.equal(freeInvoices.payload.filter((invoice) => invoice.recurringSourceInvoiceId === freeInvoice.payload.id).length, 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    restoreAdminEmail();
+  }
+});
+
+test("Pro AI command assistant drafts invoices, PO/WO, and report summaries", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "AI User", email: "ai@example.com" });
+  api.createSubscription({
+    userId: user.id,
+    subscriberName: user.name,
+    subscriberType: "individual",
+    plan: "pro",
+    amount: 999,
+    status: "active",
+  });
+  const company = api.createCompany({ name: "AI Services", ownerUserId: user.id, state: "Maharashtra" });
+  const customer = api.createCustomer({ name: "Rahul Sharma", ownerUserId: user.id, billingAddress: "Pune" });
+
+  const previewResult = api.runAiCommand(user, {
+    command: "Create invoice for Rahul Sharma for website design INR 15000 plus 18% GST due in 7 days",
+    previewOnly: true,
+  });
+  assert.equal(previewResult.intent, "invoice");
+  assert.equal(previewResult.createdRecord, undefined);
+  assert.equal(previewResult.proposedRecord.total, 17700);
+  assert.equal(api.listInvoices(user).length, 0);
+
+  const invoiceResult = api.runAiCommand(user, {
+    command: "Create invoice for Rahul Sharma for website design INR 15000 plus 18% GST due in 7 days",
+  });
+  assert.equal(invoiceResult.intent, "invoice");
+  assert.equal(invoiceResult.createdRecord.status, "draft");
+  assert.equal(invoiceResult.createdRecord.companyId, company.id);
+  assert.equal(invoiceResult.createdRecord.customerId, customer.id);
+  assert.equal(invoiceResult.createdRecord.billToName, "Rahul Sharma");
+  assert.equal(invoiceResult.createdRecord.currency, "INR");
+  assert.equal(invoiceResult.createdRecord.taxRate, 18);
+  assert.equal(invoiceResult.createdRecord.total, 17700);
+
+  const missingCustomerPreview = api.runAiCommand(user, {
+    command: "Create an invoice for Rachel Antony, amount 40000 plus 18% gst with her account details, Pan Card and address.",
+    previewOnly: true,
+  });
+  assert.equal(missingCustomerPreview.intent, "invoice");
+  assert.equal(missingCustomerPreview.customerMatch.status, "missing");
+  assert.equal(missingCustomerPreview.customerMatch.name, "Rachel Antony");
+  assert.equal(missingCustomerPreview.proposedRecord.customerId, null);
+  assert.equal(missingCustomerPreview.proposedRecord.billToName, "Rachel Antony");
+  assert.equal(missingCustomerPreview.proposedRecord.total, 47200);
+  assert.match(missingCustomerPreview.warnings[0], /not saved in your customer list/i);
+
+  const poResult = api.runAiCommand(user, {
+    command: "Generate work order for Dell laptops quantity 5 INR 50000 plus 18% GST",
+  });
+  assert.equal(poResult.intent, "purchase_order");
+  assert.equal(poResult.createdRecord.status, "draft");
+  assert.equal(poResult.createdRecord.documentType, "wo");
+  assert.equal(poResult.createdRecord.currency, "INR");
+  assert.equal(poResult.createdRecord.items[0].quantity, 5);
+
+  const report = api.runAiCommand(user, { command: "Show profit and loss report summary" });
+  assert.equal(report.intent, "report");
+  assert.equal(report.metrics.totalInvoices, 0);
+  assert.equal(report.metrics.totalPurchaseOrders, 0);
+  const aiUsage = api.exportDataSnapshot().aiUsageLogs;
+  assert.equal(aiUsage.length, 5);
+  assert.equal(aiUsage.every((entry) => entry.ownerUserId === user.id), true);
+});
+
+test("Pro AI assistant can refine commands with OpenAI JSON and save the approved proposal", async () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "LLM User", email: "llm@example.com" });
+  api.createSubscription({
+    userId: user.id,
+    subscriberName: user.name,
+    subscriberType: "individual",
+    plan: "pro",
+    amount: 999,
+    status: "active",
+  });
+  api.createCompany({ name: "LLM Services", ownerUserId: user.id, state: "Maharashtra" });
+  api.createCustomer({ name: "Priya Nair", ownerUserId: user.id, billingAddress: "Mumbai" });
+
+  const fakeFetch = async () => ({
+    ok: true,
+    json: async () => ({
+      output_text: JSON.stringify({
+        intent: "invoice",
+        customerName: "Priya Nair",
+        description: "brand consulting",
+        amount: 24000,
+        quantity: 1,
+        currency: "INR",
+        taxRate: 18,
+        dueDays: 14,
+      }),
+    }),
+  });
+
+  const preview = await api.runAiCommandAsync(user, {
+    command: "Please prepare the consulting bill for Priya with taxes, due after two weeks",
+    previewOnly: true,
+  }, {
+    fetchImpl: fakeFetch,
+    openAiApiKey: "test-key",
+  });
+
+  assert.equal(preview.provider, "openai");
+  assert.equal(preview.intent, "invoice");
+  assert.equal(preview.proposedRecord.billToName, "Priya Nair");
+  assert.equal(preview.proposedRecord.total, 28320);
+  assert.equal(api.listInvoices(user).length, 0);
+
+  const saved = api.runAiCommand(user, {
+    command: "approved preview",
+    approvedDraft: {
+      intent: preview.intent,
+      confidence: preview.confidence,
+      payload: preview.payload,
+    },
+  });
+  assert.equal(saved.createdRecord.billToName, "Priya Nair");
+  assert.equal(saved.createdRecord.total, 28320);
+  assert.equal(api.exportDataSnapshot().aiUsageLogs.filter((entry) => entry.billable).length, 1);
+});
+
+test("AI assistant asks for missing details instead of creating unsafe drafts", async () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Clarify User", email: "clarify@example.com" });
+  api.createSubscription({
+    userId: user.id,
+    subscriberName: user.name,
+    subscriberType: "individual",
+    plan: "pro",
+    amount: 999,
+    status: "active",
+  });
+
+  const fakeFetch = async () => ({
+    ok: true,
+    json: async () => ({
+      output_text: JSON.stringify({
+        intent: "clarification",
+        missingFields: ["customer", "amount"],
+        question: "Which customer and amount should I use?",
+      }),
+    }),
+  });
+
+  const result = await api.runAiCommandAsync(user, {
+    command: "Create that invoice",
+    previewOnly: true,
+  }, {
+    fetchImpl: fakeFetch,
+    openAiApiKey: "test-key",
+  });
+
+  assert.equal(result.intent, "clarification");
+  assert.deepEqual(result.missingFields, ["customer", "amount"]);
+  assert.equal(api.listInvoices(user).length, 0);
+});
+
+test("AI command endpoint is gated and unlocks for Pro subscriptions", async () => {
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  try {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email: "ai-preview@example.com", phone: "9000011112" },
+    });
+    const signup = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "AI Preview",
+        email: "ai-preview@example.com",
+        password: "Secure123",
+        phone: "9000011112",
+        otp: otp.payload.devOtp,
+      },
+    });
+    assert.equal(signup.response.status, 201);
+
+    const blocked = await request("/ai/command", {
+      method: "POST",
+      token: signup.payload.token,
+      body: { command: "Create invoice for Rahul INR 1000 plus 18% GST" },
+    });
+    assert.equal(blocked.response.status, 402);
+    assert.match(blocked.payload.error, /Pro and Business/);
+
+    server.eazinvoiceApi.createSubscription({
+      userId: signup.payload.user.id,
+      subscriberName: signup.payload.user.name,
+      subscriberType: "individual",
+      plan: "pro",
+      amount: 999,
+      status: "active",
+    });
+
+    const preview = await request("/ai/command", {
+      method: "POST",
+      token: signup.payload.token,
+      body: { command: "Create invoice for Rahul INR 1000 plus 18% GST" },
+    });
+    assert.equal(preview.response.status, 201);
+    assert.equal(preview.payload.intent, "invoice");
+    assert.equal(preview.payload.createdRecord.status, "draft");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("admin can inspect persistence status without exposing data", async () => {
+  const restoreAdminEmail = useTestAdminEmail();
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  try {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email: TEST_ADMIN_EMAIL, phone: "9665444554" },
+    });
+    const signup = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "Support Admin",
+        email: TEST_ADMIN_EMAIL,
+        password: "AdminSecure123",
+        phone: "9665444554",
+        otp: otp.payload.devOtp,
+      },
+    });
+    const status = await request("/admin/persistence", { token: signup.payload.token });
+    assert.equal(status.response.status, 200);
+    assert.equal(status.payload.persistence.mode, "local-json");
+    assert.equal(status.payload.records.users, 1);
+    assert.match(status.payload.warning, /persistent storage/);
+    assert.equal(status.payload.users, undefined);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    restoreAdminEmail();
   }
 });
 
@@ -748,5 +1669,187 @@ test("company signup stores registrant details", async () => {
     assert.equal(signup.user.registrant.phone, "919000011111");
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("business tier unlocks team approvals and API keys", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Business Owner", email: "business@example.com" });
+
+  assert.throws(
+    () => api.createTeamMember(user, { email: "accountant@example.com", role: "accountant" }),
+    /Business tier required/,
+  );
+
+  api.createSubscription({
+    userId: user.id,
+    subscriberName: user.name,
+    subscriberType: "company",
+    plan: "business",
+    amount: 17988,
+    billingCycle: "yearly",
+    status: "active",
+  });
+
+  const member = api.createTeamMember(user, {
+    name: "Accountant",
+    email: "accountant@example.com",
+    role: "accountant",
+  });
+  assert.equal(member.status, "invited");
+  assert.equal(api.listTeamMembers(user).length, 1);
+
+  const request = api.createApprovalRequest(user, {
+    documentType: "invoice",
+    documentNumber: "RA/2026/0001",
+    notes: "Please review before sending",
+  });
+  assert.equal(request.status, "pending");
+  const approved = api.decideApprovalRequest(user, request.id, { status: "approved", decisionNotes: "Approved" });
+  assert.equal(approved.status, "approved");
+
+  const apiKey = api.createApiKey(user, { label: "WordPress site" });
+  assert.match(apiKey.token, /^eaz_live_/);
+  const listedKeys = api.listApiKeys(user);
+  assert.equal(listedKeys[0].token, "");
+  assert.equal(listedKeys[0].tokenPreview, apiKey.tokenPreview);
+  const revoked = api.revokeApiKey(user, apiKey.id);
+  assert.equal(revoked.status, "revoked");
+
+  const settings = api.updateBusinessSettings(user, {
+    emailSettings: {
+      smtpHost: "smtp.example.com",
+      smtpPort: "465",
+      smtpUser: "accounts@example.com",
+      smtpPass: "secret-password",
+      fromEmail: "accounts@example.com",
+    },
+    paymentSettings: {
+      keyId: "rzp_live_business",
+      keySecret: "razorpay-secret",
+      webhookSecret: "webhook-secret",
+      paymentLinkEnabled: true,
+    },
+    complianceProfile: {
+      legalName: "Business Owner LLP",
+      gstRegistered: true,
+      gstin: "27ABCDE1234F1Z5",
+      pan: "ABCDE1234F",
+    },
+  });
+  assert.equal(settings.emailSettings.smtpPass, "");
+  assert.equal(settings.emailSettings.smtpPassConfigured, true);
+  assert.equal(settings.paymentSettings.keySecret, "");
+  assert.equal(settings.paymentSettings.keySecretConfigured, true);
+  assert.equal(settings.paymentSettings.webhookSecretConfigured, true);
+  assert.equal(settings.paymentSettings.status, "live_ready");
+  assert.equal(settings.complianceProfile.gstin, "27ABCDE1234F1Z5");
+
+  const invitee = api.createUser({ name: "Accountant", email: "accountant@example.com" });
+  const accepted = api.acceptTeamInvite(invitee, member.inviteToken);
+  assert.equal(accepted.status, "active");
+  assert.equal(accepted.acceptedUserId, invitee.id);
+});
+
+test("business workspace endpoints honor plan preview and gating", async () => {
+  const restoreAdminEmail = useTestAdminEmail();
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body, previewPlan } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(previewPlan ? { "X-Eazinvoice-Plan-Preview": previewPlan } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  try {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email: TEST_ADMIN_EMAIL, phone: "9665444554" },
+    });
+    const signup = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "Support Admin",
+        email: TEST_ADMIN_EMAIL,
+        password: "AdminSecure123",
+        phone: "9665444554",
+        otp: otp.payload.devOtp,
+      },
+    });
+    assert.equal(signup.response.status, 201);
+
+    const blocked = await request("/business/api-keys", { token: signup.payload.token });
+    assert.equal(blocked.response.status, 402);
+
+    const created = await request("/business/api-keys", {
+      method: "POST",
+      token: signup.payload.token,
+      previewPlan: "business",
+      body: { label: "Local WordPress" },
+    });
+    assert.equal(created.response.status, 201);
+    assert.match(created.payload.token, /^eaz_live_/);
+
+    const listed = await request("/business/api-keys", {
+      token: signup.payload.token,
+      previewPlan: "business",
+    });
+    assert.equal(listed.response.status, 200);
+    assert.equal(listed.payload[0].token, "");
+
+    const settings = await request("/business/settings", {
+      method: "PATCH",
+      token: signup.payload.token,
+      previewPlan: "business",
+      body: {
+        emailSettings: {
+          smtpHost: "smtp.namecheap.com",
+          smtpPort: "465",
+          smtpUser: "info@eazinvoice.com",
+          smtpPass: "app-password",
+          fromEmail: "info@eazinvoice.com",
+        },
+        paymentSettings: {
+          keyId: "rzp_test_admin",
+          keySecret: "secret",
+          webhookSecret: "webhook",
+          paymentLinkEnabled: true,
+        },
+      },
+    });
+    assert.equal(settings.response.status, 200);
+    assert.equal(settings.payload.emailSettings.smtpPass, "");
+    assert.equal(settings.payload.emailSettings.smtpPassConfigured, true);
+    assert.equal(settings.payload.paymentSettings.keySecret, "");
+    assert.equal(settings.payload.paymentSettings.status, "test_mode");
+
+    const validated = await request("/business/settings/email/test", {
+      method: "POST",
+      token: signup.payload.token,
+      previewPlan: "business",
+      body: {
+        emailSettings: {
+          smtpHost: "smtp.namecheap.com",
+          smtpPort: "465",
+          smtpUser: "info@eazinvoice.com",
+          fromEmail: "info@eazinvoice.com",
+          smtpSecure: true,
+        },
+      },
+    });
+    assert.equal(validated.response.status, 200);
+    assert.equal(validated.payload.emailSettings.lastTestStatus, "ready");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    restoreAdminEmail();
   }
 });

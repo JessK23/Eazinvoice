@@ -163,6 +163,38 @@
           </div>
         </section>
 
+        <section id="standardFeaturesPanel" class="panel standard-feature-panel" data-invoice-entry hidden>
+          <div class="panel-head">
+            <div>
+              <span class="pill blue">Standard feature</span>
+              <h2>Automation and Branding</h2>
+            </div>
+            <span id="standardFeatureBadge" class="pill gold">Upgrade</span>
+          </div>
+          <div class="standard-feature-grid">
+            <label id="recurringInvoiceWrap" class="check-row">
+              <input id="recurringInvoiceToggle" name="recurringEnabled" type="checkbox" />
+              <span>Mark as recurring invoice</span>
+            </label>
+            <label id="recurringFrequencyWrap">Frequency
+              <select id="recurringFrequency" name="recurringFrequency">
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+                <option value="quarterly">Quarterly</option>
+                <option value="yearly">Yearly</option>
+              </select>
+            </label>
+            <label id="recurringNextDateWrap">Next draft date
+              <input id="recurringNextDate" name="recurringNextDate" type="date" />
+            </label>
+            <label class="check-row">
+              <input id="hideBrandingToggle" name="hideEazinvoiceBranding" type="checkbox" />
+              <span>Remove EazInvoice branding from print/PDF</span>
+            </label>
+          </div>
+          <p id="standardFeatureHint" class="hint">Recurring drafts and branding removal are available on Standard and higher plans.</p>
+        </section>
+
         <section class="panel invoice-summary-panel" data-invoice-entry hidden>
           <div class="panel-head">
             <h2>Amount Summary</h2>
@@ -405,6 +437,16 @@
       const invoicePaymentModeInput = document.getElementById("invoicePaymentModeInput");
       const invoicePaymentReferenceInput = document.getElementById("invoicePaymentReferenceInput");
       const invoicePaymentNotesInput = document.getElementById("invoicePaymentNotesInput");
+      const standardFeaturesPanel = document.getElementById("standardFeaturesPanel");
+      const standardFeatureBadge = document.getElementById("standardFeatureBadge");
+      const standardFeatureHint = document.getElementById("standardFeatureHint");
+      const recurringInvoiceWrap = document.getElementById("recurringInvoiceWrap");
+      const recurringFrequencyWrap = document.getElementById("recurringFrequencyWrap");
+      const recurringNextDateWrap = document.getElementById("recurringNextDateWrap");
+      const recurringInvoiceToggle = document.getElementById("recurringInvoiceToggle");
+      const recurringFrequency = document.getElementById("recurringFrequency");
+      const recurringNextDate = document.getElementById("recurringNextDate");
+      const hideBrandingToggle = document.getElementById("hideBrandingToggle");
       const saveSuccessModal = document.getElementById("saveSuccessModal");
       const saveSuccessTitle = document.getElementById("saveSuccessTitle");
       const saveSuccessMessage = document.getElementById("saveSuccessMessage");
@@ -422,6 +464,7 @@
       let fallbackCompanies = [];
       let fallbackCustomers = [];
       let currentUser = null;
+      let activePlanKey = "free";
       let fallbackSavedInvoice = null;
       let saveRedirectUrl = "/apps/web/dashboard.html";
 
@@ -470,6 +513,7 @@
         if (previewDocumentNumberLabel) previewDocumentNumberLabel.textContent = isPoFlow ? `${documentTypeShort()} No.` : "Invoice No.";
         if (previewBillToLabel) previewBillToLabel.textContent = isPoFlow ? "Vendor / Supplier" : "Bill To";
         if (previewDateLabel) previewDateLabel.textContent = isPoFlow ? `${documentTypeShort()} Date` : "Invoice Date";
+        updateStandardFeatureControls();
       }
 
       function dashboardSectionUrl() {
@@ -546,6 +590,37 @@
         if (normalized === "part_paid" || normalized === "partial_paid") return "amber";
         if (normalized === "draft") return "gold";
         return "red";
+      }
+
+      function canUseStandardFeatures() {
+        return ["standard", "pro", "business"].includes(String(activePlanKey || "free").toLowerCase());
+      }
+
+      function updateStandardFeatureControls() {
+        const allowed = canUseStandardFeatures();
+        if (standardFeaturesPanel) standardFeaturesPanel.dataset.locked = allowed ? "false" : "true";
+        if (standardFeatureBadge) {
+          standardFeatureBadge.className = `pill ${allowed ? "blue" : "gold"}`;
+          standardFeatureBadge.textContent = allowed ? "Included" : "Upgrade";
+        }
+        if (standardFeatureHint) {
+          standardFeatureHint.textContent = allowed
+            ? "Standard features are active for this session. Recurring details are saved with the invoice and branding removal applies to print/PDF."
+            : "Recurring drafts and branding removal are available on Standard and higher plans.";
+        }
+        [recurringInvoiceToggle, recurringFrequency, recurringNextDate, hideBrandingToggle].forEach((field) => {
+          if (!field) return;
+          field.disabled = !allowed;
+          if (!allowed && field.type === "checkbox") field.checked = false;
+        });
+        const showRecurring = !isPoFlow;
+        [recurringInvoiceWrap, recurringFrequencyWrap, recurringNextDateWrap].forEach((node) => {
+          if (node) node.hidden = !showRecurring;
+        });
+        if (isPoFlow && recurringInvoiceToggle) recurringInvoiceToggle.checked = false;
+        if (documentPreview) {
+          documentPreview.classList.toggle("branding-removed", allowed && Boolean(hideBrandingToggle?.checked));
+        }
       }
 
       function setInvoicePaymentStatus(message, tone = "") {
@@ -656,6 +731,9 @@
         if (previewPdfTotal) previewPdfTotal.textContent = moneyText(total);
         if (previewPaymentInstructions) previewPaymentInstructions.textContent = data.get("paymentInstructions") || "-";
         if (previewTerms) previewTerms.textContent = data.get("terms") || "-";
+        if (documentPreview) {
+          documentPreview.classList.toggle("branding-removed", canUseStandardFeatures() && Boolean(hideBrandingToggle?.checked));
+        }
       }
 
       async function persistInvoiceFallback(targetStatus = "draft", options = {}) {
@@ -698,6 +776,10 @@
           modeOfPayment: data.get("modeOfPayment"),
           paymentInstructions: data.get("paymentInstructions"),
           terms: data.get("terms"),
+          recurringEnabled: !isPoFlow && canUseStandardFeatures() && data.get("recurringEnabled") === "on",
+          recurringFrequency: !isPoFlow && canUseStandardFeatures() ? data.get("recurringFrequency") : "",
+          recurringNextDate: !isPoFlow && canUseStandardFeatures() ? data.get("recurringNextDate") : "",
+          hideEazinvoiceBranding: canUseStandardFeatures() && data.get("hideEazinvoiceBranding") === "on",
           billToName,
           billToAddress,
           items,
@@ -990,6 +1072,10 @@
         setField("modeOfPayment", invoice.modeOfPayment);
         setField("paymentInstructions", invoice.paymentInstructions);
         setField("terms", invoice.terms);
+        if (recurringInvoiceToggle) recurringInvoiceToggle.checked = Boolean(invoice.recurringEnabled);
+        if (recurringFrequency) recurringFrequency.value = invoice.recurringFrequency || "monthly";
+        if (recurringNextDate) recurringNextDate.value = invoice.recurringNextDate || "";
+        if (hideBrandingToggle) hideBrandingToggle.checked = Boolean(invoice.hideEazinvoiceBranding);
         if (itemsEl) itemsEl.innerHTML = "";
         (invoice.items || []).forEach((item) => addFallbackItemRow({
           description: item.description,
@@ -1123,10 +1209,12 @@
             api("/customers").catch(() => []),
           ]);
           currentUser = me?.user || null;
+          activePlanKey = me?.plan?.active?.plan || currentUser?.plan || "free";
           fallbackCompanies = companies;
           fallbackCustomers = customers;
           renderCompanies();
           renderCustomers();
+          updateStandardFeatureControls();
           applyMode();
           await loadInvoiceFromUrl();
           await loadPurchaseOrderFromUrl();
@@ -1193,6 +1281,10 @@
       issuerCompanySelect?.addEventListener("change", () => { populateIssuerFields(); maybeOpenIssuerSetup(); });
       updateIssuerBtn?.addEventListener("click", updateIssuerProfile);
       addButton?.addEventListener("click", addCustomer, true);
+      recurringInvoiceToggle?.addEventListener("change", updateFallbackPreview);
+      recurringFrequency?.addEventListener("change", updateFallbackPreview);
+      recurringNextDate?.addEventListener("change", updateFallbackPreview);
+      hideBrandingToggle?.addEventListener("change", updateFallbackPreview);
       itemButton?.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopImmediatePropagation();
