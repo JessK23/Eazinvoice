@@ -54,6 +54,7 @@ final class EazInvoice_Plugin {
 		add_action( 'admin_menu', array( $this, 'register_admin_menu' ) );
 		add_action( 'admin_init', array( $this, 'register_settings' ) );
 		add_action( 'admin_post_eazinvoice_save_document', array( $this, 'handle_save_document' ) );
+		add_action( 'admin_post_eazinvoice_validate_connection', array( $this, 'handle_validate_connection' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_admin_assets' ) );
 		add_action( 'wp_enqueue_scripts', array( $this, 'enqueue_public_assets' ) );
 		add_action( 'wp_footer', array( $this, 'render_floating_invoice_button' ) );
@@ -122,6 +123,15 @@ final class EazInvoice_Plugin {
 
 		add_submenu_page(
 			'eazinvoice',
+			__( 'Payment Gateway', 'eazinvoice-invoicing-for-msmes' ),
+			__( 'Payment Gateway', 'eazinvoice-invoicing-for-msmes' ),
+			'manage_options',
+			'eazinvoice-payment-gateway',
+			array( $this, 'render_payment_gateway_page' )
+		);
+
+		add_submenu_page(
+			'eazinvoice',
 			__( 'Settings', 'eazinvoice-invoicing-for-msmes' ),
 			__( 'Settings', 'eazinvoice-invoicing-for-msmes' ),
 			'manage_options',
@@ -185,6 +195,9 @@ final class EazInvoice_Plugin {
 			'account_email' => '',
 			'api_key'       => '',
 			'api_status'    => 'not_connected',
+			'api_message'   => '',
+			'api_base_url'  => 'https://www.eazinvoice.com',
+			'api_last_checked' => '',
 			'api_settings_url' => 'https://www.eazinvoice.com/apps/web/access.html',
 			'workspace_url' => 'https://www.eazinvoice.com/apps/web/index.html',
 			'upgrade_url'   => 'https://www.eazinvoice.com/apps/web/index.html',
@@ -192,6 +205,7 @@ final class EazInvoice_Plugin {
 			'auto_button'   => '0',
 			'button_position' => 'bottom-right',
 			'plan'          => 'free',
+			'gateway_status' => 'not_connected',
 		);
 	}
 
@@ -227,7 +241,7 @@ final class EazInvoice_Plugin {
 			array(
 				'id'       => 'standard',
 				'label'    => __( 'Standard', 'eazinvoice-invoicing-for-msmes' ),
-				'price'    => __( 'Paid tier', 'eazinvoice-invoicing-for-msmes' ),
+				'price'    => __( 'INR 499/month, billed yearly', 'eazinvoice-invoicing-for-msmes' ),
 				'status'   => __( 'Buy from EazInvoice', 'eazinvoice-invoicing-for-msmes' ),
 				'features' => array(
 					__( 'Lead form to invoice draft', 'eazinvoice-invoicing-for-msmes' ),
@@ -240,7 +254,7 @@ final class EazInvoice_Plugin {
 			array(
 				'id'       => 'pro',
 				'label'    => __( 'Pro', 'eazinvoice-invoicing-for-msmes' ),
-				'price'    => __( 'Paid tier', 'eazinvoice-invoicing-for-msmes' ),
+				'price'    => __( 'INR 999/month, billed yearly', 'eazinvoice-invoicing-for-msmes' ),
 				'status'   => __( 'Buy from EazInvoice', 'eazinvoice-invoicing-for-msmes' ),
 				'features' => array(
 					__( 'Service inquiry to invoice automation', 'eazinvoice-invoicing-for-msmes' ),
@@ -253,7 +267,7 @@ final class EazInvoice_Plugin {
 			array(
 				'id'       => 'business',
 				'label'    => __( 'Business', 'eazinvoice-invoicing-for-msmes' ),
-				'price'    => __( 'Custom paid tier', 'eazinvoice-invoicing-for-msmes' ),
+				'price'    => __( 'INR 1999/month, billed yearly', 'eazinvoice-invoicing-for-msmes' ),
 				'status'   => __( 'Contact EazInvoice', 'eazinvoice-invoicing-for-msmes' ),
 				'features' => array(
 					__( 'Multi-site plugin access', 'eazinvoice-invoicing-for-msmes' ),
@@ -278,7 +292,10 @@ final class EazInvoice_Plugin {
 		return array(
 			'account_email' => sanitize_email( $input['account_email'] ?? '' ),
 			'api_key'       => sanitize_text_field( $input['api_key'] ?? '' ),
-			'api_status'    => empty( $input['api_key'] ) ? 'not_connected' : 'key_saved_pending_validation',
+			'api_status'    => empty( $input['api_key'] ) ? 'not_connected' : sanitize_key( $input['api_status'] ?? 'key_saved_pending_validation' ),
+			'api_message'   => sanitize_text_field( $input['api_message'] ?? '' ),
+			'api_base_url'  => esc_url_raw( $input['api_base_url'] ?? 'https://www.eazinvoice.com' ),
+			'api_last_checked' => sanitize_text_field( $input['api_last_checked'] ?? '' ),
 			'api_settings_url' => esc_url_raw( $input['api_settings_url'] ?? 'https://www.eazinvoice.com/apps/web/access.html' ),
 			'workspace_url' => esc_url_raw( $input['workspace_url'] ?? 'https://www.eazinvoice.com/apps/web/index.html' ),
 			'upgrade_url'   => esc_url_raw( $input['upgrade_url'] ?? 'https://www.eazinvoice.com/apps/web/index.html' ),
@@ -286,6 +303,7 @@ final class EazInvoice_Plugin {
 			'auto_button'   => empty( $input['auto_button'] ) ? '0' : '1',
 			'button_position' => in_array( $input['button_position'] ?? 'bottom-right', array( 'bottom-right', 'bottom-left' ), true ) ? $input['button_position'] : 'bottom-right',
 			'plan'          => in_array( $input['plan'] ?? 'free', array( 'free', 'standard', 'pro', 'business' ), true ) ? $input['plan'] : 'free',
+			'gateway_status' => in_array( $input['gateway_status'] ?? 'not_connected', array( 'not_connected', 'available', 'live_ready' ), true ) ? $input['gateway_status'] : 'not_connected',
 		);
 	}
 
@@ -426,6 +444,84 @@ final class EazInvoice_Plugin {
 	}
 
 	/**
+	 * Validate the saved EazInvoice API key against the live account.
+	 */
+	public function handle_validate_connection() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Permission denied.', 'eazinvoice-invoicing-for-msmes' ) );
+		}
+
+		check_admin_referer( 'eazinvoice_validate_connection' );
+
+		$post     = wp_unslash( $_POST );
+		$settings = $this->get_settings();
+		$email    = sanitize_email( $post['account_email'] ?? $settings['account_email'] );
+		$api_key  = sanitize_text_field( $post['api_key'] ?? $settings['api_key'] );
+		$base_url = untrailingslashit( esc_url_raw( $post['api_base_url'] ?? $settings['api_base_url'] ) );
+
+		$settings['account_email'] = $email;
+		$settings['api_key']       = $api_key;
+		$settings['api_base_url']  = $base_url;
+		$settings['api_last_checked'] = current_time( 'mysql' );
+
+		if ( empty( $email ) || empty( $api_key ) || empty( $base_url ) ) {
+			$settings['api_status']  = 'not_connected';
+			$settings['api_message'] = __( 'Enter account email, API key, and EazInvoice API base URL before validating.', 'eazinvoice-invoicing-for-msmes' );
+			update_option( $this->option_name, $settings, false );
+			wp_safe_redirect( add_query_arg( 'eazinvoice_connection', 'missing', admin_url( 'admin.php?page=eazinvoice-api-access' ) ) );
+			exit;
+		}
+
+		$response = wp_remote_post(
+			$base_url . '/wordpress/connection',
+			array(
+				'timeout' => 15,
+				'headers' => array(
+					'Content-Type' => 'application/json',
+				),
+				'body'    => wp_json_encode(
+					array(
+						'accountEmail' => $email,
+						'apiKey'       => $api_key,
+						'siteUrl'      => home_url(),
+					)
+				),
+			)
+		);
+
+		if ( is_wp_error( $response ) ) {
+			$settings['api_status']  = 'connection_failed';
+			$settings['api_message'] = $response->get_error_message();
+			update_option( $this->option_name, $settings, false );
+			wp_safe_redirect( add_query_arg( 'eazinvoice_connection', 'failed', admin_url( 'admin.php?page=eazinvoice-api-access' ) ) );
+			exit;
+		}
+
+		$body = json_decode( wp_remote_retrieve_body( $response ), true );
+		if ( 200 !== wp_remote_retrieve_response_code( $response ) || empty( $body['ok'] ) ) {
+			$settings['api_status']  = 'connection_failed';
+			$settings['api_message'] = sanitize_text_field( $body['error'] ?? __( 'EazInvoice API validation failed.', 'eazinvoice-invoicing-for-msmes' ) );
+			update_option( $this->option_name, $settings, false );
+			wp_safe_redirect( add_query_arg( 'eazinvoice_connection', 'failed', admin_url( 'admin.php?page=eazinvoice-api-access' ) ) );
+			exit;
+		}
+
+		$plan_id = sanitize_key( $body['plan']['id'] ?? 'free' );
+		$settings['plan'] = in_array( $plan_id, array( 'free', 'standard', 'pro', 'business' ), true ) ? $plan_id : 'free';
+		$settings['api_status'] = 'connected';
+		$settings['api_message'] = sprintf(
+			/* translators: %s: connected plan label. */
+			__( 'Connected to EazInvoice. Active plan: %s.', 'eazinvoice-invoicing-for-msmes' ),
+			sanitize_text_field( $body['plan']['label'] ?? strtoupper( $settings['plan'] ) )
+		);
+		$settings['gateway_status'] = ! empty( $body['wordpress']['gatewayReady'] ) ? 'available' : 'not_connected';
+		update_option( $this->option_name, $settings, false );
+
+		wp_safe_redirect( add_query_arg( 'eazinvoice_connection', 'connected', admin_url( 'admin.php?page=eazinvoice-api-access' ) ) );
+		exit;
+	}
+
+	/**
 	 * Render internal plugin navigation.
 	 *
 	 * @param string $active Active page key.
@@ -437,6 +533,7 @@ final class EazInvoice_Plugin {
 			'po'           => array( __( 'Create PO / WO', 'eazinvoice-invoicing-for-msmes' ), $this->get_create_po_url() ),
 			'subscription' => array( __( 'Subscription', 'eazinvoice-invoicing-for-msmes' ), admin_url( 'admin.php?page=eazinvoice-subscription' ) ),
 			'api'          => array( __( 'API Access', 'eazinvoice-invoicing-for-msmes' ), admin_url( 'admin.php?page=eazinvoice-api-access' ) ),
+			'gateway'      => array( __( 'Payment Gateway', 'eazinvoice-invoicing-for-msmes' ), admin_url( 'admin.php?page=eazinvoice-payment-gateway' ) ),
 			'settings'     => array( __( 'Settings', 'eazinvoice-invoicing-for-msmes' ), admin_url( 'admin.php?page=eazinvoice-settings' ) ),
 		);
 
@@ -745,7 +842,9 @@ final class EazInvoice_Plugin {
 
 		$settings      = $this->get_settings();
 		$is_connected = ! empty( $settings['api_key'] );
-		$status_label = $is_connected ? __( 'API key saved - pending live validation', 'eazinvoice-invoicing-for-msmes' ) : __( 'Not connected', 'eazinvoice-invoicing-for-msmes' );
+		$status_label = 'connected' === $settings['api_status']
+			? __( 'Connected', 'eazinvoice-invoicing-for-msmes' )
+			: ( $is_connected ? __( 'API key saved - validate connection', 'eazinvoice-invoicing-for-msmes' ) : __( 'Not connected', 'eazinvoice-invoicing-for-msmes' ) );
 		?>
 		<div class="wrap eazinvoice-admin">
 			<?php $this->render_admin_nav( 'api' ); ?>
@@ -763,10 +862,13 @@ final class EazInvoice_Plugin {
 				<div class="eazinvoice-section-head">
 					<div>
 						<h1><?php esc_html_e( 'Connect EazInvoice Account', 'eazinvoice-invoicing-for-msmes' ); ?></h1>
-						<p><?php esc_html_e( 'The customer should log in to EazInvoice, generate a WordPress API key, and paste it below. Paid tier features will unlock after API validation is added.', 'eazinvoice-invoicing-for-msmes' ); ?></p>
+						<p><?php esc_html_e( 'The customer should log in to EazInvoice, generate a WordPress API key, and paste it below. The validation check updates the local plan and paid feature display inside WordPress.', 'eazinvoice-invoicing-for-msmes' ); ?></p>
 					</div>
 					<span class="eazinvoice-plan-pill"><?php echo esc_html( $status_label ); ?></span>
 				</div>
+				<?php if ( ! empty( $settings['api_message'] ) ) : ?>
+					<div class="eazinvoice-notice-soft"><?php echo esc_html( $settings['api_message'] ); ?></div>
+				<?php endif; ?>
 				<form method="post" action="options.php">
 					<?php settings_fields( 'eazinvoice_settings_group' ); ?>
 					<table class="form-table" role="presentation">
@@ -777,6 +879,13 @@ final class EazInvoice_Plugin {
 						<tr>
 							<th scope="row"><label for="eazinvoice_api_key_api"><?php esc_html_e( 'WordPress API Key', 'eazinvoice-invoicing-for-msmes' ); ?></label></th>
 							<td><input id="eazinvoice_api_key_api" class="regular-text" type="password" name="eazinvoice_settings[api_key]" value="<?php echo esc_attr( $settings['api_key'] ); ?>" autocomplete="off" /></td>
+						</tr>
+						<tr>
+							<th scope="row"><label for="eazinvoice_api_base_url"><?php esc_html_e( 'EazInvoice API Base URL', 'eazinvoice-invoicing-for-msmes' ); ?></label></th>
+							<td>
+								<input id="eazinvoice_api_base_url" class="regular-text" type="url" name="eazinvoice_settings[api_base_url]" value="<?php echo esc_url( $settings['api_base_url'] ); ?>" />
+								<p class="description"><?php esc_html_e( 'Use https://www.eazinvoice.com for live websites, or localhost only for local development.', 'eazinvoice-invoicing-for-msmes' ); ?></p>
+							</td>
 						</tr>
 						<tr>
 							<th scope="row"><label for="eazinvoice_api_settings_url"><?php esc_html_e( 'EazInvoice API Settings URL', 'eazinvoice-invoicing-for-msmes' ); ?></label></th>
@@ -804,6 +913,18 @@ final class EazInvoice_Plugin {
 						'<input type="hidden" name="eazinvoice_settings[plan]" value="%s" />',
 						esc_attr( $settings['plan'] )
 					);
+					printf(
+						'<input type="hidden" name="eazinvoice_settings[api_status]" value="%s" />',
+						esc_attr( $settings['api_status'] )
+					);
+					printf(
+						'<input type="hidden" name="eazinvoice_settings[api_message]" value="%s" />',
+						esc_attr( $settings['api_message'] )
+					);
+					printf(
+						'<input type="hidden" name="eazinvoice_settings[gateway_status]" value="%s" />',
+						esc_attr( $settings['gateway_status'] )
+					);
 					if ( '1' === $settings['auto_button'] ) {
 						echo '<input type="hidden" name="eazinvoice_settings[auto_button]" value="1" />';
 					}
@@ -815,6 +936,64 @@ final class EazInvoice_Plugin {
 					<article><span>2</span><strong><?php esc_html_e( 'Generate API Key', 'eazinvoice-invoicing-for-msmes' ); ?></strong><p><?php esc_html_e( 'Use Account Settings > API / WordPress Integration.', 'eazinvoice-invoicing-for-msmes' ); ?></p></article>
 					<article><span>3</span><strong><?php esc_html_e( 'Paste Key Here', 'eazinvoice-invoicing-for-msmes' ); ?></strong><p><?php esc_html_e( 'Save it in the plugin. Live validation will be added when the API endpoint is ready.', 'eazinvoice-invoicing-for-msmes' ); ?></p></article>
 					<article><span>4</span><strong><?php esc_html_e( 'Unlock Features', 'eazinvoice-invoicing-for-msmes' ); ?></strong><p><?php esc_html_e( 'The plugin will unlock features based on the subscription returned by EazInvoice.', 'eazinvoice-invoicing-for-msmes' ); ?></p></article>
+				</div>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="eazinvoice-inline-action">
+					<?php wp_nonce_field( 'eazinvoice_validate_connection' ); ?>
+					<input type="hidden" name="action" value="eazinvoice_validate_connection" />
+					<input type="hidden" name="account_email" value="<?php echo esc_attr( $settings['account_email'] ); ?>" />
+					<input type="hidden" name="api_key" value="<?php echo esc_attr( $settings['api_key'] ); ?>" />
+					<input type="hidden" name="api_base_url" value="<?php echo esc_url( $settings['api_base_url'] ); ?>" />
+					<button class="eazinvoice-button eazinvoice-button-primary" type="submit"><?php esc_html_e( 'Validate EazInvoice Connection', 'eazinvoice-invoicing-for-msmes' ); ?></button>
+				</form>
+			</section>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Render payment gateway readiness page.
+	 */
+	public function render_payment_gateway_page() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		$settings      = $this->get_settings();
+		$gateway_ready = in_array( $settings['plan'], array( 'standard', 'pro', 'business' ), true ) && 'connected' === $settings['api_status'];
+		?>
+		<div class="wrap eazinvoice-admin">
+			<?php $this->render_admin_nav( 'gateway' ); ?>
+			<section class="eazinvoice-hero">
+				<div>
+					<img src="<?php echo esc_url( EAZINVOICE_PLUGIN_URL . 'assets/eazinvoice-logo-full.png' ); ?>" alt="<?php esc_attr_e( 'EazInvoice', 'eazinvoice-invoicing-for-msmes' ); ?>" />
+					<p><?php esc_html_e( 'Razorpay live collection should be configured inside the EazInvoice Business/Gateway settings. This WordPress plugin never exposes Razorpay secrets on the public website.', 'eazinvoice-invoicing-for-msmes' ); ?></p>
+				</div>
+				<a class="eazinvoice-button eazinvoice-button-primary" href="<?php echo esc_url( $settings['upgrade_url'] ); ?>#pricing" target="_blank" rel="noopener noreferrer">
+					<?php esc_html_e( 'View Paid Tiers', 'eazinvoice-invoicing-for-msmes' ); ?>
+				</a>
+			</section>
+
+			<section class="eazinvoice-card">
+				<div class="eazinvoice-section-head">
+					<div>
+						<h1><?php esc_html_e( 'Payment Gateway Readiness', 'eazinvoice-invoicing-for-msmes' ); ?></h1>
+						<p><?php esc_html_e( 'Standard, Pro, and Business tiers can use payment collection flows after the EazInvoice account is connected and Razorpay live keys/webhook are configured on EazInvoice.', 'eazinvoice-invoicing-for-msmes' ); ?></p>
+					</div>
+					<span class="eazinvoice-plan-pill"><?php echo esc_html( $gateway_ready ? __( 'Gateway available', 'eazinvoice-invoicing-for-msmes' ) : __( 'Connect paid plan', 'eazinvoice-invoicing-for-msmes' ) ); ?></span>
+				</div>
+				<div class="eazinvoice-workspace-grid">
+					<article class="eazinvoice-workspace-tile">
+						<strong><?php esc_html_e( '1. Connect Account', 'eazinvoice-invoicing-for-msmes' ); ?></strong>
+						<span><?php esc_html_e( 'Paste and validate the WordPress API key from the subscribed EazInvoice account.', 'eazinvoice-invoicing-for-msmes' ); ?></span>
+					</article>
+					<article class="eazinvoice-workspace-tile">
+						<strong><?php esc_html_e( '2. Configure Razorpay', 'eazinvoice-invoicing-for-msmes' ); ?></strong>
+						<span><?php esc_html_e( 'Add live Razorpay Key ID, Key Secret, and webhook secret in EazInvoice admin/business gateway settings.', 'eazinvoice-invoicing-for-msmes' ); ?></span>
+					</article>
+					<article class="eazinvoice-workspace-tile">
+						<strong><?php esc_html_e( '3. Collect Payments', 'eazinvoice-invoicing-for-msmes' ); ?></strong>
+						<span><?php esc_html_e( 'Created invoices can use EazInvoice payment links, and successful payments update invoice status after signed verification.', 'eazinvoice-invoicing-for-msmes' ); ?></span>
+					</article>
 				</div>
 			</section>
 		</div>
@@ -865,6 +1044,10 @@ final class EazInvoice_Plugin {
 							<td><input id="eazinvoice_workspace_url" class="regular-text" type="url" name="eazinvoice_settings[workspace_url]" value="<?php echo esc_url( $settings['workspace_url'] ); ?>" /></td>
 						</tr>
 						<tr>
+							<th scope="row"><label for="eazinvoice_api_base_url_settings"><?php esc_html_e( 'EazInvoice API Base URL', 'eazinvoice-invoicing-for-msmes' ); ?></label></th>
+							<td><input id="eazinvoice_api_base_url_settings" class="regular-text" type="url" name="eazinvoice_settings[api_base_url]" value="<?php echo esc_url( $settings['api_base_url'] ); ?>" /></td>
+						</tr>
+						<tr>
 							<th scope="row"><label for="eazinvoice_upgrade_url"><?php esc_html_e( 'Upgrade / Pricing URL', 'eazinvoice-invoicing-for-msmes' ); ?></label></th>
 							<td><input id="eazinvoice_upgrade_url" class="regular-text" type="url" name="eazinvoice_settings[upgrade_url]" value="<?php echo esc_url( $settings['upgrade_url'] ); ?>" /></td>
 						</tr>
@@ -895,6 +1078,11 @@ final class EazInvoice_Plugin {
 							</td>
 						</tr>
 					</table>
+					<input type="hidden" name="eazinvoice_settings[api_status]" value="<?php echo esc_attr( $settings['api_status'] ); ?>" />
+					<input type="hidden" name="eazinvoice_settings[api_message]" value="<?php echo esc_attr( $settings['api_message'] ); ?>" />
+					<input type="hidden" name="eazinvoice_settings[api_last_checked]" value="<?php echo esc_attr( $settings['api_last_checked'] ); ?>" />
+					<input type="hidden" name="eazinvoice_settings[plan]" value="<?php echo esc_attr( $settings['plan'] ); ?>" />
+					<input type="hidden" name="eazinvoice_settings[gateway_status]" value="<?php echo esc_attr( $settings['gateway_status'] ); ?>" />
 					<?php submit_button( __( 'Save Free Plugin Settings', 'eazinvoice-invoicing-for-msmes' ) ); ?>
 				</form>
 			</section>

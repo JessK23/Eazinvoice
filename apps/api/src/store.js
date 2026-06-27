@@ -945,6 +945,19 @@ export function createStore(seed = {}, options = {}) {
     })));
   }
 
+  function findActiveApiKeyByToken(token) {
+    const candidate = String(token || "").trim();
+    if (!candidate) return null;
+    const candidateBuffer = Buffer.from(candidate);
+    const key = state.apiKeys.find((entry) => {
+      if (entry.status !== "active" || !entry.token) return false;
+      const entryBuffer = Buffer.from(entry.token);
+      return entryBuffer.length === candidateBuffer.length
+        && crypto.timingSafeEqual(entryBuffer, candidateBuffer);
+    });
+    return key ? clone({ ...key, token: "" }) : null;
+  }
+
   function createApiKey(input = {}) {
     const token = `eaz_live_${crypto.randomBytes(24).toString("hex")}`;
     const key = {
@@ -1433,6 +1446,7 @@ export function createStore(seed = {}, options = {}) {
     listApprovalRequestsForUser,
     decideApprovalRequest,
     createApiKey,
+    findActiveApiKeyByToken,
     listApiKeysForUser,
     revokeApiKey,
     listSubscriptions,

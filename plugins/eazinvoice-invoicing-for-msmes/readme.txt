@@ -4,7 +4,7 @@ Tags: invoice, billing, gst, msme, freelancer
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.0.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -23,8 +23,10 @@ The free plugin gives the site owner an embedded EazInvoice workspace inside Wor
 * Embedded create invoice screen
 * Embedded PO / WO creation screen
 * API Access page for connecting an EazInvoice account
+* Live API key validation against the connected EazInvoice account
+* Payment Gateway readiness page for Standard, Pro, and Business Razorpay collection flows
 * Account email and workspace URL settings
-* Basic API key field for future connection
+* API key field with connection status and active plan display
 * Optional compact public website invoice tab that opens the embedded WordPress invoice screen after the site owner enables it
 * Optional invoice CTA shortcode: `[eazinvoice_button]`
 * Legacy shortcode alias: `[eazinvoice_free_invoice]`
@@ -40,6 +42,7 @@ The paid version is sold independently from eazinvoice.com and can include:
 * B2B quotation and invoice workflows
 * Customer and service mapping
 * Payment status automation
+* Razorpay live payment collection through EazInvoice verified webhooks
 * Invoice PDF/download links
 * Purchase Order / Work Order integration
 * GST-ready reports
@@ -69,7 +72,11 @@ Paid upgrades should be sold from EazInvoice. After purchase, the customer updat
 
 = How does API connection work? =
 
-The customer logs into EazInvoice, opens Account Settings > API / WordPress Integration, generates a WordPress API key, then pastes that key into EazInvoice > API Access inside WordPress. Future API validation will confirm the subscription and unlock paid features inside WordPress.
+The customer logs into EazInvoice, opens Account Settings > API / WordPress Integration, generates a WordPress API key, then pastes that key into EazInvoice > API Access inside WordPress. The validation button calls EazInvoice and updates the local plugin plan and connection status.
+
+= Does the plugin store Razorpay keys? =
+
+No. Razorpay live Key Secret and webhook secret should be configured inside EazInvoice. The WordPress plugin shows gateway readiness and can use connected EazInvoice payment workflows, but it does not expose Razorpay secrets on the public WordPress website.
 
 = Does the free plugin include WooCommerce automation? =
 
@@ -87,6 +94,13 @@ No. WooCommerce sync is optional and paid. The core EazInvoice plugin is designe
 
 == Changelog ==
 
+= 1.0.1 =
+
+* Added live EazInvoice API connection validation for WordPress API keys.
+* Added Payment Gateway readiness page for paid Razorpay collection flows.
+* Clarified that Razorpay secrets stay in EazInvoice and are not exposed by the WordPress plugin.
+* Improved paid tier pricing display and connection status preservation.
+
 = 1.0.0 =
 
 * First WordPress.org-ready freemium release.
@@ -95,6 +109,7 @@ No. WooCommerce sync is optional and paid. The core EazInvoice plugin is designe
 * Added automatic public website CTA and optional shortcode CTA.
 * Added embedded WordPress dashboard, invoice page, and subscription page.
 * Added embedded PO / WO creation page and local free-tier records.
-* Added API Access connection page and API integration prompt.
+* Added API Access connection page, live connection validation, and API integration prompt.
+* Added Payment Gateway readiness page for paid Razorpay collection flows.
 * Added responsive admin and public button styling.
 * Added freemium upgrade messaging.

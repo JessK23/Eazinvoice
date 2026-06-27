@@ -1853,3 +1853,72 @@ test("business workspace endpoints honor plan preview and gating", async () => {
     restoreAdminEmail();
   }
 });
+
+test("wordpress connection validates active api keys and blocks mismatched accounts", async () => {
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const api = createApi({ store });
+  const user = api.createUser({ name: "Plugin Owner", email: "plugin-owner@example.com" });
+  api.createSubscription({
+    userId: user.id,
+    subscriberName: user.name,
+    subscriberType: "company",
+    plan: "business",
+    amount: 23988,
+    billingCycle: "yearly",
+    status: "active",
+  });
+  const key = api.createApiKey(user, { label: "WordPress production site" });
+  const server = createServer({ store, persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const connected = await fetch(`${baseUrl}/wordpress/connection`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        accountEmail: "plugin-owner@example.com",
+        apiKey: key.token,
+        siteUrl: "https://client.example",
+      }),
+    });
+    const connectedPayload = await connected.json();
+    assert.equal(connected.status, 200);
+    assert.equal(connectedPayload.ok, true);
+    assert.equal(connectedPayload.plan.id, "business");
+    assert.equal(connectedPayload.wordpress.gatewayReady, true);
+    assert.equal(connectedPayload.apiKey.tokenPreview, key.tokenPreview);
+    assert.equal(connectedPayload.apiKey.token, undefined);
+
+    const mismatch = await fetch(`${baseUrl}/wordpress/connection`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        accountEmail: "other@example.com",
+        apiKey: key.token,
+      }),
+    });
+    const mismatchPayload = await mismatch.json();
+    assert.equal(mismatch.status, 401);
+    assert.match(mismatchPayload.error, /does not belong/i);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("static server exposes only the browser api client from api source", async () => {
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const client = await fetch(`${baseUrl}/apps/api/src/client.js`);
+    assert.equal(client.status, 200);
+    assert.equal(client.headers.get("x-content-type-options"), "nosniff");
+
+    const source = await fetch(`${baseUrl}/apps/api/src/server.js`);
+    assert.equal(source.status, 403);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

@@ -69,8 +69,20 @@ function buildTeamInviteMessage(emailSettings = {}, member = {}, user = {}, req 
   };
 }
 
+function securityHeaders(extra = {}) {
+  return {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "SAMEORIGIN",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    ...extra,
+  };
+}
+
 function sendJson(res, status, payload) {
   res.writeHead(status, {
+    ...securityHeaders(),
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Eazinvoice-Plan-Preview",
@@ -504,10 +516,16 @@ async function tryServeStatic(urlPath, res) {
   const match = STATIC_ROOTS.find((root) => urlPath.startsWith(root.prefix));
   if (!match) return false;
   const relativePath = urlPath.slice(match.prefix.length);
+  if (match.prefix === "/apps/api/src/" && relativePath !== "client.js") {
+    res.writeHead(403, securityHeaders({ "Content-Type": "text/plain; charset=utf-8" }));
+    res.end("Forbidden");
+    return true;
+  }
   const filePath = path.join(match.dir, relativePath || "index.html");
   try {
     const data = await fs.readFile(filePath);
     res.writeHead(200, {
+      ...securityHeaders(),
       "Content-Type": contentType(filePath),
       "Access-Control-Allow-Origin": "*",
       "Cache-Control": "no-store",
@@ -526,6 +544,29 @@ export function createServer(options = {}) {
   const oauthStates = createOAuthStateStore();
   const emailOtps = createEmailOtpStore();
   const useSupabaseEmailOtp = options.useSupabaseEmailOtp ?? isSupabaseEmailOtpConfigured();
+  const rateBuckets = new Map();
+
+  function isRateLimited(req, url) {
+    const sensitive = [
+      "/auth/email-otp/request",
+      "/auth/signup",
+      "/auth/login",
+      "/billing/razorpay/order",
+      "/billing/razorpay/verify",
+      "/webhooks/razorpay",
+      "/wordpress/connection",
+    ];
+    if (!sensitive.includes(url.pathname)) return false;
+    const windowMs = 60_000;
+    const max = url.pathname === "/auth/email-otp/request" ? 20 : 120;
+    const now = Date.now();
+    const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "local").split(",")[0].trim();
+    const key = `${ip}:${req.method}:${url.pathname}`;
+    const bucket = (rateBuckets.get(key) || []).filter((timestamp) => now - timestamp < windowMs);
+    bucket.push(now);
+    rateBuckets.set(key, bucket);
+    return bucket.length > max;
+  }
 
   function activateVerifiedRazorpayOrder(orderMeta, paymentId, orderId) {
     if (!orderMeta) return null;
@@ -592,6 +633,7 @@ export function createServer(options = {}) {
 
     if ((url.pathname === "/" || url.pathname === "/index.html") && (req.method === "GET" || req.method === "HEAD")) {
       res.writeHead(302, {
+        ...securityHeaders(),
         Location: "/apps/web/index.html",
         "Cache-Control": "no-store",
       });
@@ -600,6 +642,11 @@ export function createServer(options = {}) {
     }
 
     if (await tryServeStatic(url.pathname, res)) return;
+
+    if (isRateLimited(req, url)) {
+      sendJson(res, 429, { error: "Too many requests. Please wait a moment and try again." });
+      return;
+    }
 
     if (req.method === "OPTIONS") {
       sendJson(res, 204, {});
@@ -827,6 +874,7 @@ export function createServer(options = {}) {
       authUrl.searchParams.set("access_type", "offline");
       authUrl.searchParams.set("prompt", "consent");
       res.writeHead(302, {
+        ...securityHeaders(),
         Location: authUrl.toString(),
         "Access-Control-Allow-Origin": "*",
       });
@@ -891,8 +939,18 @@ export function createServer(options = {}) {
       destination.searchParams.set("provider", "google");
       destination.searchParams.set("mode", oauthState.mode);
       const html = `<!doctype html><html><body><script>localStorage.setItem('eazinvoice_token', ${JSON.stringify(token)});window.location.href=${JSON.stringify(destination.toString())};</script></body></html>`;
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.writeHead(200, securityHeaders({ "Content-Type": "text/html; charset=utf-8" }));
       res.end(html);
+      return;
+    }
+
+    if (url.pathname === "/wordpress/connection" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 200, api.validateWordPressConnection(body));
+      } catch (error) {
+        sendJson(res, /invalid|not found|revoked|does not belong/i.test(error.message) ? 401 : 400, { error: error.message });
+      }
       return;
     }
 

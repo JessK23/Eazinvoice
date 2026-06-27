@@ -261,6 +261,49 @@ export function createApi(deps = {}) {
       return key;
     },
 
+    validateWordPressConnection(input = {}) {
+      const apiKey = String(input.apiKey || input.api_key || "").trim();
+      const accountEmail = String(input.accountEmail || input.account_email || "").trim().toLowerCase();
+      if (!apiKey) throw new Error("WordPress API key is required.");
+      const key = store.findActiveApiKeyByToken(apiKey);
+      if (!key) throw new Error("Invalid or revoked WordPress API key.");
+      const owner = store.getUserById(key.ownerUserId);
+      if (!owner) throw new Error("API key owner was not found.");
+      if (accountEmail && owner.email.toLowerCase() !== accountEmail) {
+        throw new Error("API key does not belong to the supplied EazInvoice account email.");
+      }
+      const plan = this.getFreePlanSummary(owner);
+      return {
+        ok: true,
+        account: {
+          name: owner.name,
+          email: owner.email,
+        },
+        plan: {
+          id: plan.plan,
+          label: plan.label,
+          limits: plan.limits,
+          features: plan.features,
+          highlights: plan.highlights,
+          billingCycle: plan.subscription?.billingCycle || getPlanDefinition(plan.plan).billingCycle,
+          subscriptionStatus: plan.subscription?.status || (plan.plan === "free" ? "free" : "active"),
+        },
+        wordpress: {
+          unlocked: Boolean(plan.features.wordpressPaid),
+          gatewayReady: Boolean(plan.features.razorpayCollections),
+          aiReady: Boolean(plan.features.aiInvoiceAssist || plan.features.aiPoAssist),
+        },
+        apiKey: {
+          id: key.id,
+          label: key.label,
+          tokenPreview: key.tokenPreview,
+          scopes: key.scopes || [],
+          status: key.status,
+          createdAt: key.createdAt,
+        },
+      };
+    },
+
     getAiCommandContext(user) {
       return {
         user,

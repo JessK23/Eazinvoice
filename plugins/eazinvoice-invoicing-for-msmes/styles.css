@@ -248,6 +248,13 @@
 .eazinvoice-admin .eazinvoice-workspace-tile span {
   color: var(--ei-muted);
 }
+.eazinvoice-admin .eazinvoice-inline-action {
+  margin-top: 18px;
+}
+.eazinvoice-admin .eazinvoice-inline-action .eazinvoice-button {
+  border: 0;
+  cursor: pointer;
+}
 .eazinvoice-admin .eazinvoice-metric-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
