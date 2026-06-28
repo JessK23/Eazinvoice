@@ -8,6 +8,8 @@ mountAdminPlanPreview(sessionContext);
 document.getElementById("appShell")?.removeAttribute("hidden");
 
 const planSummary = document.getElementById("planSummary");
+const planEntitlements = document.getElementById("planEntitlements");
+const tierIndicatorBanner = document.getElementById("tierIndicatorBanner");
 const adminNavLink = document.getElementById("adminNavLink");
 const adminSideLink = document.getElementById("adminSideLink");
 const profileMenuButton = document.getElementById("profileMenuButton");
@@ -149,6 +151,31 @@ let pendingAiDraftCommand = null;
 let pendingAiDraftResult = null;
 let aiThinkingMessage = null;
 
+const FEATURE_GATES = [
+  { key: "basicInvoices", label: "Invoice creation", upgrade: "Free" },
+  { key: "pdfPrint", label: "PDF and print", upgrade: "Free" },
+  { key: "manualPayments", label: "Manual payment tracking", upgrade: "Free" },
+  { key: "whatsappShare", label: "WhatsApp sharing", upgrade: "Standard" },
+  { key: "razorpayCollections", label: "Razorpay collection links", upgrade: "Standard" },
+  { key: "recurringInvoices", label: "Recurring auto-drafts", upgrade: "Standard" },
+  { key: "aiInvoiceAssist", label: "AI invoice assistant", upgrade: "Pro" },
+  { key: "aiPoAssist", label: "AI PO / WO assistant", upgrade: "Pro" },
+  { key: "advancedReports", label: "Advanced reports", upgrade: "Pro" },
+  { key: "multiBusiness", label: "Multiple businesses", upgrade: "Pro" },
+  { key: "teamAccess", label: "Team access", upgrade: "Business" },
+  { key: "approvals", label: "Approval workflow", upgrade: "Business" },
+  { key: "apiAccess", label: "API access", upgrade: "Business" },
+];
+
+const LIMIT_LABELS = {
+  companies: "Business profiles",
+  customers: "Customers",
+  invoicesPerMonth: "Invoices this month",
+  invoiceItemsPerInvoice: "Items per invoice",
+  templates: "Templates",
+  aiCommandsPerMonth: "AI commands this month",
+};
+
 function currentDashboardPage() {
   const page = (window.location.hash || "#reports").replace(/^#/, "");
   const supported = new Set([...dashboardPages].map((section) => section.getAttribute("data-dashboard-page")));
@@ -196,6 +223,65 @@ function isPaidSubscription(subscription) {
 
 function activePlanAllows(featureName) {
   return Boolean(activePlanSummary?.features?.[featureName]);
+}
+
+function isUnlimitedLimit(value) {
+  return Number(value) >= 999999;
+}
+
+function planLimitLine(key, summary) {
+  const limit = Number(summary?.limits?.[key] ?? 0);
+  const used = Number(summary?.usage?.[key] ?? 0);
+  const label = LIMIT_LABELS[key] || key;
+  if (isUnlimitedLimit(limit)) return { label, value: "Unlimited", tone: "blue" };
+  const remaining = Math.max(0, limit - used);
+  const value = `${remaining} left (${used}/${limit})`;
+  return {
+    label,
+    value,
+    tone: remaining <= 0 ? "red" : remaining <= Math.max(1, Math.ceil(limit * 0.15)) ? "amber" : "blue",
+  };
+}
+
+function renderPlanEntitlements(summary) {
+  const planLabel = summary?.label || "Free";
+  const limits = ["invoicesPerMonth", "customers", "companies", "aiCommandsPerMonth"].map((key) => planLimitLine(key, summary));
+  if (tierIndicatorBanner) {
+    const invoiceLimit = planLimitLine("invoicesPerMonth", summary);
+    const aiLimit = planLimitLine("aiCommandsPerMonth", summary);
+    const aiText = Number(summary?.limits?.aiCommandsPerMonth || 0) > 0
+      ? `AI: ${aiLimit.value}`
+      : "AI: upgrade to Pro";
+    tierIndicatorBanner.innerHTML = `
+      <strong>${escapeHtml(planLabel)} tier</strong>
+      <span>${escapeHtml(invoiceLimit.label)}: ${escapeHtml(invoiceLimit.value)}</span>
+      <span>${escapeHtml(aiText)}</span>
+      <a href="/apps/web/subscription.html">Upgrade / manage plan</a>
+    `;
+  }
+  if (!planEntitlements) return;
+  const featureRows = FEATURE_GATES.map((feature) => {
+    const included = Boolean(summary?.features?.[feature.key]);
+    return `
+      <div class="entitlement-row">
+        <span>${escapeHtml(feature.label)}</span>
+        <strong class="pill ${included ? "blue" : "gold"}">${included ? "Live" : `Upgrade: ${escapeHtml(feature.upgrade)}`}</strong>
+      </div>
+    `;
+  }).join("");
+  planEntitlements.innerHTML = `
+    <div class="entitlement-section">
+      ${limits.map((item) => `
+        <div class="entitlement-row">
+          <span>${escapeHtml(item.label)}</span>
+          <strong class="pill ${item.tone}">${escapeHtml(item.value)}</strong>
+        </div>
+      `).join("")}
+    </div>
+    <div class="entitlement-section compact">
+      ${featureRows}
+    </div>
+  `;
 }
 
 function canUseAiAssistant() {
@@ -272,7 +358,8 @@ function renderAiAssistantAccess() {
   if (!allowed) {
     setAiAssistantStatus("AI command drafting and AI report summaries are available on Pro and Business plans. Admin plan preview can be used to test this locally.", "error");
   } else {
-    setAiAssistantStatus("");
+    const aiLimit = planLimitLine("aiCommandsPerMonth", activePlanSummary);
+    setAiAssistantStatus(`AI Assistant is live on this plan. ${aiLimit.label}: ${aiLimit.value}.`, aiLimit.tone === "red" ? "error" : "success");
   }
 }
 
@@ -1677,6 +1764,7 @@ async function loadSubscriptionPanel(existingSubscriptions) {
     features: {},
     subscription: currentSubscription,
   };
+  if (activePlan) renderPlanEntitlements(activePlan);
   if (currentPlanBadge) currentPlanBadge.textContent = `Current: ${activePlanSummary.label || activePlanSummary.plan || "Free"} - INR ${money(activePlanSummary.amount || 0)}`;
   renderAiAssistantAccess();
   if (subscriptionHistory) {
@@ -2149,9 +2237,11 @@ async function initializeDashboard() {
       <strong>${summary.plan.toUpperCase()}</strong><br />
       Companies: ${summary.usage.companies}/${summary.limits.companies}<br />
       Customers: ${summary.usage.customers}/${summary.limits.customers}<br />
-      Invoices: ${summary.usage.invoicesPerMonth}/${summary.limits.invoicesPerMonth}
+      Invoices: ${summary.usage.invoicesPerMonth}/${summary.limits.invoicesPerMonth}<br />
+      AI: ${summary.limits.aiCommandsPerMonth ? `${summary.usage.aiCommandsPerMonth}/${summary.limits.aiCommandsPerMonth}` : "Upgrade to Pro"}
     `;
   }
+  renderPlanEntitlements(summary);
 
   dashboardInvoices = invoices;
   dashboardCompanies = companies;

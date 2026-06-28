@@ -38,6 +38,7 @@ const itemSuggestions = document.getElementById("itemSuggestions");
 const itemsEl = document.getElementById("workflowItems");
 const addItem = document.getElementById("addItemBtn");
 const status = document.getElementById("invoiceWorkflowStatus");
+const invoiceTierIndicator = document.getElementById("invoiceTierIndicator");
 const gstModeBadge = document.getElementById("gstModeBadge");
 const whatsappShare = document.getElementById("whatsappShare");
 const customerModeSelect = document.getElementById("customerModeSelect");
@@ -79,6 +80,7 @@ let companies = [];
 let customers = [];
 let subscriptions = [];
 let invoices = [];
+let activePlanSummary = sessionContext?.session?.plan?.active || sessionContext?.session?.plan || null;
 let lastSavedInvoice = null;
 let customerMode = "";
 let customerLocked = false;
@@ -158,11 +160,46 @@ function moneyWithSymbol(value, currency = selectedCurrency()) {
 }
 
 function currentPlan() {
+  if (activePlanSummary?.plan) return String(activePlanSummary.plan || "free").toLowerCase();
   const active = subscriptions.slice().reverse().find((subscription) => {
     const status = String(subscription.status || "active").toLowerCase();
     return status === "active";
   });
   return String(active?.plan || activePlanKey || "free").toLowerCase();
+}
+
+function isUnlimitedLimit(value) {
+  return Number(value) >= 999999;
+}
+
+function quotaMessage(label, used, limit) {
+  const numericLimit = Number(limit || 0);
+  if (isUnlimitedLimit(numericLimit)) return `${label}: unlimited`;
+  const remaining = Math.max(0, numericLimit - Number(used || 0));
+  return `${label}: ${remaining} left (${Number(used || 0)}/${numericLimit})`;
+}
+
+function renderInvoiceTierIndicator() {
+  if (!invoiceTierIndicator) return;
+  const planLabel = activePlanSummary?.label || currentPlan().replace(/^\w/, (letter) => letter.toUpperCase());
+  const invoiceText = quotaMessage(
+    "Invoices this month",
+    activePlanSummary?.usage?.invoicesPerMonth,
+    activePlanSummary?.limits?.invoicesPerMonth,
+  );
+  const aiLimit = Number(activePlanSummary?.limits?.aiCommandsPerMonth || 0);
+  const aiText = aiLimit > 0
+    ? quotaMessage("AI commands this month", activePlanSummary?.usage?.aiCommandsPerMonth, aiLimit)
+    : "AI commands: upgrade to Pro";
+  const gatewayText = canUseStandardFeatures()
+    ? "WhatsApp, recurring drafts, and gateway collection are live"
+    : "WhatsApp, recurring drafts, and gateway collection need Standard";
+  invoiceTierIndicator.innerHTML = `
+    <strong>${escapeHtml(planLabel)} tier</strong>
+    <span>${escapeHtml(invoiceText)}</span>
+    <span>${escapeHtml(aiText)}</span>
+    <span>${escapeHtml(gatewayText)}</span>
+  `;
 }
 
 function canUseWhatsappShare() {
@@ -185,6 +222,7 @@ function updateStandardFeatureControls() {
       ? "Standard features are active for this session. Recurring details are saved with the invoice and branding removal applies to print/PDF."
       : "Recurring drafts and branding removal are available on Standard and higher plans.";
   }
+  renderInvoiceTierIndicator();
   [recurringInvoiceToggle, recurringFrequency, recurringNextDate, hideBrandingToggle].forEach((field) => {
     if (!field) return;
     field.disabled = !allowed;
@@ -944,12 +982,18 @@ async function initializeInvoicePage() {
   form?.querySelector('input[name="dueDate"]')?.setAttribute("value", due);
 
   try {
-    [companies, customers, invoices, subscriptions] = await Promise.all([
+    const [planSummary, loadedCompanies, loadedCustomers, loadedInvoices, loadedSubscriptions] = await Promise.all([
+      apiClient.getPlan(token).catch(() => null),
       apiClient.listCompanies(token).catch(() => []),
       apiClient.listCustomers(token).catch(() => []),
       apiClient.listInvoices(token).catch(() => []),
       apiClient.listMySubscriptions(token).catch(() => []),
     ]);
+    activePlanSummary = planSummary || activePlanSummary;
+    companies = loadedCompanies;
+    customers = loadedCustomers;
+    invoices = loadedInvoices;
+    subscriptions = loadedSubscriptions;
     populateSelects();
     renderItemSuggestions();
     setCustomerMode("", { force: true });
