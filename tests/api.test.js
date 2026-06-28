@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import { createApi } from "../apps/api/src/index.js";
+import { describePersistence } from "../apps/api/src/persistence.js";
 import { createStore } from "../apps/api/src/store.js";
 import { createServer } from "../apps/api/src/server.js";
 
@@ -22,6 +25,26 @@ function useTestAdminEmail() {
 test("health check is ok", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   assert.equal(api.healthCheck().ok, true);
+});
+
+test("persistence can use a mounted production data directory", () => {
+  const previousDataDir = process.env.EAZINVOICE_DATA_DIR;
+  const mountedDir = path.join(process.cwd(), "data", "test-mounted-json");
+  fs.rmSync(mountedDir, { recursive: true, force: true });
+  process.env.EAZINVOICE_DATA_DIR = mountedDir;
+  try {
+    const persistence = describePersistence();
+    assert.equal(persistence.mode, "mounted-json");
+    assert.equal(persistence.dataDir, mountedDir);
+    assert.ok(fs.existsSync(path.join(mountedDir, "eazinvoice-data.json")));
+  } finally {
+    if (previousDataDir === undefined) {
+      delete process.env.EAZINVOICE_DATA_DIR;
+    } else {
+      process.env.EAZINVOICE_DATA_DIR = previousDataDir;
+    }
+    fs.rmSync(mountedDir, { recursive: true, force: true });
+  }
 });
 
 test("can create invoice and calculate totals", () => {
