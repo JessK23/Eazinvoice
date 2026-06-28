@@ -1,10 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const SESSION_FILE = path.join(DATA_DIR, "eazinvoice-sessions.json");
+function configuredDataDir() {
+  const configured = process.env.EAZINVOICE_DATA_DIR || process.env.DATA_DIR || "";
+  return configured ? path.resolve(configured) : path.join(process.cwd(), "data");
+}
+
+function sessionFilePath() {
+  return path.join(configuredDataDir(), "eazinvoice-sessions.json");
+}
 
 function ensureSessionFile() {
+  const DATA_DIR = configuredDataDir();
+  const SESSION_FILE = sessionFilePath();
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
@@ -16,6 +24,7 @@ function ensureSessionFile() {
 function loadSessions() {
   try {
     ensureSessionFile();
+    const SESSION_FILE = sessionFilePath();
     return JSON.parse(fs.readFileSync(SESSION_FILE, "utf8") || "{}");
   } catch {
     return {};
@@ -24,6 +33,7 @@ function loadSessions() {
 
 function saveSessions(sessions) {
   ensureSessionFile();
+  const SESSION_FILE = sessionFilePath();
   fs.writeFileSync(SESSION_FILE, JSON.stringify(sessions, null, 2), "utf8");
 }
 
@@ -41,4 +51,3 @@ export function createSessionStore() {
     },
   };
 }
-
