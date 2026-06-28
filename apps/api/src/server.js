@@ -629,7 +629,8 @@ export function createServer(options = {}) {
   }
 
   const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, "http://localhost");
+    try {
+      const url = new URL(req.url, "http://localhost");
 
     if ((url.pathname === "/" || url.pathname === "/index.html") && (req.method === "GET" || req.method === "HEAD")) {
       res.writeHead(302, {
@@ -1862,7 +1863,22 @@ export function createServer(options = {}) {
       return;
     }
 
-    sendJson(res, 404, { error: "Not found" });
+      sendJson(res, 404, { error: "Not found" });
+    } catch (error) {
+      console.error("Unhandled request error:", {
+        method: req.method,
+        url: req.url,
+        message: error.message,
+        stack: error.stack,
+      });
+      if (!res.headersSent) {
+        sendJson(res, 500, {
+          error: "EazInvoice could not complete this request. Please try again, and check Render logs if it repeats.",
+        });
+      } else {
+        res.end();
+      }
+    }
   });
   server.eazinvoiceApi = api;
   return server;

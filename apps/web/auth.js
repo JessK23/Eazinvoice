@@ -31,8 +31,16 @@ async function apiRequest(path, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || "Request failed");
+  const raw = await response.text().catch(() => "");
+  let payload = {};
+  try {
+    payload = raw ? JSON.parse(raw) : {};
+  } catch {
+    payload = {};
+  }
+  if (!response.ok) {
+    throw new Error(payload.error || `Request failed (${response.status}). Please try again or contact EazInvoice support.`);
+  }
   return payload;
 }
 
