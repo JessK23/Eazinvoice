@@ -356,7 +356,10 @@ function renderAiAssistantAccess() {
       : "Speak an invoice, PO, or report command";
   }
   if (!allowed) {
-    setAiAssistantStatus("AI command drafting and AI report summaries are available on Pro and Business plans. Admin plan preview can be used to test this locally.", "error");
+    const adminPreviewHint = sessionContext?.session?.admin?.authorized
+      ? " Admin plan preview can be used to test this locally."
+      : "";
+    setAiAssistantStatus(`AI command drafting and AI report summaries are available on Pro and Business plans.${adminPreviewHint}`, "error");
   } else {
     const aiLimit = planLimitLine("aiCommandsPerMonth", activePlanSummary);
     setAiAssistantStatus(`AI Assistant is live on this plan. ${aiLimit.label}: ${aiLimit.value}.`, aiLimit.tone === "red" ? "error" : "success");
