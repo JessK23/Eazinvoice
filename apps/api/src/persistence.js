@@ -6,6 +6,17 @@ function configuredDataDir() {
   return configured ? path.resolve(configured) : path.join(process.cwd(), "data");
 }
 
+function hasConfiguredDataDir() {
+  return Boolean(process.env.EAZINVOICE_DATA_DIR || process.env.DATA_DIR);
+}
+
+function storageConfigError(error) {
+  const dataDir = configuredDataDir();
+  return new Error(
+    `EazInvoice production storage is not writable at ${dataDir}. In Render, add a persistent disk mounted at this exact path, or update EAZINVOICE_DATA_DIR to the actual disk mount path. Original error: ${error.message}`,
+  );
+}
+
 function dataFilePath() {
   return path.join(configuredDataDir(), "eazinvoice-data.json");
 }
@@ -13,11 +24,15 @@ function dataFilePath() {
 function ensureDataFile() {
   const DATA_DIR = configuredDataDir();
   const DATA_FILE = dataFilePath();
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-  if (!fs.existsSync(DATA_FILE)) {
-    fs.writeFileSync(DATA_FILE, JSON.stringify({}), "utf8");
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    if (!fs.existsSync(DATA_FILE)) {
+      fs.writeFileSync(DATA_FILE, JSON.stringify({}), "utf8");
+    }
+  } catch (error) {
+    throw storageConfigError(error);
   }
 }
 
@@ -27,7 +42,10 @@ export function loadPersistedState() {
     const DATA_FILE = dataFilePath();
     const raw = fs.readFileSync(DATA_FILE, "utf8");
     return raw ? JSON.parse(raw) : {};
-  } catch {
+  } catch (error) {
+    if (hasConfiguredDataDir()) {
+      throw error;
+    }
     return {};
   }
 }
