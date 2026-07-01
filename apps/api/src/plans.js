@@ -232,10 +232,16 @@ export function listPlans() {
 }
 
 export function getActiveSubscription(subscriptions = []) {
+  const now = Date.now();
   return subscriptions
     .slice()
     .reverse()
-    .find((subscription) => String(subscription.status || "active").toLowerCase() === "active");
+    .find((subscription) => {
+      if (String(subscription.status || "active").toLowerCase() !== "active") return false;
+      if (!subscription.expiresAt) return true;
+      const expiresAt = Date.parse(subscription.expiresAt);
+      return Number.isNaN(expiresAt) || expiresAt > now;
+    });
 }
 
 export function getActivePlanDefinition(subscriptions = []) {

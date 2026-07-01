@@ -21,6 +21,10 @@ function dataFilePath() {
   return path.join(configuredDataDir(), "eazinvoice-data.json");
 }
 
+function backupFilePath() {
+  return path.join(configuredDataDir(), "eazinvoice-data.backup.json");
+}
+
 function ensureDataFile() {
   const DATA_DIR = configuredDataDir();
   const DATA_FILE = dataFilePath();
@@ -53,18 +57,36 @@ export function loadPersistedState() {
 export function savePersistedState(state) {
   ensureDataFile();
   const DATA_FILE = dataFilePath();
-  fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2), "utf8");
+  const BACKUP_FILE = backupFilePath();
+  const TEMP_FILE = `${DATA_FILE}.${process.pid}.tmp`;
+  const serialized = JSON.stringify(state, null, 2);
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      fs.copyFileSync(DATA_FILE, BACKUP_FILE);
+    }
+    fs.writeFileSync(TEMP_FILE, serialized, "utf8");
+    fs.renameSync(TEMP_FILE, DATA_FILE);
+  } catch (error) {
+    if (fs.existsSync(TEMP_FILE)) {
+      fs.rmSync(TEMP_FILE, { force: true });
+    }
+    throw storageConfigError(error);
+  }
 }
 
 export function describePersistence() {
   ensureDataFile();
   const DATA_DIR = configuredDataDir();
   const DATA_FILE = dataFilePath();
+  const BACKUP_FILE = backupFilePath();
   const stats = fs.statSync(DATA_FILE);
   return {
     mode: process.env.EAZINVOICE_DATA_DIR || process.env.DATA_DIR ? "mounted-json" : "local-json",
     dataDir: DATA_DIR,
     dataFile: DATA_FILE,
+    backupFile: BACKUP_FILE,
+    backupExists: fs.existsSync(BACKUP_FILE),
+    configured: hasConfiguredDataDir(),
     exists: true,
     bytes: stats.size,
     updatedAt: stats.mtime.toISOString(),

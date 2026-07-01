@@ -37,6 +37,12 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function isActivePaidSubscription(subscription) {
+  return String(subscription.status || "active").toLowerCase() === "active"
+    && String(subscription.plan || "free").toLowerCase() !== "free"
+    && toNumber(subscription.amount) > 0;
+}
+
 function parseDateOnly(value) {
   const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!match) return null;
@@ -519,6 +525,18 @@ export function createStore(seed = {}, options = {}) {
       renewsAt: input.renewsAt ?? renewalDate.toISOString(),
       createdAt,
     };
+    if (isActivePaidSubscription(subscription)) {
+      state.subscriptions.forEach((entry) => {
+        const sameAccount = subscription.userId
+          ? entry.userId === subscription.userId
+          : subscription.companyId && entry.companyId === subscription.companyId;
+        if (sameAccount && isActivePaidSubscription(entry)) {
+          entry.status = "superseded";
+          entry.supersededAt = createdAt;
+          entry.supersededByGatewayOrderId = subscription.gatewayOrderId || "";
+        }
+      });
+    }
     state.subscriptions.push(subscription);
     state.monetization.push({
       id: nextId("mon", ++state.counters.monetization),

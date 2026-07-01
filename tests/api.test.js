@@ -47,6 +47,27 @@ test("persistence can use a mounted production data directory", () => {
   }
 });
 
+test("persistence keeps a backup before replacing saved state", () => {
+  const previousDataDir = process.env.EAZINVOICE_DATA_DIR;
+  const mountedDir = path.join(process.cwd(), "data", "test-mounted-json-backup");
+  fs.rmSync(mountedDir, { recursive: true, force: true });
+  process.env.EAZINVOICE_DATA_DIR = mountedDir;
+  try {
+    const store = createStore();
+    store.createUser({ name: "Backup User", email: "backup@example.com" });
+    const persistence = describePersistence();
+    assert.equal(persistence.backupExists, true);
+    assert.ok(fs.existsSync(path.join(mountedDir, "eazinvoice-data.backup.json")));
+  } finally {
+    if (previousDataDir === undefined) {
+      delete process.env.EAZINVOICE_DATA_DIR;
+    } else {
+      process.env.EAZINVOICE_DATA_DIR = previousDataDir;
+    }
+    fs.rmSync(mountedDir, { recursive: true, force: true });
+  }
+});
+
 test("can create invoice and calculate totals", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const company = api.createCompany({ name: "Acme" });
@@ -1054,6 +1075,58 @@ test("active paid plans change limits and unlock feature flags", () => {
   assert.equal(summary.features.razorpayCollections, true);
   assert.equal(summary.limits.companies, 5);
   assert.equal(api.userCanUseFeature(user, "aiPoAssist"), true);
+});
+
+test("new active paid subscription supersedes older paid entitlement without deleting history", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Upgrade User", email: "upgrade@example.com" });
+
+  const standard = api.createSubscription({
+    userId: user.id,
+    subscriberType: "individual",
+    subscriberName: user.name,
+    plan: "standard",
+    amount: 3588,
+    status: "active",
+    gateway: "razorpay",
+    gatewayOrderId: "order_standard",
+    gatewayPaymentId: "pay_standard",
+  });
+  const pro = api.createSubscription({
+    userId: user.id,
+    subscriberType: "individual",
+    subscriberName: user.name,
+    plan: "pro",
+    amount: 8388,
+    status: "active",
+    gateway: "razorpay",
+    gatewayOrderId: "order_pro",
+    gatewayPaymentId: "pay_pro",
+  });
+
+  const subscriptions = api.listSubscriptionsForUser(user);
+  assert.equal(subscriptions.length, 2);
+  assert.equal(subscriptions.find((subscription) => subscription.id === standard.id).status, "superseded");
+  assert.equal(subscriptions.find((subscription) => subscription.id === pro.id).status, "active");
+  assert.equal(api.getFreePlanSummary(user).plan, "pro");
+});
+
+test("expired active subscription does not unlock paid features", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Expired User", email: "expired@example.com" });
+  api.createSubscription({
+    userId: user.id,
+    subscriberType: "individual",
+    subscriberName: user.name,
+    plan: "pro",
+    amount: 8388,
+    status: "active",
+    expiresAt: "2025-01-01T00:00:00.000Z",
+  });
+
+  const summary = api.getFreePlanSummary(user);
+  assert.equal(summary.plan, "free");
+  assert.equal(summary.features.aiInvoiceAssist, false);
 });
 
 test("admin plan preview unlocks tiers without creating a subscription", async () => {
