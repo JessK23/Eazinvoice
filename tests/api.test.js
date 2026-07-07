@@ -387,7 +387,7 @@ test("online invoice collection links require Standard or higher", () => {
     userId: standardUser.id,
     subscriberName: standardUser.name,
     plan: "standard",
-    amount: 3588,
+    amount: 1800,
     billingCycle: "yearly",
     status: "active",
   });
@@ -888,7 +888,7 @@ test("paid subscriptions require submitted KYC documents while free does not", a
       token,
       body: {
         plan: "standard",
-        amount: 499,
+        amount: 150,
         subscriberType: "individual",
       },
     });
@@ -913,15 +913,15 @@ test("paid subscriptions require submitted KYC documents while free does not", a
       token,
       body: {
         plan: "standard",
-        amount: 499,
+        amount: 150,
         subscriberType: "company",
       },
     });
     assert.equal(paidPending.response.status, 201);
     assert.equal(paidPending.payload.status, "kyc_pending");
     assert.equal(paidPending.payload.companyId, companyResult.payload.id);
-    assert.equal(paidPending.payload.amount, 3588);
-    assert.equal(paidPending.payload.monthlyAmount, 299);
+    assert.equal(paidPending.payload.amount, 1800);
+    assert.equal(paidPending.payload.monthlyAmount, 150);
     assert.equal(paidPending.payload.billingCycle, "yearly");
 
     const planAfterPending = await request("/plans", { token });
@@ -1018,8 +1018,8 @@ test("razorpay subscription activation requires verified signature and is idempo
     });
     assert.equal(orderResult.response.status, 201);
     assert.equal(orderResult.payload.order.id, "order_test_standard");
-    assert.equal(capturedRazorpayOrderBody.amount, 358800);
-    assert.equal(orderResult.payload.description, "Standard plan - INR 299/month billed yearly");
+    assert.equal(capturedRazorpayOrderBody.amount, 180000);
+    assert.equal(orderResult.payload.description, "Standard plan - INR 150/month billed yearly");
 
     const invalidVerify = await request("/billing/razorpay/verify", {
       method: "POST",
@@ -1051,9 +1051,9 @@ test("razorpay subscription activation requires verified signature and is idempo
     assert.equal(verified.response.status, 200);
     assert.equal(verified.payload.subscription.plan, "standard");
     assert.equal(verified.payload.subscription.status, "active");
-    assert.equal(verified.payload.subscription.amount, 3588);
-    assert.equal(verified.payload.subscription.monthlyAmount, 299);
-    assert.equal(verified.payload.subscription.annualAmount, 3588);
+    assert.equal(verified.payload.subscription.amount, 1800);
+    assert.equal(verified.payload.subscription.monthlyAmount, 150);
+    assert.equal(verified.payload.subscription.annualAmount, 1800);
     assert.equal(verified.payload.subscription.billingCycle, "yearly");
     assert.ok(verified.payload.subscription.renewsAt);
 
@@ -1160,14 +1160,14 @@ test("manual paid subscription requests remain pending even when kyc is verified
       token,
       body: {
         plan: "standard",
-        amount: 499,
+        amount: 150,
         subscriberType: "company",
       },
     });
     assert.equal(paidPending.response.status, 201);
     assert.equal(paidPending.payload.status, "payment_pending");
-    assert.equal(paidPending.payload.amount, 3588);
-    assert.equal(paidPending.payload.monthlyAmount, 299);
+    assert.equal(paidPending.payload.amount, 1800);
+    assert.equal(paidPending.payload.monthlyAmount, 150);
     assert.equal(paidPending.payload.billingCycle, "yearly");
 
     const planAfterPending = await request("/plans", { token });
@@ -1279,7 +1279,7 @@ test("new active paid subscription supersedes older paid entitlement without del
     subscriberType: "individual",
     subscriberName: user.name,
     plan: "standard",
-    amount: 3588,
+    amount: 1800,
     status: "active",
     gateway: "razorpay",
     gatewayOrderId: "order_standard",
@@ -1290,7 +1290,7 @@ test("new active paid subscription supersedes older paid entitlement without del
     subscriberType: "individual",
     subscriberName: user.name,
     plan: "pro",
-    amount: 8388,
+    amount: 7200,
     status: "active",
     gateway: "razorpay",
     gatewayOrderId: "order_pro",
@@ -1313,9 +1313,9 @@ test("subscription lifecycle updates cancel renew downgrade without deleting his
     subscriberType: "individual",
     subscriberName: user.name,
     plan: "standard",
-    amount: 3588,
-    monthlyAmount: 299,
-    annualAmount: 3588,
+    amount: 1800,
+    monthlyAmount: 150,
+    annualAmount: 1800,
     status: "active",
     gateway: "razorpay",
     gatewayOrderId: "order_lifecycle_standard",
@@ -1327,9 +1327,9 @@ test("subscription lifecycle updates cancel renew downgrade without deleting his
   assert.equal(api.getFreePlanSummary(user).plan, "free");
 
   const renewed = api.renewSubscription(standard.id, {
-    amount: 3588,
-    monthlyAmount: 299,
-    annualAmount: 3588,
+    amount: 1800,
+    monthlyAmount: 150,
+    annualAmount: 1800,
     gatewayPaymentId: "pay_lifecycle_renewal",
   });
   assert.equal(renewed.status, "active");
@@ -1366,7 +1366,7 @@ test("expired active subscription does not unlock paid features", () => {
     subscriberType: "individual",
     subscriberName: user.name,
     plan: "pro",
-    amount: 8388,
+    amount: 7200,
     status: "active",
     expiresAt: "2025-01-01T00:00:00.000Z",
   });
@@ -1479,10 +1479,8 @@ test("paid tier catalog keeps promised feature gates explicit", () => {
   assert.equal(plans.free.implementation.status, "active");
 
   assert.equal(plans.standard.billingCycle, "yearly");
-  assert.equal(plans.standard.monthlyAmount, 499);
-  assert.equal(plans.standard.discountedAmount, 299);
-  assert.equal(plans.standard.annualAmount, 5988);
-  assert.equal(plans.standard.discountedAnnualAmount, 3588);
+  assert.equal(plans.standard.monthlyAmount, 150);
+  assert.equal(plans.standard.annualAmount, 1800);
   assert.equal(plans.standard.features.whatsappShare, true);
   assert.equal(plans.standard.features.razorpayCollections, true);
   assert.equal(plans.standard.features.aiInvoiceAssist, false);
@@ -1496,7 +1494,7 @@ test("paid tier catalog keeps promised feature gates explicit", () => {
   assert.equal(plans.pro.features.advancedReports, true);
   assert.equal(plans.pro.features.multiBusiness, true);
   assert.equal(plans.pro.billingCycle, "yearly");
-  assert.equal(plans.pro.discountedAnnualAmount, 8388);
+  assert.equal(plans.pro.annualAmount, 7200);
   assert.equal(plans.pro.implementation.status, "active");
   assert.equal(plans.pro.implementation.pending.length, 0);
 
@@ -1568,7 +1566,7 @@ test("paid tier runtime gates stop at the correct tier boundary", () => {
     userId: standardUser.id,
     subscriberName: standardUser.name,
     plan: "standard",
-    amount: 3588,
+    amount: 1800,
     billingCycle: "yearly",
     status: "active",
   });
@@ -1583,7 +1581,7 @@ test("paid tier runtime gates stop at the correct tier boundary", () => {
     userId: proUser.id,
     subscriberName: proUser.name,
     plan: "pro",
-    amount: 8388,
+    amount: 7200,
     billingCycle: "yearly",
     status: "active",
   });
@@ -1607,7 +1605,7 @@ test("standard tier recurring scheduler creates due invoice drafts once", () => 
     userId: user.id,
     subscriberName: user.name,
     plan: "standard",
-    amount: 499,
+    amount: 150,
     status: "active",
   });
 
@@ -1697,7 +1695,7 @@ test("admin recurring scheduler endpoint processes paid users only", async () =>
       userId: paid.user.id,
       subscriberName: paid.user.name,
       plan: "standard",
-      amount: 499,
+      amount: 150,
       status: "active",
       subscriberType: "individual",
     });
@@ -2273,7 +2271,7 @@ test("business tier unlocks team approvals and API keys", () => {
     subscriberName: user.name,
     subscriberType: "company",
     plan: "business",
-    amount: 17988,
+    amount: 18000,
     billingCycle: "yearly",
     status: "active",
   });
@@ -2509,3 +2507,4 @@ test("static server exposes only the browser api client from api source", async 
     await new Promise((resolve) => server.close(resolve));
   }
 });
+

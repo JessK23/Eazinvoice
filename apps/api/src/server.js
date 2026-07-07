@@ -538,7 +538,7 @@ const PAID_PLAN_CATALOG = Object.fromEntries(
 );
 
 function annualPlanCharge(plan) {
-  return Number(plan.discountedAnnualAmount ?? plan.annualAmount ?? (Number(plan.amount || 0) * 12));
+  return Number(plan.annualAmount ?? (Number(plan.amount || 0) * 12));
 }
 
 function getRazorpayConfig() {
@@ -1534,11 +1534,11 @@ export function createServer(options = {}) {
             companyId: body.companyId || kycProfile.id,
             plan: selectedPlan.plan,
             amount: annualPlanCharge(selectedPlan),
-            monthlyAmount: selectedPlan.discountedAmount ?? selectedPlan.monthlyAmount ?? selectedPlan.amount,
+            monthlyAmount: selectedPlan.monthlyAmount ?? selectedPlan.amount,
             annualAmount: annualPlanCharge(selectedPlan),
             currency: selectedPlan.currency,
             billingCycle: "yearly",
-            description: `${selectedPlan.label} plan - ${selectedPlan.currency} ${selectedPlan.discountedAmount ?? selectedPlan.monthlyAmount ?? selectedPlan.amount}/month billed yearly`,
+            description: `${selectedPlan.label} plan - ${selectedPlan.currency} ${selectedPlan.monthlyAmount ?? selectedPlan.amount}/month billed yearly`,
           };
         } else if (kind === "invoice") {
           if (!hasPaidEntitlement(api, user, previewPlan)) {
@@ -1660,7 +1660,7 @@ export function createServer(options = {}) {
         const selectedPlan = PAID_PLAN_CATALOG[String(body.plan || "").toLowerCase()];
         if (selectedPlan) {
           body.amount = annualPlanCharge(selectedPlan);
-          body.monthlyAmount = selectedPlan.discountedAmount ?? selectedPlan.monthlyAmount ?? selectedPlan.amount;
+          body.monthlyAmount = selectedPlan.monthlyAmount ?? selectedPlan.amount;
           body.annualAmount = annualPlanCharge(selectedPlan);
           body.currency = selectedPlan.currency;
           body.billingCycle = "yearly";
@@ -1716,7 +1716,7 @@ export function createServer(options = {}) {
           const renewed = api.renewSubscription(subscriptionId, {
             ...body,
             amount: body.amount ?? annualPlanCharge(plan),
-            monthlyAmount: body.monthlyAmount ?? (plan.discountedAmount ?? plan.monthlyAmount ?? plan.amount),
+            monthlyAmount: body.monthlyAmount ?? (plan.monthlyAmount ?? plan.amount),
             annualAmount: body.annualAmount ?? annualPlanCharge(plan),
             currency: body.currency ?? plan.currency,
             billingCycle: "yearly",
@@ -1739,7 +1739,7 @@ export function createServer(options = {}) {
             groupName: existing.groupName || "",
             plan: targetPlan.plan,
             amount: targetPlan.plan === "free" ? 0 : annualPlanCharge(targetPlan),
-            monthlyAmount: targetPlan.discountedAmount ?? targetPlan.monthlyAmount ?? targetPlan.amount,
+            monthlyAmount: targetPlan.monthlyAmount ?? targetPlan.amount,
             annualAmount: targetPlan.plan === "free" ? 0 : annualPlanCharge(targetPlan),
             currency: targetPlan.currency,
             billingCycle: "yearly",

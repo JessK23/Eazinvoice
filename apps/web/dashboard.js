@@ -140,9 +140,9 @@ const workspaceGroups = document.querySelectorAll(".workspace-group");
 
 let planCatalog = [
   { id: "free", label: "Free", amount: 0, monthlyAmount: 0, annualAmount: 0, billingCycle: "yearly", description: "Basic invoice creation and tracking", features: ["1 company", "limited invoices", "basic reports", "dashboard access", "free WordPress CTA plugin"] },
-  { id: "standard", label: "Standard", amount: 499, monthlyAmount: 499, discountedAmount: 299, annualAmount: 5988, discountedAnnualAmount: 3588, billingCycle: "yearly", description: "For growing small businesses", features: ["more invoices", "better reports", "company branding", "WordPress Pro for 1 website"] },
-  { id: "pro", label: "Pro", amount: 999, monthlyAmount: 999, discountedAmount: 699, annualAmount: 11988, discountedAnnualAmount: 8388, billingCycle: "yearly", description: "For teams and frequent billing", features: ["higher limits", "more reports", "multi-user ready", "WordPress Pro for up to 3 websites"] },
-  { id: "business", label: "Business", amount: 1999, monthlyAmount: 1999, discountedAmount: 1499, annualAmount: 23988, discountedAnnualAmount: 17988, billingCycle: "yearly", description: "For teams, approvals, API access, and analytics", features: ["team access", "approval workflows", "API access", "advanced analytics"] },
+  { id: "standard", label: "Standard", amount: 1800, monthlyAmount: 150, annualAmount: 1800, billingCycle: "yearly", description: "For growing small businesses", features: ["WhatsApp sharing", "payment links", "recurring drafts", "WordPress paid access"] },
+  { id: "pro", label: "Pro", amount: 7200, monthlyAmount: 600, annualAmount: 7200, billingCycle: "yearly", description: "For AI-assisted billing and reporting", features: ["AI invoices", "AI PO/WO", "advanced reports", "multiple businesses"] },
+  { id: "business", label: "Business", amount: 18000, monthlyAmount: 1500, annualAmount: 18000, billingCycle: "yearly", description: "For teams, approvals, API access, and analytics", features: ["team access", "approval workflows", "API access", "SMTP and gateway controls"] },
 ];
 
 let currentSubscription = { plan: "free", amount: 0, status: "active" };
@@ -515,7 +515,7 @@ function renderAiAssistantAccess() {
   if (aiAssistantPlanBadge) {
     aiAssistantPlanBadge.textContent = allowed
       ? `${activePlanSummary.label || "Pro"} AI enabled`
-      : "Pro / Business";
+      : "Upgrade to Pro";
     aiAssistantPlanBadge.className = `pill ${allowed ? "blue" : "gold"}`;
   }
   if (aiCommandRun) aiCommandRun.disabled = !allowed || quotaBlocked;
@@ -740,8 +740,8 @@ function renderPlanCards(currentPlan) {
     const featureList = Array.isArray(plan.features) ? plan.features : plan.highlights || [];
     const featureFlags = Array.isArray(plan.features) ? {} : plan.features || {};
     const isCurrent = planId === currentPlan;
-    const monthlyAmount = Number(plan.discountedAmount ?? plan.monthlyAmount ?? plan.amount ?? 0);
-    const annualAmount = Number(plan.discountedAnnualAmount ?? plan.annualAmount ?? (monthlyAmount * 12));
+    const monthlyAmount = Number(plan.monthlyAmount ?? plan.amount ?? 0);
+    const annualAmount = Number(plan.annualAmount ?? (monthlyAmount * 12));
     const priceLabel = planId === "free" ? "INR 0" : `INR ${money(monthlyAmount)}/mo`;
     const billingHint = planId === "free" ? "No yearly billing" : `Billed yearly: INR ${money(annualAmount)}`;
     const aiLimit = Number(plan.limits?.aiCommandsPerMonth || 0);
