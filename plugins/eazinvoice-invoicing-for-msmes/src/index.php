@@ -241,7 +241,7 @@ final class EazInvoice_Plugin {
 			array(
 				'id'       => 'standard',
 				'label'    => __( 'Standard', 'eazinvoice-invoicing-for-msmes' ),
-				'price'    => __( 'INR 150/month, billed yearly as INR 1,800', 'eazinvoice-invoicing-for-msmes' ),
+				'price'    => __( 'INR 199/month, billed yearly as INR 2,388', 'eazinvoice-invoicing-for-msmes' ),
 				'status'   => __( 'Buy from EazInvoice', 'eazinvoice-invoicing-for-msmes' ),
 				'features' => array(
 					__( 'WhatsApp sharing and branding controls', 'eazinvoice-invoicing-for-msmes' ),
@@ -254,7 +254,7 @@ final class EazInvoice_Plugin {
 			array(
 				'id'       => 'pro',
 				'label'    => __( 'Pro', 'eazinvoice-invoicing-for-msmes' ),
-				'price'    => __( 'INR 600/month, billed yearly as INR 7,200', 'eazinvoice-invoicing-for-msmes' ),
+				'price'    => __( 'INR 499/month, billed yearly as INR 5,988', 'eazinvoice-invoicing-for-msmes' ),
 				'status'   => __( 'Buy from EazInvoice', 'eazinvoice-invoicing-for-msmes' ),
 				'features' => array(
 					__( 'AI invoice assistant', 'eazinvoice-invoicing-for-msmes' ),
@@ -267,7 +267,7 @@ final class EazInvoice_Plugin {
 			array(
 				'id'       => 'business',
 				'label'    => __( 'Business', 'eazinvoice-invoicing-for-msmes' ),
-				'price'    => __( 'INR 1,500/month, billed yearly as INR 18,000', 'eazinvoice-invoicing-for-msmes' ),
+				'price'    => __( 'INR 999/month, billed yearly as INR 11,988', 'eazinvoice-invoicing-for-msmes' ),
 				'status'   => __( 'Contact EazInvoice', 'eazinvoice-invoicing-for-msmes' ),
 				'features' => array(
 					__( 'Multi-site plugin access', 'eazinvoice-invoicing-for-msmes' ),

@@ -42,9 +42,9 @@ Turn WordPress service requests, B2B billing actions, customer inquiries, and op
 
 ## Suggested Pricing
 
-- Standard tier: INR 150/month, billed yearly as INR 1,800. WordPress paid access included for one website.
-- Pro tier: INR 600/month, billed yearly as INR 7,200. AI invoice/PO/report features and WordPress paid access for up to three websites.
-- Business tier: INR 1,500/month, billed yearly as INR 18,000. Multi-site access, team workflow, API access, SMTP/gateway controls, and priority support.
+- Standard tier: INR 199/month, billed yearly as INR 2,388. WordPress paid access included for one website.
+- Pro tier: INR 499/month, billed yearly as INR 5,988. AI invoice/PO/report features and WordPress paid access for up to three websites.
+- Business tier: INR 999/month, billed yearly as INR 11,988. Multi-site access, team workflow, API access, SMTP/gateway controls, and priority support.
 
 ## Website CTA Copy
 
