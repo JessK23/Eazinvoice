@@ -652,12 +652,21 @@ p {
 }
 
 .plan-list strong,
+.plan-list em,
 .plan-list span {
   display: block;
 }
 
 .plan-list strong {
   color: var(--navy);
+}
+
+.plan-list em {
+  margin-top: 6px;
+  color: var(--green);
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1.35;
 }
 
 .plan-list span {

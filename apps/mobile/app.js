@@ -1,5 +1,11 @@
 const STORAGE_KEY = "eazinvoice_mobile_workspace_v2";
 const PLAN_ORDER = ["free", "standard", "pro", "business"];
+const PLAN_PRICES = {
+  free: "INR 0",
+  standard: "INR 199/month, INR 2,388 yearly",
+  pro: "INR 499/month, INR 5,988 yearly",
+  business: "INR 999/month, INR 11,988 yearly",
+};
 const PLAN_LIMITS = {
   free: {
     manualInvoices: "Manual invoice and PO/WO workspace available",
@@ -262,6 +268,9 @@ function renderPlan() {
   if (planSelect) planSelect.value = state.plan;
   document.querySelectorAll("[data-plan-card]").forEach((card) => {
     card.classList.toggle("selected", card.dataset.planCard === state.plan);
+    const price = PLAN_PRICES[card.dataset.planCard];
+    const priceNode = card.querySelector("em");
+    if (price && priceNode) priceNode.textContent = price;
   });
   document.body.dataset.plan = state.plan;
   setText("aiAccessPill", hasPlan("pro") ? "Enabled" : "Locked");
