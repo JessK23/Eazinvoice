@@ -288,11 +288,16 @@ final class EazInvoice_Plugin {
 	 */
 	public function sanitize_settings( $input ) {
 		$input = is_array( $input ) ? $input : array();
+		$current = $this->get_settings();
+		$api_key = sanitize_text_field( $input['api_key'] ?? '' );
+		if ( '' === $api_key && ! empty( $current['api_key'] ) ) {
+			$api_key = $current['api_key'];
+		}
 
 		return array(
 			'account_email' => sanitize_email( $input['account_email'] ?? '' ),
-			'api_key'       => sanitize_text_field( $input['api_key'] ?? '' ),
-			'api_status'    => empty( $input['api_key'] ) ? 'not_connected' : sanitize_key( $input['api_status'] ?? 'key_saved_pending_validation' ),
+			'api_key'       => $api_key,
+			'api_status'    => empty( $api_key ) ? 'not_connected' : sanitize_key( $input['api_status'] ?? 'key_saved_pending_validation' ),
 			'api_message'   => sanitize_text_field( $input['api_message'] ?? '' ),
 			'api_base_url'  => esc_url_raw( $input['api_base_url'] ?? 'https://www.eazinvoice.com' ),
 			'api_last_checked' => sanitize_text_field( $input['api_last_checked'] ?? '' ),
@@ -878,7 +883,10 @@ final class EazInvoice_Plugin {
 						</tr>
 						<tr>
 							<th scope="row"><label for="eazinvoice_api_key_api"><?php esc_html_e( 'WordPress API Key', 'eazinvoice-invoicing-for-msmes' ); ?></label></th>
-							<td><input id="eazinvoice_api_key_api" class="regular-text" type="password" name="eazinvoice_settings[api_key]" value="<?php echo esc_attr( $settings['api_key'] ); ?>" autocomplete="off" /></td>
+							<td>
+								<input id="eazinvoice_api_key_api" class="regular-text" type="password" name="eazinvoice_settings[api_key]" value="" placeholder="<?php echo esc_attr( empty( $settings['api_key'] ) ? __( 'Paste WordPress API key', 'eazinvoice-invoicing-for-msmes' ) : __( 'API key saved - leave blank to keep it', 'eazinvoice-invoicing-for-msmes' ) ); ?>" autocomplete="off" />
+								<p class="description"><?php esc_html_e( 'For security, saved keys are not printed back into this page.', 'eazinvoice-invoicing-for-msmes' ); ?></p>
+							</td>
 						</tr>
 						<tr>
 							<th scope="row"><label for="eazinvoice_api_base_url"><?php esc_html_e( 'EazInvoice API Base URL', 'eazinvoice-invoicing-for-msmes' ); ?></label></th>
@@ -934,14 +942,13 @@ final class EazInvoice_Plugin {
 				<div class="eazinvoice-steps">
 					<article><span>1</span><strong><?php esc_html_e( 'Open EazInvoice', 'eazinvoice-invoicing-for-msmes' ); ?></strong><p><?php esc_html_e( 'Log in to the customer account that owns the subscription.', 'eazinvoice-invoicing-for-msmes' ); ?></p></article>
 					<article><span>2</span><strong><?php esc_html_e( 'Generate API Key', 'eazinvoice-invoicing-for-msmes' ); ?></strong><p><?php esc_html_e( 'Use Account Settings > API / WordPress Integration.', 'eazinvoice-invoicing-for-msmes' ); ?></p></article>
-					<article><span>3</span><strong><?php esc_html_e( 'Paste Key Here', 'eazinvoice-invoicing-for-msmes' ); ?></strong><p><?php esc_html_e( 'Save it in the plugin. Live validation will be added when the API endpoint is ready.', 'eazinvoice-invoicing-for-msmes' ); ?></p></article>
+					<article><span>3</span><strong><?php esc_html_e( 'Paste Key Here', 'eazinvoice-invoicing-for-msmes' ); ?></strong><p><?php esc_html_e( 'Save it in the plugin, then run live validation against the connected EazInvoice account.', 'eazinvoice-invoicing-for-msmes' ); ?></p></article>
 					<article><span>4</span><strong><?php esc_html_e( 'Unlock Features', 'eazinvoice-invoicing-for-msmes' ); ?></strong><p><?php esc_html_e( 'The plugin will unlock features based on the subscription returned by EazInvoice.', 'eazinvoice-invoicing-for-msmes' ); ?></p></article>
 				</div>
 				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="eazinvoice-inline-action">
 					<?php wp_nonce_field( 'eazinvoice_validate_connection' ); ?>
 					<input type="hidden" name="action" value="eazinvoice_validate_connection" />
 					<input type="hidden" name="account_email" value="<?php echo esc_attr( $settings['account_email'] ); ?>" />
-					<input type="hidden" name="api_key" value="<?php echo esc_attr( $settings['api_key'] ); ?>" />
 					<input type="hidden" name="api_base_url" value="<?php echo esc_url( $settings['api_base_url'] ); ?>" />
 					<button class="eazinvoice-button eazinvoice-button-primary" type="submit"><?php esc_html_e( 'Validate EazInvoice Connection', 'eazinvoice-invoicing-for-msmes' ); ?></button>
 				</form>
@@ -1035,7 +1042,8 @@ final class EazInvoice_Plugin {
 						<tr>
 							<th scope="row"><label for="eazinvoice_api_key"><?php esc_html_e( 'API Key', 'eazinvoice-invoicing-for-msmes' ); ?></label></th>
 							<td>
-								<input id="eazinvoice_api_key" class="regular-text" type="password" name="eazinvoice_settings[api_key]" value="<?php echo esc_attr( $settings['api_key'] ); ?>" autocomplete="off" />
+								<input id="eazinvoice_api_key" class="regular-text" type="password" name="eazinvoice_settings[api_key]" value="" placeholder="<?php echo esc_attr( empty( $settings['api_key'] ) ? __( 'Paste WordPress API key', 'eazinvoice-invoicing-for-msmes' ) : __( 'API key saved - leave blank to keep it', 'eazinvoice-invoicing-for-msmes' ) ); ?>" autocomplete="off" />
+								<p class="description"><?php esc_html_e( 'For security, saved keys are not printed back into this page.', 'eazinvoice-invoicing-for-msmes' ); ?></p>
 								<p><a href="<?php echo esc_url( admin_url( 'admin.php?page=eazinvoice-api-access' ) ); ?>"><?php esc_html_e( 'Use API Access page for connection steps', 'eazinvoice-invoicing-for-msmes' ); ?></a></p>
 							</td>
 						</tr>

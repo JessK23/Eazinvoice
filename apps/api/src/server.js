@@ -7,8 +7,27 @@ import { pathToFileURL } from "node:url";
 import { URL } from "node:url";
 import { createApi } from "./index.js";
 import { createStore } from "./store.js";
+import {
+  createCoreTableSyncPersistenceAdapter,
+  createPostgresPersistenceAdapter,
+  isCoreTableSyncEnabled,
+  wantsPostgresStorage,
+} from "./postgres-persistence-adapter.js";
+import {
+  listPostgresSubscriptionsForUser,
+  summarizePostgresEntitlements,
+  usePostgresEntitlements,
+} from "./postgres-entitlements.js";
+import {
+  syncInvoicePaymentToCoreTables,
+  syncInvoiceToCoreTable,
+  syncBusinessWorkspaceToCoreTables,
+  syncPurchaseOrderToCoreTable,
+  syncSubscriptions,
+} from "./postgres-core-sync.js";
+import { hasPostgresConfig, withPostgresClient } from "./postgres.js";
 import { createSessionStore } from "./session-store.js";
-import { PLAN_CATALOG } from "./plans.js";
+import { getFeatureRequirement, PLAN_CATALOG, resolvePlanUsageStatus } from "./plans.js";
 import { sendSmtpMail } from "./smtp.js";
 
 function loadLocalEnv() {
@@ -180,6 +199,116 @@ function getAdminEmails() {
     .filter(Boolean));
 }
 
+function usePostgresDashboardReports(options = {}) {
+  const requested = options.reportsSource || process.env.EAZINVOICE_REPORTS_SOURCE || "";
+  const normalized = String(requested).trim().toLowerCase();
+  if (["runtime", "json", "local", "false", "off"].includes(normalized)) return false;
+  if (normalized === "postgres") return true;
+  return hasPostgresConfig();
+}
+
+  async function resolvePlanSummary(api, user, previewPlan, options = {}) {
+    if (usePostgresEntitlements(options)) {
+      try {
+        const summary = await summarizePostgresEntitlements(user, { previewPlan });
+        if (summary.available) return summary;
+    } catch (error) {
+      console.warn("Postgres entitlement summary failed; falling back to runtime store.", error.message);
+    }
+  }
+    return api.getFreePlanSummary(user, { previewPlan });
+  }
+
+  async function resolveWriteEntitlement(api, user, previewPlan, options = {}, increments = {}) {
+    const summary = await resolvePlanSummary(api, user, previewPlan, options);
+    const nextUsage = {
+      ...(summary.usage || {}),
+    };
+    Object.entries(increments).forEach(([key, value]) => {
+      if (key === "invoiceItemsPerInvoice") {
+        nextUsage[key] = Math.max(Number(nextUsage[key] || 0), Number(value || 0));
+      } else {
+        nextUsage[key] = Number(nextUsage[key] || 0) + Number(value || 0);
+      }
+    });
+    const changedLimits = Object.fromEntries(
+      Object.keys(increments).map((key) => [key, summary.limits?.[key] ?? Number.POSITIVE_INFINITY]),
+    );
+    const status = resolvePlanUsageStatus(nextUsage, changedLimits, { planLabel: summary.label || summary.plan || "active" });
+    return {
+      summary,
+      limits: summary.limits || {},
+      status,
+      nextUsage,
+    };
+  }
+
+  async function sendPlanLimitIfBlocked(res, api, user, previewPlan, options = {}, increments = {}) {
+    const entitlement = await resolveWriteEntitlement(api, user, previewPlan, options, increments);
+    if (!entitlement.status.allowed) {
+      sendJson(res, 402, { error: entitlement.status.reason, plan: entitlement.summary.plan });
+      return null;
+    }
+    return entitlement;
+  }
+
+async function resolveUserSubscriptions(api, user, options = {}) {
+  if (usePostgresEntitlements(options)) {
+    try {
+      const result = await listPostgresSubscriptionsForUser(user.id);
+      if (result.available) return result.subscriptions;
+    } catch (error) {
+      console.warn("Postgres subscription list failed; falling back to runtime store.", error.message);
+    }
+  }
+  return api.listSubscriptions().filter((subscription) => subscription.userId === user.id);
+}
+
+function shouldSyncSubscriptionEntitlements(options = {}) {
+  if (options.persist === false) return false;
+  return hasPostgresConfig() && (isCoreTableSyncEnabled(options) || usePostgresEntitlements(options));
+}
+
+function shouldSyncInvoicePaymentReports(options = {}) {
+  if (options.persist === false) return false;
+  return hasPostgresConfig() && (isCoreTableSyncEnabled(options) || usePostgresDashboardReports(options));
+}
+
+function shouldSyncPurchaseOrderReports(options = {}) {
+  if (options.persist === false) return false;
+  return hasPostgresConfig() && (isCoreTableSyncEnabled(options) || usePostgresDashboardReports(options));
+}
+
+async function syncSchedulerInvoiceReportRows(result, source = "recurring-scheduler") {
+  if (!shouldSyncInvoicePaymentReports()) {
+    return [];
+  }
+  const createdInvoices = [
+    ...(result?.created || []),
+    ...((result?.results || []).flatMap((entry) => entry.created || [])),
+  ];
+  const synced = [];
+  for (const invoice of createdInvoices) {
+    try {
+      await syncInvoiceToCoreTable(invoice, {
+        auditEvent: "invoice_report_synced",
+        source,
+      });
+      synced.push({
+        invoiceId: invoice.id,
+        synced: true,
+      });
+    } catch (error) {
+      synced.push({
+        invoiceId: invoice.id,
+        synced: false,
+        error: error.message,
+      });
+    }
+  }
+  return synced;
+}
+
 function adminRoleForEmail(email) {
   return getAdminEmails().has(String(email || "").trim().toLowerCase());
 }
@@ -238,6 +367,11 @@ function currentUserPlan(api, user) {
 function hasActivePaidPlan(api, user) {
   const plan = currentUserPlan(api, user);
   return isPaidPlan(plan) && String(plan.status || "active").toLowerCase() === "active";
+}
+
+function canManageSubscription(user, subscription) {
+  if (!user || !subscription) return false;
+  return isConfiguredAdminUser(user) || subscription.userId === user.id;
 }
 
 function hasPaidEntitlement(api, user, previewPlan = "") {
@@ -538,7 +672,12 @@ async function tryServeStatic(urlPath, res) {
 }
 
 export function createServer(options = {}) {
-  const store = options.store ?? createStore({}, { persist: options.persist !== false });
+  const persistenceAdapter = options.persistenceAdapter
+    ?? (options.persist !== false && isCoreTableSyncEnabled(options) ? createCoreTableSyncPersistenceAdapter() : undefined);
+  const store = options.store ?? createStore({}, {
+    persist: options.persist !== false,
+    persistenceAdapter,
+  });
   const api = createApi({ store });
   const sessions = createSessionStore();
   const oauthStates = createOAuthStateStore();
@@ -568,7 +707,131 @@ export function createServer(options = {}) {
     return bucket.length > max;
   }
 
-  function activateVerifiedRazorpayOrder(orderMeta, paymentId, orderId) {
+  function subscriptionEntitlementKey(subscription) {
+    if (!subscription) return "";
+    return [
+      String(subscription.id || ""),
+      String(subscription.userId || ""),
+      String(subscription.plan || "free").toLowerCase(),
+      String(subscription.status || "active").toLowerCase(),
+      String(subscription.gatewayOrderId || ""),
+      String(subscription.gatewayPaymentId || ""),
+      String(subscription.expiresAt || subscription.renewsAt || ""),
+    ].join("|");
+  }
+
+  async function syncUserSubscriptionEntitlements(userId, source = "subscription-write") {
+    if (!userId || !shouldSyncSubscriptionEntitlements(options)) {
+      return {
+        synced: false,
+      };
+    }
+    const subscriptions = api.listSubscriptions().filter((entry) => entry.userId === userId);
+    await withPostgresClient(async (client) => {
+      await client.query("BEGIN");
+      try {
+        await syncSubscriptions(client, subscriptions);
+        await client.query(
+          `insert into eazinvoice_audit_events (event_type, entity_type, entity_id, metadata)
+           values ($1, $2, $3, $4::jsonb)`,
+          [
+            "subscription_entitlements_verified",
+            "subscription",
+            userId,
+            JSON.stringify({
+              userId,
+              source,
+              subscriptions: subscriptions.length,
+            }),
+          ],
+        );
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+    });
+    const result = await listPostgresSubscriptionsForUser(userId);
+    if (!result.available) {
+      throw new Error("Subscription was saved but Postgres entitlements are unavailable.");
+    }
+    const expected = subscriptions.map(subscriptionEntitlementKey).sort();
+    const actual = result.subscriptions.map(subscriptionEntitlementKey).sort();
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+      throw new Error("Subscription was saved but its Postgres entitlement mirror did not match.");
+    }
+    return {
+      synced: true,
+      subscriptions: subscriptions.length,
+    };
+  }
+
+  async function sendSubscriptionLifecycleResult(res, subscription, source, statusCode = 200) {
+    const entitlementSync = await syncUserSubscriptionEntitlements(subscription.userId, source);
+    sendJson(res, statusCode, { ...subscription, entitlementSync });
+  }
+
+  async function syncInvoicePaymentReportRows(recorded) {
+    if (!recorded?.invoice || !recorded?.payment || !shouldSyncInvoicePaymentReports(options)) {
+      return {
+        synced: false,
+      };
+    }
+    await syncInvoicePaymentToCoreTables(recorded.invoice, recorded.payment, {
+      auditEvent: "invoice_payment_report_synced",
+      source: "payment-recording",
+    });
+    return {
+      synced: true,
+    };
+  }
+
+  async function syncInvoiceReportRows(invoice, source = "invoice-write") {
+    if (!invoice || !shouldSyncInvoicePaymentReports(options)) {
+      return {
+        synced: false,
+      };
+    }
+    await syncInvoiceToCoreTable(invoice, {
+      auditEvent: "invoice_report_synced",
+      source,
+    });
+    return {
+      synced: true,
+    };
+  }
+
+  async function syncPurchaseOrderReportRows(purchaseOrder, source = "purchase-order-write") {
+    if (!purchaseOrder || !shouldSyncPurchaseOrderReports(options)) {
+      return {
+        synced: false,
+      };
+    }
+    await syncPurchaseOrderToCoreTable(purchaseOrder, {
+      auditEvent: "purchase_order_report_synced",
+      source,
+    });
+    return {
+      synced: true,
+    };
+  }
+
+  async function syncBusinessWorkspaceRows(source = "business-workspace-write") {
+    if (options.persist === false || !hasPostgresConfig() || !isCoreTableSyncEnabled(options)) {
+      return {
+        synced: false,
+      };
+    }
+    await syncBusinessWorkspaceToCoreTables(api.exportDataSnapshot(), {
+      auditEvent: "business_workspace_write_synced",
+      source,
+    });
+    return {
+      synced: true,
+    };
+  }
+
+  async function activateVerifiedRazorpayOrder(orderMeta, paymentId, orderId) {
     if (!orderMeta) return null;
     const now = new Date().toISOString();
     api.updateBillingOrder(orderId, {
@@ -581,7 +844,10 @@ export function createServer(options = {}) {
       const existing = api.listSubscriptions().find((subscription) => (
         subscription.gatewayOrderId === orderId || subscription.gatewayPaymentId === paymentId
       ));
-      if (existing) return { ok: true, type: "subscription", subscription: existing, duplicate: true };
+      if (existing) {
+        const entitlementSync = await syncUserSubscriptionEntitlements(existing.userId, "razorpay-duplicate-verification");
+        return { ok: true, type: "subscription", subscription: existing, duplicate: true, entitlementSync };
+      }
       const subscriptionUser = api.getUserById(orderMeta.userId);
       const subscription = api.createSubscription({
         subscriberType: "individual",
@@ -600,15 +866,19 @@ export function createServer(options = {}) {
         gatewayPaymentId: paymentId,
         gatewayOrderId: orderId,
       });
+      const entitlementSync = await syncUserSubscriptionEntitlements(subscription.userId, "razorpay-activation");
       api.updateBillingOrder(orderId, { status: "consumed", consumedAt: new Date().toISOString() });
-      return { ok: true, type: "subscription", subscription };
+      return { ok: true, type: "subscription", subscription, entitlementSync };
     }
 
     if (orderMeta.kind === "invoice") {
       const invoice = api.getInvoice(orderMeta.invoiceId);
       const alreadyCaptured = api.listPayments()
-        .some((payment) => payment.gatewayOrderId === orderId || payment.gatewayPaymentId === paymentId);
-      if (alreadyCaptured && invoice) return { ok: true, type: "invoice", invoice, duplicate: true };
+        .find((payment) => payment.gatewayOrderId === orderId || payment.gatewayPaymentId === paymentId);
+      if (alreadyCaptured && invoice) {
+        const reportSync = await syncInvoicePaymentReportRows({ invoice, payment: alreadyCaptured });
+        return { ok: true, type: "invoice", invoice, payment: alreadyCaptured, duplicate: true, reportSync };
+      }
       const recorded = api.recordInvoicePayment(orderMeta.invoiceId, {
         amount: orderMeta.amount,
         currency: orderMeta.currency,
@@ -621,8 +891,9 @@ export function createServer(options = {}) {
         gatewayOrderId: orderId,
       });
       if (!recorded) return null;
+      const reportSync = await syncInvoicePaymentReportRows(recorded);
       api.updateBillingOrder(orderId, { status: "consumed", consumedAt: new Date().toISOString() });
-      return { ok: true, type: "invoice", ...recorded };
+      return { ok: true, type: "invoice", ...recorded, reportSync };
     }
 
     return null;
@@ -678,7 +949,7 @@ export function createServer(options = {}) {
         const paymentId = payload.razorpay_payment_id || payload.payment_id || payload.id || "";
         const orderMeta = orderId ? api.getBillingOrderByGatewayOrderId(orderId) : null;
         if (orderMeta) {
-          const activated = activateVerifiedRazorpayOrder(orderMeta, paymentId, orderId);
+          const activated = await activateVerifiedRazorpayOrder(orderMeta, paymentId, orderId);
           if (!activated) {
             sendJson(res, 404, { error: "Razorpay order could not be activated" });
             return;
@@ -699,7 +970,8 @@ export function createServer(options = {}) {
           sendJson(res, 404, { error: "Invoice not found for payment webhook" });
           return;
         }
-        sendJson(res, 200, { ok: true, ...recorded });
+        const reportSync = await syncInvoicePaymentReportRows(recorded);
+        sendJson(res, 200, { ok: true, ...recorded, reportSync });
       } catch (error) {
         sendJson(res, 400, { error: error.message });
       }
@@ -974,7 +1246,7 @@ export function createServer(options = {}) {
     if (url.pathname === "/me" && req.method === "GET") {
       sendJson(res, 200, {
         user,
-        plan: api.getFreePlanSummary(user, { previewPlan }),
+        plan: await resolvePlanSummary(api, user, previewPlan, options),
         admin: {
           authorized: isConfiguredAdminUser(user),
           email: getAdminIdentity().email,
@@ -1051,7 +1323,7 @@ export function createServer(options = {}) {
         sendJson(res, 403, { error: "Forbidden" });
         return;
       }
-      sendJson(res, 200, api.getPersistenceStatus());
+      sendJson(res, 200, await api.getPersistenceStatus());
       return;
     }
 
@@ -1151,13 +1423,13 @@ export function createServer(options = {}) {
     }
 
     if (url.pathname === "/plan/free" && req.method === "GET") {
-      sendJson(res, 200, api.getFreePlanSummary(user, { previewPlan }));
+      sendJson(res, 200, await resolvePlanSummary(api, user, previewPlan, options));
       return;
     }
 
     if (url.pathname === "/plans" && req.method === "GET") {
       sendJson(res, 200, {
-        active: api.getFreePlanSummary(user, { previewPlan }),
+        active: await resolvePlanSummary(api, user, previewPlan, options),
         catalog: api.listPlans(),
       });
       return;
@@ -1189,6 +1461,7 @@ export function createServer(options = {}) {
           return;
         }
       }
+      if (!await sendPlanLimitIfBlocked(res, api, user, previewPlan, options, { companies: 1 })) return;
       sendJson(res, 201, api.createCompany({
         ...body,
         ownerUserId: user.id,
@@ -1222,6 +1495,7 @@ export function createServer(options = {}) {
 
     if (url.pathname === "/customers" && req.method === "POST") {
       const body = await readBody(req);
+      if (!await sendPlanLimitIfBlocked(res, api, user, previewPlan, options, { customers: 1 })) return;
       sendJson(res, 201, api.createCustomer({ ...body, ownerUserId: user.id }));
       return;
     }
@@ -1268,7 +1542,7 @@ export function createServer(options = {}) {
           };
         } else if (kind === "invoice") {
           if (!hasPaidEntitlement(api, user, previewPlan)) {
-            sendJson(res, 402, { error: "Payment gateway links and automatic payment updates are available only in paid tiers." });
+            sendJson(res, 402, { error: getFeatureRequirement("razorpayCollections").message });
             return;
           }
           const invoice = api.getInvoice(body.invoiceId, user);
@@ -1352,7 +1626,7 @@ export function createServer(options = {}) {
           sendJson(res, 404, { error: "Razorpay order was not found for this user session." });
           return;
         }
-        const activated = activateVerifiedRazorpayOrder(orderMeta, paymentId, orderId);
+        const activated = await activateVerifiedRazorpayOrder(orderMeta, paymentId, orderId);
         if (!activated) {
           sendJson(res, 404, { error: "Razorpay order could not be activated." });
           return;
@@ -1397,17 +1671,128 @@ export function createServer(options = {}) {
         userId: user.id,
         adminUserId: isConfiguredAdminUser(user) ? user.id : null,
       });
-      sendJson(res, 201, subscription);
+      const entitlementSync = await syncUserSubscriptionEntitlements(subscription.userId, "subscription-endpoint");
+      sendJson(res, 201, { ...subscription, entitlementSync });
       return;
     }
 
+    if (url.pathname === "/subscriptions/expire" && req.method === "POST") {
+      if (!isConfiguredAdminUser(user)) {
+        sendJson(res, 403, { error: "Forbidden" });
+        return;
+      }
+      const body = await readBody(req).catch(() => ({}));
+      const expired = api.expireSubscriptions(body.now || new Date().toISOString());
+      const userIds = [...new Set(expired.map((subscription) => subscription.userId).filter(Boolean))];
+      const entitlementSync = [];
+      for (const userId of userIds) {
+        entitlementSync.push(await syncUserSubscriptionEntitlements(userId, "subscription-expiry"));
+      }
+      sendJson(res, 200, { expired, entitlementSync });
+      return;
+    }
+
+    {
+      const subscriptionLifecycleMatch = url.pathname.match(/^\/subscriptions\/([^/]+)\/(cancel|renew|downgrade)$/);
+      if (subscriptionLifecycleMatch && req.method === "POST") {
+        const [, subscriptionId, action] = subscriptionLifecycleMatch;
+        const existing = api.getSubscription(subscriptionId);
+        if (!existing) {
+          sendJson(res, 404, { error: "Subscription not found" });
+          return;
+        }
+        if (!canManageSubscription(user, existing)) {
+          sendJson(res, 403, { error: "Forbidden" });
+          return;
+        }
+        const body = await readBody(req).catch(() => ({}));
+        if (action === "cancel") {
+          const cancelled = api.cancelSubscription(subscriptionId, body);
+          await sendSubscriptionLifecycleResult(res, cancelled, "subscription-cancelled");
+          return;
+        }
+        if (action === "renew") {
+          const plan = PLAN_CATALOG[String(existing.plan || "free").toLowerCase()] || PLAN_CATALOG.free;
+          const renewed = api.renewSubscription(subscriptionId, {
+            ...body,
+            amount: body.amount ?? annualPlanCharge(plan),
+            monthlyAmount: body.monthlyAmount ?? (plan.discountedAmount ?? plan.monthlyAmount ?? plan.amount),
+            annualAmount: body.annualAmount ?? annualPlanCharge(plan),
+            currency: body.currency ?? plan.currency,
+            billingCycle: "yearly",
+          });
+          await sendSubscriptionLifecycleResult(res, renewed, "subscription-renewed");
+          return;
+        }
+        if (action === "downgrade") {
+          const targetPlanId = String(body.plan || "free").trim().toLowerCase();
+          const targetPlan = PLAN_CATALOG[targetPlanId];
+          if (!targetPlan) {
+            sendJson(res, 400, { error: "Choose a valid target plan." });
+            return;
+          }
+          const downgraded = api.createSubscription({
+            subscriberType: existing.subscriberType || "individual",
+            subscriberName: existing.subscriberName || user.name || user.email || "Subscriber",
+            companyId: existing.companyId || null,
+            userId: existing.userId,
+            groupName: existing.groupName || "",
+            plan: targetPlan.plan,
+            amount: targetPlan.plan === "free" ? 0 : annualPlanCharge(targetPlan),
+            monthlyAmount: targetPlan.discountedAmount ?? targetPlan.monthlyAmount ?? targetPlan.amount,
+            annualAmount: targetPlan.plan === "free" ? 0 : annualPlanCharge(targetPlan),
+            currency: targetPlan.currency,
+            billingCycle: "yearly",
+            status: "active",
+            adminUserId: isConfiguredAdminUser(user) ? user.id : existing.adminUserId || null,
+            gateway: body.gateway || "manual",
+            gatewayPaymentId: body.gatewayPaymentId || "",
+            gatewayOrderId: body.gatewayOrderId || "",
+            previousSubscriptionId: existing.id,
+            lifecycleAction: "downgrade",
+          });
+          await sendSubscriptionLifecycleResult(res, downgraded, "subscription-downgraded", 201);
+          return;
+        }
+      }
+    }
+
     if (url.pathname === "/subscriptions/me" && req.method === "GET") {
-      const subscriptions = api.listSubscriptions().filter((subscription) => subscription.userId === user.id);
-      sendJson(res, 200, subscriptions);
+      sendJson(res, 200, await resolveUserSubscriptions(api, user, options));
+      return;
+    }
+
+    if (url.pathname === "/reports/summary" && req.method === "GET") {
+      if (!usePostgresDashboardReports(options)) {
+        sendJson(res, 200, {
+          available: false,
+          reason: "Postgres dashboard reports are not enabled.",
+        });
+        return;
+      }
+      try {
+        sendJson(res, 200, await api.summarizePostgresReports(user, Object.fromEntries(url.searchParams.entries())));
+      } catch (error) {
+        sendJson(res, 500, {
+          available: false,
+          error: error.message,
+        });
+      }
       return;
     }
 
     if (url.pathname === "/reports" && req.method === "GET") {
+      if (usePostgresDashboardReports(options)) {
+        try {
+          sendJson(res, 200, await api.summarizePostgresReports(user, Object.fromEntries(url.searchParams.entries())));
+        } catch (error) {
+          sendJson(res, 500, {
+            available: false,
+            error: error.message,
+          });
+        }
+        return;
+      }
       sendJson(res, 200, api.listReports(user));
       return;
     }
@@ -1445,7 +1830,9 @@ export function createServer(options = {}) {
     if (url.pathname === "/business/settings" && req.method === "PATCH") {
       try {
         const body = await readBody(req);
-        sendJson(res, 200, api.updateBusinessSettings(user, body, { previewPlan }));
+        const settings = api.updateBusinessSettings(user, body, { previewPlan });
+        const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-settings-update");
+        sendJson(res, 200, { ...settings, businessWorkspaceSync });
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
       }
@@ -1456,6 +1843,7 @@ export function createServer(options = {}) {
       try {
         const body = await readBody(req);
         const validated = api.validateBusinessEmailSettings(user, body, { previewPlan });
+        const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-email-validation");
         const status = validated.emailSettings?.lastTestStatus || "ready";
         if (body.sendTestEmail && status === "ready") {
           const deliverySettings = api.getBusinessEmailDeliverySettings(user, {
@@ -1477,6 +1865,7 @@ export function createServer(options = {}) {
             });
             sendJson(res, 200, {
               ...validated,
+              businessWorkspaceSync,
               emailSettings: {
                 ...validated.emailSettings,
                 lastDeliveryStatus: "sent",
@@ -1486,6 +1875,7 @@ export function createServer(options = {}) {
           } catch (deliveryError) {
             sendJson(res, 400, {
               error: `SMTP settings validated, but test email failed: ${deliveryError.message}`,
+              businessWorkspaceSync,
               emailSettings: {
                 ...validated.emailSettings,
                 lastDeliveryStatus: "failed",
@@ -1495,7 +1885,7 @@ export function createServer(options = {}) {
           }
           return;
         }
-        sendJson(res, 200, validated);
+        sendJson(res, 200, { ...validated, businessWorkspaceSync });
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
       }
@@ -1536,10 +1926,12 @@ export function createServer(options = {}) {
             inviteDeliveryMessage: deliveryMessage,
           }, { previewPlan });
         }
+        const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-team-invite");
         sendJson(res, 201, {
           ...member,
           inviteDeliveryStatus: deliveryStatus,
           inviteDeliveryMessage: deliveryMessage,
+          businessWorkspaceSync,
         });
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
@@ -1551,7 +1943,9 @@ export function createServer(options = {}) {
       try {
         const id = url.pathname.split("/")[3];
         const body = await readBody(req);
-        sendJson(res, 200, api.updateTeamMember(user, id, body, { previewPlan }));
+        const member = api.updateTeamMember(user, id, body, { previewPlan });
+        const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-team-update");
+        sendJson(res, 200, { ...member, businessWorkspaceSync });
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 404, { error: error.message });
       }
@@ -1561,7 +1955,9 @@ export function createServer(options = {}) {
     if (url.pathname === "/business/team/accept" && req.method === "POST") {
       try {
         const body = await readBody(req);
-        sendJson(res, 200, api.acceptTeamInvite(user, body.inviteToken, { previewPlan }));
+        const member = api.acceptTeamInvite(user, body.inviteToken, { previewPlan });
+        const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-team-accept");
+        sendJson(res, 200, { ...member, businessWorkspaceSync });
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 404, { error: error.message });
       }
@@ -1580,7 +1976,9 @@ export function createServer(options = {}) {
     if (url.pathname === "/business/approvals" && req.method === "POST") {
       try {
         const body = await readBody(req);
-        sendJson(res, 201, api.createApprovalRequest(user, body, { previewPlan }));
+        const approval = api.createApprovalRequest(user, body, { previewPlan });
+        const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-approval-create");
+        sendJson(res, 201, { ...approval, businessWorkspaceSync });
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
       }
@@ -1591,7 +1989,9 @@ export function createServer(options = {}) {
       try {
         const id = url.pathname.split("/")[3];
         const body = await readBody(req);
-        sendJson(res, 200, api.decideApprovalRequest(user, id, body, { previewPlan }));
+        const approval = api.decideApprovalRequest(user, id, body, { previewPlan });
+        const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-approval-decision");
+        sendJson(res, 200, { ...approval, businessWorkspaceSync });
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 404, { error: error.message });
       }
@@ -1610,7 +2010,9 @@ export function createServer(options = {}) {
     if (url.pathname === "/business/api-keys" && req.method === "POST") {
       try {
         const body = await readBody(req);
-        sendJson(res, 201, api.createApiKey(user, body, { previewPlan }));
+        const apiKey = api.createApiKey(user, body, { previewPlan });
+        const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-api-key-create");
+        sendJson(res, 201, { ...apiKey, businessWorkspaceSync });
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
       }
@@ -1620,9 +2022,38 @@ export function createServer(options = {}) {
     if (url.pathname.startsWith("/business/api-keys/") && req.method === "DELETE") {
       try {
         const id = url.pathname.split("/")[3];
-        sendJson(res, 200, api.revokeApiKey(user, id, { previewPlan }));
+        const apiKey = api.revokeApiKey(user, id, { previewPlan });
+        const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-api-key-revoke");
+        sendJson(res, 200, { ...apiKey, businessWorkspaceSync });
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 404, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/ai/usage" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.getAiUsageSummary(user, {
+          previewPlan,
+          month: url.searchParams.get("month") || "",
+        }));
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/admin/ai-usage" && req.method === "GET") {
+      if (!isConfiguredAdminUser(user)) {
+        sendJson(res, 403, { error: "Forbidden" });
+        return;
+      }
+      try {
+        sendJson(res, 200, api.getAdminAiUsageSummary(user, {
+          month: url.searchParams.get("month") || "",
+        }));
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
       }
       return;
     }
@@ -1644,10 +2075,12 @@ export function createServer(options = {}) {
         return;
       }
       const body = await readBody(req).catch(() => ({}));
-      sendJson(res, 201, api.runRecurringInvoiceSchedulerForAllUsers({
+      const result = api.runRecurringInvoiceSchedulerForAllUsers({
         targetDate: body.targetDate,
         maxPerTemplate: body.maxPerTemplate,
-      }));
+      });
+      const reportSync = await syncSchedulerInvoiceReportRows(result, "admin-recurring-scheduler");
+      sendJson(res, 201, { ...result, reportSync });
       return;
     }
 
@@ -1687,16 +2120,17 @@ export function createServer(options = {}) {
 
     if (url.pathname === "/invoices" && req.method === "POST") {
       const body = sanitizeStandardInvoiceFeatures(api, user, previewPlan, await readBody(req));
-      const summary = api.getFreePlanSummary(user, { previewPlan });
-      if (!summary.status.allowed) {
-        sendJson(res, 402, { error: summary.status.reason });
-        return;
-      }
+      const entitlement = await sendPlanLimitIfBlocked(res, api, user, previewPlan, options, {
+        invoicesPerMonth: 1,
+      });
+      if (!entitlement) return;
       try {
-        sendJson(res, 201, api.createInvoice({
+        const invoice = api.createInvoice({
           ...body,
           ownerUserId: user.id,
-        }, { previewPlan }));
+        }, { previewPlan, planLimits: entitlement.limits });
+        const reportSync = await syncInvoiceReportRows(invoice, "invoice-create");
+        sendJson(res, 201, { ...invoice, reportSync });
       } catch (error) {
         sendJson(res, 400, { error: error.message });
       }
@@ -1711,7 +2145,14 @@ export function createServer(options = {}) {
           targetDate: body.targetDate,
           maxPerTemplate: body.maxPerTemplate,
         });
-        sendJson(res, 201, result);
+        const reportSync = [];
+        for (const invoice of result.created || []) {
+          reportSync.push({
+            invoiceId: invoice.id,
+            ...(await syncInvoiceReportRows(invoice, "recurring-invoice-draft")),
+          });
+        }
+        sendJson(res, 201, { ...result, reportSync });
       } catch (error) {
         const status = /standard/i.test(error.message) ? 402 : 400;
         sendJson(res, status, { error: error.message });
@@ -1748,15 +2189,20 @@ export function createServer(options = {}) {
         sendJson(res, 400, { error: "Payment amount cannot be more than the pending invoice balance" });
         return;
       }
-      const recorded = api.recordInvoicePayment(id, {
-        amount,
-        currency: body.currency || existing.currency,
-        mode: body.mode || "manual",
-        reference: body.reference,
-        notes: body.notes,
-        paymentDate: body.paymentDate,
-      });
-      sendJson(res, 201, recorded);
+      try {
+        const recorded = api.recordInvoicePayment(id, {
+          amount,
+          currency: body.currency || existing.currency,
+          mode: body.mode || "manual",
+          reference: body.reference,
+          notes: body.notes,
+          paymentDate: body.paymentDate,
+        });
+        const reportSync = await syncInvoicePaymentReportRows(recorded);
+        sendJson(res, 201, { ...recorded, reportSync });
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
       return;
     }
 
@@ -1768,15 +2214,20 @@ export function createServer(options = {}) {
         return;
       }
       if (!hasPaidEntitlement(api, user, previewPlan)) {
-        sendJson(res, 402, { error: "Payment gateway links and automatic payment updates are available only in paid tiers." });
+        sendJson(res, 402, { error: getFeatureRequirement("razorpayCollections").message });
         return;
       }
       const body = await readBody(req).catch(() => ({}));
-      const invoice = api.createInvoicePaymentLink(id, {
-        gateway: body.gateway || "razorpay",
-        url: body.url,
-      });
-      sendJson(res, 201, invoice);
+      try {
+        const invoice = api.createInvoicePaymentLink(id, {
+          gateway: body.gateway || "razorpay",
+          url: body.url,
+        }, { user, previewPlan });
+        const reportSync = await syncInvoiceReportRows(invoice, "invoice-payment-link");
+        sendJson(res, 201, { ...invoice, reportSync });
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
       return;
     }
 
@@ -1788,8 +2239,11 @@ export function createServer(options = {}) {
         return;
       }
       const body = sanitizeStandardInvoiceFeatures(api, user, previewPlan, await readBody(req));
+      const entitlement = await resolveWriteEntitlement(api, user, previewPlan, options);
       try {
-        sendJson(res, 200, api.updateInvoice(id, body, { previewPlan }));
+        const invoice = api.updateInvoice(id, body, { previewPlan, planLimits: entitlement.limits });
+        const reportSync = await syncInvoiceReportRows(invoice, "invoice-update");
+        sendJson(res, 200, { ...invoice, reportSync });
       } catch (error) {
         sendJson(res, 400, { error: error.message });
       }
@@ -1803,7 +2257,8 @@ export function createServer(options = {}) {
         sendJson(res, 404, { error: "Not found" });
         return;
       }
-      sendJson(res, 200, deleted);
+      const reportSync = await syncInvoiceReportRows(deleted, "invoice-delete");
+      sendJson(res, 200, { ...deleted, reportSync });
       return;
     }
 
@@ -1814,11 +2269,14 @@ export function createServer(options = {}) {
 
     if (url.pathname === "/purchase-orders" && req.method === "POST") {
       const body = await readBody(req);
+      const entitlement = await resolveWriteEntitlement(api, user, previewPlan, options);
       try {
-        sendJson(res, 201, api.createPurchaseOrder({
+        const purchaseOrder = api.createPurchaseOrder({
           ...body,
           ownerUserId: user.id,
-        }, { previewPlan }));
+        }, { previewPlan, planLimits: entitlement.limits });
+        const reportSync = await syncPurchaseOrderReportRows(purchaseOrder, "purchase-order-create");
+        sendJson(res, 201, { ...purchaseOrder, reportSync });
       } catch (error) {
         sendJson(res, 400, { error: error.message });
       }
@@ -1844,8 +2302,11 @@ export function createServer(options = {}) {
         return;
       }
       const body = await readBody(req);
+      const entitlement = await resolveWriteEntitlement(api, user, previewPlan, options);
       try {
-        sendJson(res, 200, api.updatePurchaseOrder(id, body, { previewPlan }));
+        const purchaseOrder = api.updatePurchaseOrder(id, body, { previewPlan, planLimits: entitlement.limits });
+        const reportSync = await syncPurchaseOrderReportRows(purchaseOrder, "purchase-order-update");
+        sendJson(res, 200, { ...purchaseOrder, reportSync });
       } catch (error) {
         sendJson(res, 400, { error: error.message });
       }
@@ -1859,7 +2320,8 @@ export function createServer(options = {}) {
         sendJson(res, 404, { error: "Not found" });
         return;
       }
-      sendJson(res, 200, deleted);
+      const reportSync = await syncPurchaseOrderReportRows(deleted, "purchase-order-delete");
+      sendJson(res, 200, { ...deleted, reportSync });
       return;
     }
 
@@ -1884,21 +2346,20 @@ export function createServer(options = {}) {
   return server;
 }
 
-export function startServer(port = 3001) {
-  const server = createServer();
-  server.listen(port);
+function setupRecurringScheduler(server) {
   const recurringEnabled = String(process.env.RECURRING_SCHEDULER_ENABLED || "").toLowerCase() === "true";
   if (recurringEnabled) {
     const intervalHours = Math.max(1, Number(process.env.RECURRING_SCHEDULER_INTERVAL_HOURS || 24));
     const maxPerTemplate = Math.max(1, Number(process.env.RECURRING_SCHEDULER_MAX_PER_TEMPLATE || 12));
     const intervalMs = intervalHours * 60 * 60 * 1000;
-    const run = () => {
+    const run = async () => {
       try {
         const api = server.eazinvoiceApi;
         const result = api.runRecurringInvoiceSchedulerForAllUsers({
           targetDate: new Date().toISOString().slice(0, 10),
           maxPerTemplate,
         });
+        await syncSchedulerInvoiceReportRows(result, "background-recurring-scheduler");
         if (result.createdCount > 0) {
           console.log(`Eazinvoice recurring scheduler created ${result.createdCount} draft(s).`);
         }
@@ -1914,10 +2375,38 @@ export function startServer(port = 3001) {
       clearInterval(intervalTimer);
     });
   }
+}
+
+export async function createServerAsync(options = {}) {
+  if (!options.store && options.persist !== false && wantsPostgresStorage(options)) {
+    const persistenceAdapter = await createPostgresPersistenceAdapter();
+    return createServer({
+      ...options,
+      persistenceAdapter,
+    });
+  }
+  return createServer(options);
+}
+
+export function startServer(port = 3001) {
+  const server = createServer();
+  server.listen(port);
+  setupRecurringScheduler(server);
   return server;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  startServer(Number(process.env.PORT || 3001));
+export async function startServerAsync(port = 3001) {
+  const server = await createServerAsync();
+  server.listen(port);
+  setupRecurringScheduler(server);
+  return server;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  if (wantsPostgresStorage()) {
+    await startServerAsync(Number(process.env.PORT || 3001));
+  } else {
+    startServer(Number(process.env.PORT || 3001));
+  }
   console.log(`Eazinvoice API running on http://localhost:${process.env.PORT || 3001}`);
 }

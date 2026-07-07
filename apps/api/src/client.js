@@ -27,6 +27,15 @@ async function request(path, { method = "GET", body, token } = {}) {
   return payload;
 }
 
+function queryString(params = {}) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") query.set(key, value);
+  });
+  const text = query.toString();
+  return text ? `?${text}` : "";
+}
+
 export const apiClient = {
   signup(body) {
     return request("/auth/signup", { method: "POST", body });
@@ -127,6 +136,12 @@ export const apiClient = {
   runAiCommand(token, body) {
     return request("/ai/command", { method: "POST", token, body });
   },
+  getAiUsage(token, filters = {}) {
+    return request(`/ai/usage${queryString(filters)}`, { token });
+  },
+  getAdminAiUsage(token, filters = {}) {
+    return request(`/admin/ai-usage${queryString(filters)}`, { token });
+  },
   uploadDocuments(token, files) {
     return request("/uploads", { method: "POST", token, body: { files } });
   },
@@ -174,6 +189,16 @@ export const apiClient = {
   },
   listReports(token) {
     return request("/reports", { token });
+  },
+  getReportSummary(token, filters = {}) {
+    const query = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && String(value).trim()) {
+        query.set(key, value);
+      }
+    });
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return request(`/reports/summary${suffix}`, { token });
   },
   listTeamMembers(token) {
     return request("/business/team", { token });

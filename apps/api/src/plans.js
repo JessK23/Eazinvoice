@@ -10,6 +10,98 @@ export const FREE_PLAN_LIMITS = {
 const UNLIMITED = 999999;
 const annualize = (amount) => amount * 12;
 
+export const PLAN_LIMIT_LABELS = {
+  companies: "business profiles",
+  customers: "customers",
+  invoicesPerMonth: "monthly invoices",
+  invoiceItemsPerInvoice: "items per invoice",
+  templates: "templates",
+  aiCommandsPerMonth: "AI commands this month",
+};
+
+export const FEATURE_REQUIREMENTS = {
+  basicInvoices: {
+    minimumPlan: "free",
+    label: "Invoice creation",
+    message: "Invoice creation is included in every EazInvoice plan.",
+  },
+  gstInvoices: {
+    minimumPlan: "free",
+    label: "GST invoices",
+    message: "GST invoices are included in every EazInvoice plan.",
+  },
+  pdfPrint: {
+    minimumPlan: "free",
+    label: "PDF and print",
+    message: "PDF and print are included in every EazInvoice plan.",
+  },
+  manualPayments: {
+    minimumPlan: "free",
+    label: "Manual payment tracking",
+    message: "Manual payment tracking is included in every EazInvoice plan.",
+  },
+  emailOtp: {
+    minimumPlan: "free",
+    label: "Email OTP",
+    message: "Email OTP is included in every EazInvoice plan.",
+  },
+  whatsappShare: {
+    minimumPlan: "standard",
+    label: "WhatsApp sharing",
+    message: "WhatsApp sharing is available on Standard, Pro, and Business plans.",
+  },
+  razorpayCollections: {
+    minimumPlan: "standard",
+    label: "Razorpay collection links",
+    message: "Razorpay collection links are available on Standard, Pro, and Business plans.",
+  },
+  recurringInvoices: {
+    minimumPlan: "standard",
+    label: "Recurring invoice auto-drafts",
+    message: "Recurring invoice auto-drafts are available on Standard, Pro, and Business plans.",
+  },
+  wordpressPaid: {
+    minimumPlan: "standard",
+    label: "Paid WordPress plugin features",
+    message: "Paid WordPress plugin features are available on Standard, Pro, and Business plans.",
+  },
+  aiInvoiceAssist: {
+    minimumPlan: "pro",
+    label: "AI invoice assistant",
+    message: "AI invoice assistant is available on Pro and Business plans.",
+  },
+  aiPoAssist: {
+    minimumPlan: "pro",
+    label: "AI PO and Work Order assistant",
+    message: "AI PO and Work Order assistant is available on Pro and Business plans.",
+  },
+  advancedReports: {
+    minimumPlan: "pro",
+    label: "Advanced reports",
+    message: "Advanced reports and AI report summaries are available on Pro and Business plans.",
+  },
+  multiBusiness: {
+    minimumPlan: "pro",
+    label: "Multiple business profiles",
+    message: "Multiple business profiles are available on Pro and Business plans.",
+  },
+  teamAccess: {
+    minimumPlan: "business",
+    label: "Team access",
+    message: "Team access is available on the Business plan.",
+  },
+  apiAccess: {
+    minimumPlan: "business",
+    label: "API access",
+    message: "API access is available on the Business plan.",
+  },
+  approvals: {
+    minimumPlan: "business",
+    label: "Approval workflow",
+    message: "Approval workflow is available on the Business plan.",
+  },
+};
+
 export const PLAN_CATALOG = {
   free: {
     plan: "free",
@@ -150,7 +242,7 @@ export const PLAN_CATALOG = {
       "Payment automation",
     ],
     implementation: {
-      status: "partially_active",
+      status: "active",
       ready: ["Command-based AI invoice assistant", "Command-based AI PO and Work Order assistant", "AI report command summary", "Browser voice input for AI commands", "OpenAI refinement when configured", "AI usage logging", "Advanced report pages", "Advanced analytics detail views", "Multiple business limits", "Payment automation gates", "All Standard features"],
       pending: [],
     },
@@ -201,9 +293,19 @@ export const PLAN_CATALOG = {
       "Priority support",
     ],
     implementation: {
-      status: "planned_with_foundation",
-      ready: ["Highest limits", "API access entitlement flag", "Approval entitlement flag", "All Pro features"],
-      pending: ["Team invitations and roles", "Customer API key portal", "Approval workflow screens", "Priority support workflow"],
+      status: "active",
+      ready: [
+        "Highest limits",
+        "Team invitations and role management",
+        "Business SMTP settings and validation",
+        "Business Razorpay gateway settings",
+        "Compliance profile",
+        "Customer API key portal",
+        "Approval workflow screens",
+        "Priority support workspace",
+        "All Pro features",
+      ],
+      pending: [],
     },
   },
 };
@@ -253,14 +355,54 @@ export function hasPlanFeature(plan, feature) {
   return Boolean(getPlanDefinition(plan).features[feature]);
 }
 
-export function resolvePlanUsageStatus(usage, limits) {
+export function getFeatureRequirement(feature) {
+  return FEATURE_REQUIREMENTS[feature] || {
+    minimumPlan: "business",
+    label: feature,
+    message: `${feature} is not available on the active plan.`,
+  };
+}
+
+function isUnlimitedLimit(limit) {
+  return Number(limit) >= UNLIMITED;
+}
+
+export function buildPlanUsageDetails(usage = {}, limits = {}) {
+  return Object.fromEntries(
+    Object.entries(limits).map(([key, limit]) => {
+      const numericLimit = Number(limit ?? 0);
+      const used = Number(usage[key] ?? 0);
+      const unlimited = isUnlimitedLimit(numericLimit);
+      return [key, {
+        key,
+        label: PLAN_LIMIT_LABELS[key] || key,
+        used,
+        limit: numericLimit,
+        remaining: unlimited ? null : Math.max(0, numericLimit - used),
+        unlimited,
+        exceeded: !unlimited && used > numericLimit,
+      }];
+    }),
+  );
+}
+
+export function resolvePlanUsageStatus(usage, limits, options = {}) {
+  const planLabel = typeof options === "string"
+    ? options
+    : options.planLabel || options.label || "active";
   const overLimit = Object.entries(limits).find(([key, limit]) => {
     const value = usage[key] ?? 0;
-    return value > limit;
+    return !isUnlimitedLimit(limit) && value > limit;
   });
 
   return {
     allowed: !overLimit,
-    reason: overLimit ? `${overLimit[0]} exceeds free plan limit` : "within limits",
+    reason: overLimit
+      ? `${PLAN_LIMIT_LABELS[overLimit[0]] || overLimit[0]} exceeds ${planLabel} plan limit`
+      : "within limits",
+    limitKey: overLimit?.[0] || null,
+    limitLabel: overLimit ? PLAN_LIMIT_LABELS[overLimit[0]] || overLimit[0] : null,
+    limit: overLimit ? Number(overLimit[1]) : null,
+    used: overLimit ? Number(usage[overLimit[0]] ?? 0) : null,
   };
 }

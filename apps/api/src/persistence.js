@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { saveStateToPostgres } from "./postgres-state.js";
 
 function configuredDataDir() {
   const configured = process.env.EAZINVOICE_DATA_DIR || process.env.DATA_DIR || "";
@@ -8,6 +9,10 @@ function configuredDataDir() {
 
 function hasConfiguredDataDir() {
   return Boolean(process.env.EAZINVOICE_DATA_DIR || process.env.DATA_DIR);
+}
+
+function postgresDualWriteEnabled() {
+  return ["1", "true", "yes", "on"].includes(String(process.env.EAZINVOICE_POSTGRES_DUAL_WRITE || "").toLowerCase());
 }
 
 function storageConfigError(error) {
@@ -66,6 +71,14 @@ export function savePersistedState(state) {
     }
     fs.writeFileSync(TEMP_FILE, serialized, "utf8");
     fs.renameSync(TEMP_FILE, DATA_FILE);
+    if (postgresDualWriteEnabled() && process.env.DATABASE_URL) {
+      saveStateToPostgres(state, {
+        source: "json-dual-write",
+        sourcePath: DATA_FILE,
+      }).catch((error) => {
+        console.error("Postgres dual-write failed:", error.message);
+      });
+    }
   } catch (error) {
     if (fs.existsSync(TEMP_FILE)) {
       fs.rmSync(TEMP_FILE, { force: true });
@@ -82,6 +95,7 @@ export function describePersistence() {
   const stats = fs.statSync(DATA_FILE);
   return {
     mode: process.env.EAZINVOICE_DATA_DIR || process.env.DATA_DIR ? "mounted-json" : "local-json",
+    postgresDualWrite: postgresDualWriteEnabled(),
     dataDir: DATA_DIR,
     dataFile: DATA_FILE,
     backupFile: BACKUP_FILE,

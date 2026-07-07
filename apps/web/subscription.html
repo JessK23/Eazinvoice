@@ -29,6 +29,30 @@
         </div>
         <a class="primary" href="/apps/web/index.html#pricing">View Paid Plans</a>
       </div>
+      <div class="subscription-box ai-usage-summary">
+        <div class="subscription-head">
+          <strong>Plan and AI usage</strong>
+          <span id="subscriptionPlanBadge" class="pill gold">Loading</span>
+        </div>
+        <div id="subscriptionUsageGrid" class="usage-grid">
+          <div>
+            <span class="hint">Current plan</span>
+            <strong>Loading...</strong>
+          </div>
+          <div>
+            <span class="hint">AI commands</span>
+            <strong>Checking...</strong>
+          </div>
+          <div>
+            <span class="hint">Billing</span>
+            <strong>Yearly plans</strong>
+          </div>
+        </div>
+        <p id="subscriptionUsageNote" class="notice compact">
+          Paid subscription prices are billed yearly. AI command limits are tracked monthly and reset at the start of the next usage month.
+        </p>
+      </div>
+      <div id="subscriptionPlanCards" class="plan-feature-grid"></div>
       <form id="subscriptionForm" class="stack">
         <div class="subscription-box">
           <div class="subscription-head">

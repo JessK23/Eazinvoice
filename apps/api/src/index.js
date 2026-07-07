@@ -1,16 +1,43 @@
 import { createStore } from "./store.js";
 import {
+  buildPlanUsageDetails,
   FREE_PLAN_LIMITS,
   getActivePlanDefinition,
   getActiveSubscription,
+  getFeatureRequirement,
   getPlanDefinition,
   hasPlanFeature,
   listPlans,
   resolvePlanUsageStatus,
 } from "./plans.js";
 import { describePersistence } from "./persistence.js";
+import { describePostgresState } from "./postgres-state.js";
+import { hasPostgresConfig, maskDatabaseUrl } from "./postgres.js";
+import { summarizePostgresReports } from "./postgres-reporting.js";
 import { buildAiCommand } from "./ai-assistant.js";
 import { tryBuildAiCommandWithLlm } from "./ai-llm.js";
+
+function normalizeUsageMonth(input) {
+  const value = String(input || "").trim();
+  return /^\d{4}-\d{2}$/.test(value) ? value : new Date().toISOString().slice(0, 7);
+}
+
+function nextMonthlyResetDate(month) {
+  const [year, monthNumber] = normalizeUsageMonth(month).split("-").map(Number);
+  return new Date(Date.UTC(year, monthNumber, 1)).toISOString().slice(0, 10);
+}
+
+function summarizeAiLogs(logs) {
+  return logs.reduce((summary, log) => {
+    const intent = String(log.intent || "unknown").toLowerCase();
+    const status = String(log.status || "unknown").toLowerCase();
+    summary.total += 1;
+    if (log.billable !== false) summary.billable += 1;
+    summary.byIntent[intent] = (summary.byIntent[intent] || 0) + 1;
+    summary.byStatus[status] = (summary.byStatus[status] || 0) + 1;
+    return summary;
+  }, { total: 0, billable: 0, byIntent: {}, byStatus: {} });
+}
 
 export function createApi(deps = {}) {
   const store = deps.store ?? createStore();
@@ -44,10 +71,11 @@ export function createApi(deps = {}) {
           }
           : {
             enabled: false,
-          },
+        },
         catalog: listPlans(),
         usage,
-        status: resolvePlanUsageStatus(usage, activePlan.limits),
+        usageDetails: buildPlanUsageDetails(usage, activePlan.limits),
+        status: resolvePlanUsageStatus(usage, activePlan.limits, { planLabel: activePlan.label }),
       };
     },
 
@@ -60,7 +88,18 @@ export function createApi(deps = {}) {
     },
 
     getUserPlan(user, options = {}) {
-      return this.getFreePlanSummary(user, options);
+      const summary = this.getFreePlanSummary(user, options);
+      if (!options.planLimits) return summary;
+      const limits = {
+        ...summary.limits,
+        ...options.planLimits,
+      };
+      return {
+        ...summary,
+        limits,
+        usageDetails: buildPlanUsageDetails(summary.usage, limits),
+        status: resolvePlanUsageStatus(summary.usage, limits, { planLabel: summary.label }),
+      };
     },
 
     userCanUseFeature(user, feature, options = {}) {
@@ -71,14 +110,43 @@ export function createApi(deps = {}) {
 
     requireFeature(user, feature, options = {}) {
       if (!this.userCanUseFeature(user, feature, options)) {
-        throw new Error("Business tier required for this workspace feature.");
+        throw new Error(getFeatureRequirement(feature).message);
       }
     },
 
     getUserPlanLimits(user, options = {}) {
-      if (options.previewPlan) return getPlanDefinition(options.previewPlan).limits;
-      const subscriptions = user ? store.listSubscriptionsForUser(user.id) : [];
-      return getActivePlanDefinition(subscriptions).limits;
+      let limits = null;
+      if (options.previewPlan) limits = getPlanDefinition(options.previewPlan).limits;
+      else {
+        const subscriptions = user ? store.listSubscriptionsForUser(user.id) : [];
+        limits = getActivePlanDefinition(subscriptions).limits;
+      }
+      if (options.planLimits) return { ...limits, ...options.planLimits };
+      return limits;
+    },
+
+    getAiQuota(user, options = {}) {
+      const plan = this.getUserPlan(user, options);
+      const limit = Number(plan.limits?.aiCommandsPerMonth ?? 0);
+      const used = store.countAiUsageForUser(user, normalizeUsageMonth(options.month));
+      const unlimited = limit >= 999999;
+      return {
+        plan: plan.plan,
+        label: plan.label,
+        used,
+        limit,
+        remaining: unlimited ? null : Math.max(0, limit - used),
+        unlimited,
+        exceeded: !unlimited && used >= limit,
+      };
+    },
+
+    enforceAiQuota(user, options = {}, billable = true) {
+      const quota = this.getAiQuota(user, options);
+      if (billable && !quota.unlimited && quota.used >= quota.limit) {
+        throw new Error("AI command monthly limit reached for the active plan.");
+      }
+      return quota;
     },
 
     createCompany(input) {
@@ -323,6 +391,7 @@ export function createApi(deps = {}) {
         if (!this.userCanUseFeature(user, "aiInvoiceAssist", options)) {
           throw new Error("AI invoice assistant is available on Pro and Business plans.");
         }
+        this.enforceAiQuota(user, options, true);
         const invoice = this.createInvoice({
           ...payload,
           ownerUserId: user.id,
@@ -336,19 +405,21 @@ export function createApi(deps = {}) {
           intent,
           status: "saved",
           command: input.command,
-          billable: false,
+          billable: true,
         });
         return {
           intent,
           confidence: approved.confidence || "approved",
           message: "Approved AI invoice draft saved. Review it before creating the final invoice.",
           createdRecord: invoice,
+          quota: this.getAiQuota(user, options),
         };
       }
       if (intent === "purchase_order") {
         if (!this.userCanUseFeature(user, "aiPoAssist", options)) {
           throw new Error("AI PO and Work Order assistant is available on Pro and Business plans.");
         }
+        this.enforceAiQuota(user, options, true);
         const purchaseOrder = this.createPurchaseOrder({
           ...payload,
           ownerUserId: user.id,
@@ -361,13 +432,14 @@ export function createApi(deps = {}) {
           intent,
           status: "saved",
           command: input.command,
-          billable: false,
+          billable: true,
         });
         return {
           intent,
           confidence: approved.confidence || "approved",
           message: "Approved AI PO/WO draft saved. Review it before creating the final document.",
           createdRecord: purchaseOrder,
+          quota: this.getAiQuota(user, options),
         };
       }
       throw new Error("Approved AI draft is missing a valid invoice or PO payload.");
@@ -375,21 +447,15 @@ export function createApi(deps = {}) {
 
     finalizeAiCommandResult(user, input = {}, options = {}, result, provider = "local") {
       const plan = this.getUserPlan(user, options);
-      const limit = Number(plan.limits?.aiCommandsPerMonth ?? 0);
-      const currentUsage = store.countAiUsageForUser(user);
       const shouldBill = input.approvedPreview !== true && input.approvedDraft === undefined;
-      const enforceAiLimit = () => {
-        if (shouldBill && currentUsage >= limit) {
-          throw new Error("AI command monthly limit reached for the active plan.");
-        }
-      };
+      const withQuota = (payload) => ({ ...payload, quota: this.getAiQuota(user, options) });
 
       const shouldSaveDraft = input.saveDraft !== false && input.previewOnly !== true;
       if (result.intent === "clarification") {
         if (!this.userCanUseFeature(user, "aiInvoiceAssist", options) && !this.userCanUseFeature(user, "aiPoAssist", options)) {
           throw new Error("AI assistant is available on Pro and Business plans.");
         }
-        enforceAiLimit();
+        this.enforceAiQuota(user, options, shouldBill);
         store.createAiUsageLog({
           ownerUserId: user.id,
           plan: plan.plan,
@@ -399,13 +465,13 @@ export function createApi(deps = {}) {
           command: input.command,
           billable: shouldBill,
         });
-        return result;
+        return withQuota({ ...result, provider });
       }
       if (result.intent === "invoice") {
         if (!this.userCanUseFeature(user, "aiInvoiceAssist", options)) {
           throw new Error("AI invoice assistant is available on Pro and Business plans.");
         }
-        enforceAiLimit();
+        this.enforceAiQuota(user, options, shouldBill);
         store.createAiUsageLog({
           ownerUserId: user.id,
           plan: plan.plan,
@@ -416,27 +482,27 @@ export function createApi(deps = {}) {
           billable: shouldBill,
         });
         if (!shouldSaveDraft) {
-          return {
+          return withQuota({
             ...result,
             provider,
             proposedRecord: {
               ...result.payload,
               ...(result.preview || {}),
             },
-          };
+          });
         }
         const invoice = this.createInvoice(result.payload, options);
-        return {
+        return withQuota({
           ...result,
           provider,
           createdRecord: invoice,
-        };
+        });
       }
       if (result.intent === "purchase_order") {
         if (!this.userCanUseFeature(user, "aiPoAssist", options)) {
           throw new Error("AI PO and Work Order assistant is available on Pro and Business plans.");
         }
-        enforceAiLimit();
+        this.enforceAiQuota(user, options, shouldBill);
         store.createAiUsageLog({
           ownerUserId: user.id,
           plan: plan.plan,
@@ -447,26 +513,26 @@ export function createApi(deps = {}) {
           billable: shouldBill,
         });
         if (!shouldSaveDraft) {
-          return {
+          return withQuota({
             ...result,
             provider,
             proposedRecord: {
               ...result.payload,
               ...(result.preview || {}),
             },
-          };
+          });
         }
         const purchaseOrder = this.createPurchaseOrder(result.payload, options);
-        return {
+        return withQuota({
           ...result,
           provider,
           createdRecord: purchaseOrder,
-        };
+        });
       }
       if (!this.userCanUseFeature(user, "advancedReports", options)) {
         throw new Error("AI report assistant is available on Pro and Business plans.");
       }
-      enforceAiLimit();
+      this.enforceAiQuota(user, options, shouldBill);
       store.createAiUsageLog({
         ownerUserId: user.id,
         plan: plan.plan,
@@ -476,7 +542,7 @@ export function createApi(deps = {}) {
         command: input.command,
         billable: shouldBill,
       });
-      return { ...result, provider };
+      return withQuota({ ...result, provider });
     },
 
     runAiCommand(user, input = {}, options = {}) {
@@ -522,6 +588,67 @@ export function createApi(deps = {}) {
       }
       if (!result) result = buildAiCommand(command, context);
       return this.finalizeAiCommandResult(user, input, options, result, provider);
+    },
+
+    getAiUsageSummary(user, options = {}) {
+      if (!user?.id) throw new Error("Authentication required");
+      const period = normalizeUsageMonth(options.month);
+      const allLogs = store.listAiUsageLogsForUser(user);
+      const periodLogs = allLogs
+        .filter((entry) => String(entry.createdAt || "").slice(0, 7) === period)
+        .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+      return {
+        period,
+        reset: {
+          cadence: "monthly",
+          nextResetAt: nextMonthlyResetDate(period),
+        },
+        quota: this.getAiQuota(user, { ...options, month: period }),
+        summary: summarizeAiLogs(periodLogs),
+        history: periodLogs.slice(0, 50),
+      };
+    },
+
+    getAdminAiUsageSummary(user, options = {}) {
+      if (!user || user.role !== "admin") throw new Error("Forbidden");
+      const period = normalizeUsageMonth(options.month);
+      const periodLogs = store.listAiUsageLogsForUser(user)
+        .filter((entry) => String(entry.createdAt || "").slice(0, 7) === period);
+      const groups = {};
+      periodLogs.forEach((entry) => {
+        const ownerUserId = entry.ownerUserId || "unknown";
+        if (!groups[ownerUserId]) {
+          const owner = ownerUserId === "unknown" ? null : store.getUserById(ownerUserId);
+          groups[ownerUserId] = {
+            ownerUserId,
+            name: owner?.name || "Unknown user",
+            email: owner?.email || "",
+            logs: [],
+            latestAt: entry.createdAt || "",
+          };
+        }
+        groups[ownerUserId].logs.push(entry);
+        if (String(entry.createdAt || "") > String(groups[ownerUserId].latestAt || "")) {
+          groups[ownerUserId].latestAt = entry.createdAt || "";
+        }
+      });
+      return {
+        period,
+        reset: {
+          cadence: "monthly",
+          nextResetAt: nextMonthlyResetDate(period),
+        },
+        summary: summarizeAiLogs(periodLogs),
+        users: Object.values(groups)
+          .map((group) => ({
+            ownerUserId: group.ownerUserId,
+            name: group.name,
+            email: group.email,
+            latestAt: group.latestAt,
+            summary: summarizeAiLogs(group.logs),
+          }))
+          .sort((a, b) => String(b.latestAt || "").localeCompare(String(a.latestAt || ""))),
+      };
     },
 
     createUser(input) {
@@ -580,12 +707,36 @@ export function createApi(deps = {}) {
       return user ? store.listSubscriptionsForUser(user.id) : [];
     },
 
+    getSubscription(id) {
+      return store.getSubscription(id);
+    },
+
+    updateSubscription(id, updates = {}) {
+      return store.updateSubscription(id, updates);
+    },
+
+    cancelSubscription(id, input = {}) {
+      return store.cancelSubscription(id, input);
+    },
+
+    renewSubscription(id, input = {}) {
+      return store.renewSubscription(id, input);
+    },
+
+    expireSubscriptions(now) {
+      return store.expireSubscriptions(now);
+    },
+
     listMonetization() {
       return store.listMonetization();
     },
 
     listReports(user) {
       return store.listReportsForUser(user);
+    },
+
+    summarizePostgresReports(user, filters = {}) {
+      return summarizePostgresReports(user, filters);
     },
 
     summarizeMonetization() {
@@ -610,7 +761,13 @@ export function createApi(deps = {}) {
     recordInvoicePayment(id, input) {
       return store.recordInvoicePayment(id, input);
     },
-    createInvoicePaymentLink(id, input) {
+    createInvoicePaymentLink(id, input = {}, options = {}) {
+      const invoice = store.getInvoice(id);
+      if (invoice && String(invoice.status || "").toLowerCase() === "created") {
+        const owner = invoice.ownerUserId ? store.getUserById(invoice.ownerUserId) : null;
+        const user = options.user || input.user || owner;
+        this.requireFeature(user, "razorpayCollections", options);
+      }
       return store.createInvoicePaymentLink(id, input);
     },
     recordGatewayPayment(input) {
@@ -648,9 +805,30 @@ export function createApi(deps = {}) {
       return store.setUserPermissions(userId, permissions);
     },
 
-    getPersistenceStatus() {
+    async getPersistenceStatus() {
+      let postgres = {
+        configured: hasPostgresConfig(),
+        database: hasPostgresConfig() ? maskDatabaseUrl() : "",
+        reachable: false,
+        error: "",
+      };
+      if (hasPostgresConfig()) {
+        try {
+          postgres = {
+            ...postgres,
+            reachable: true,
+            ...(await describePostgresState()),
+          };
+        } catch (error) {
+          postgres = {
+            ...postgres,
+            error: error.message,
+          };
+        }
+      }
       return {
         persistence: describePersistence(),
+        postgres,
         records: store.summarizeRecords(),
         warning: "Render disks are ephemeral unless persistent storage or an external database is configured. Verify this before production releases.",
       };

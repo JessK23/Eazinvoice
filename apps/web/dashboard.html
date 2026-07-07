@@ -103,6 +103,20 @@
             </div>
             <span id="aiAssistantPlanBadge" class="pill gold">Pro / Business</span>
           </div>
+          <div id="aiQuotaPanel" class="ai-quota-panel" aria-live="polite">
+            <div>
+              <span class="hint">Current plan</span>
+              <strong id="aiQuotaPlan">Free</strong>
+            </div>
+            <div>
+              <span class="hint">AI commands</span>
+              <strong id="aiQuotaRemaining">Upgrade to Pro</strong>
+            </div>
+            <div>
+              <span class="hint">Included AI tools</span>
+              <strong id="aiQuotaFeatures">Locked</strong>
+            </div>
+          </div>
           <div id="aiAssistantResult" class="ai-chat-transcript" aria-live="polite">
             <div class="ai-chat-message assistant">
               <div class="ai-avatar">AI</div>
@@ -124,6 +138,36 @@
               <button id="aiVoiceButton" class="ghost small" type="button">Voice input</button>
               <button id="aiCommandRun" class="primary" type="button">Send</button>
             </div>
+          </div>
+        </section>
+        <section class="panel-subsection ai-usage-history">
+          <div class="panel-head compact">
+            <div>
+              <span class="pill blue">Usage tracker</span>
+              <h3>AI Usage This Month</h3>
+              <p id="aiUsageResetNote" class="hint">AI command usage resets monthly.</p>
+            </div>
+            <span id="aiUsagePeriodBadge" class="pill gold">Current month</span>
+          </div>
+          <div id="aiUsageStats" class="usage-grid">
+            <div><span>Used</span><strong>0</strong></div>
+            <div><span>Remaining</span><strong>Upgrade</strong></div>
+            <div><span>Included</span><strong>Pro / Business</strong></div>
+          </div>
+          <div id="aiUsageHistoryList" class="record-list compact-list">
+            <p class="hint">No AI commands recorded yet.</p>
+          </div>
+        </section>
+        <section id="adminAiUsagePanel" class="panel-subsection ai-usage-history" hidden>
+          <div class="panel-head compact">
+            <div>
+              <span class="pill gold">Admin audit</span>
+              <h3>AI Usage Across Users</h3>
+              <p class="hint">Visible only to configured EazInvoice admins.</p>
+            </div>
+          </div>
+          <div id="adminAiUsageList" class="record-list compact-list">
+            <p class="hint">No user AI usage for this month.</p>
           </div>
         </section>
         <div class="quick-grid ai-feature-strip">

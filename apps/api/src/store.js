@@ -37,10 +37,54 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function normalizeRecordStatus(value, fallback = "draft") {
+  return String(value || fallback).trim().toLowerCase() || fallback;
+}
+
+function assertInvoiceCanBeEdited(invoice) {
+  if (normalizeRecordStatus(invoice?.status) === "deleted") {
+    throw new Error("Deleted invoices cannot be edited.");
+  }
+}
+
+function assertPurchaseOrderCanBeEdited(purchaseOrder) {
+  if (normalizeRecordStatus(purchaseOrder?.status, "created") === "deleted") {
+    throw new Error("Deleted purchase/work orders cannot be edited.");
+  }
+}
+
+function assertInvoiceCanReceivePayment(invoice) {
+  const status = normalizeRecordStatus(invoice?.status);
+  if (status === "draft") {
+    throw new Error("Create the invoice before recording payment.");
+  }
+  if (status === "deleted") {
+    throw new Error("Deleted invoices cannot receive payments.");
+  }
+  if (normalizeRecordStatus(invoice?.paymentStatus, "") === "paid" || toNumber(invoice?.balanceAmount, invoice?.total) <= 0) {
+    throw new Error("Invoice is already fully paid.");
+  }
+}
+
 function isActivePaidSubscription(subscription) {
   return String(subscription.status || "active").toLowerCase() === "active"
     && String(subscription.plan || "free").toLowerCase() !== "free"
     && toNumber(subscription.amount) > 0;
+}
+
+function isActiveSubscription(subscription) {
+  return String(subscription?.status || "active").toLowerCase() === "active";
+}
+
+function nextSubscriptionRenewalDate(fromDate, billingCycle = "yearly") {
+  const base = new Date(fromDate || Date.now());
+  const renewalDate = Number.isNaN(base.getTime()) ? new Date() : base;
+  if (billingCycle === "monthly") {
+    renewalDate.setUTCMonth(renewalDate.getUTCMonth() + 1);
+  } else {
+    renewalDate.setUTCFullYear(renewalDate.getUTCFullYear() + 1);
+  }
+  return renewalDate;
 }
 
 function parseDateOnly(value) {
@@ -85,7 +129,11 @@ function dateDiffDays(from, to) {
 
 export function createStore(seed = {}, options = {}) {
   const usePersistence = options.persist !== false;
-  const persisted = usePersistence ? loadPersistedState() : {};
+  const persistenceAdapter = options.persistenceAdapter || {
+    load: loadPersistedState,
+    save: savePersistedState,
+  };
+  const persisted = usePersistence ? persistenceAdapter.load() : {};
   const state = {
     users: [],
     companies: [],
@@ -145,7 +193,7 @@ export function createStore(seed = {}, options = {}) {
 
   function persist() {
     if (!usePersistence) return;
-    savePersistedState({
+    persistenceAdapter.save({
       users: state.users,
       companies: state.companies,
       customers: state.customers,
@@ -365,10 +413,11 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function createInvoice(input, limits) {
-    const items = input.items.map((item) => ({
-      description: item.description.trim(),
-      hsnSac: item.hsnSac?.trim() ?? "",
-      unit: item.unit?.trim() ?? "",
+    const rawItems = Array.isArray(input.items) ? input.items : [];
+    const items = rawItems.map((item) => ({
+      description: String(item.description || "").trim(),
+      hsnSac: String(item.hsnSac || "").trim(),
+      unit: String(item.unit || "").trim(),
       quantity: toNumber(item.quantity),
       rate: toNumber(item.rate),
       discount: toNumber(item.discount),
@@ -376,13 +425,14 @@ export function createStore(seed = {}, options = {}) {
     }));
 
     if (items.length > limits.invoiceItemsPerInvoice) {
-      throw new Error("invoice items exceed free plan limit");
+      throw new Error("invoice items exceed active plan limit");
     }
 
     const totals = calculateInvoiceTotals(items, toNumber(input.taxRate), input);
     const ownerUserId = input.ownerUserId ?? null;
     const company = state.companies.find((entry) => entry.id === input.companyId) ?? null;
     const owner = state.users.find((entry) => entry.id === ownerUserId) ?? null;
+    const status = normalizeRecordStatus(input.status, "draft");
     const invoiceCode = input.invoiceCode || (company
       ? makeCodeFromText(company.companyCode || company.name, `INV${state.counters.invoice + 1}`)
       : makeInitialCode(input.ownerCode || owner?.name, "IND"));
@@ -393,8 +443,8 @@ export function createStore(seed = {}, options = {}) {
       companyId: input.companyId ?? null,
       invoiceCode,
       invoiceNumber: input.invoiceNumber?.trim() || formatDocumentNumber(invoiceCode, input.invoiceDate, invoiceSequence),
-      status: input.status?.trim() || "draft",
-      paymentStatus: input.status === "draft" ? "draft" : input.paymentStatus?.trim() || "unpaid",
+      status,
+      paymentStatus: status === "draft" ? "draft" : input.paymentStatus?.trim() || "unpaid",
       paidAmount: toNumber(input.paidAmount),
       balanceAmount: 0,
       paymentGateway: null,
@@ -425,16 +475,18 @@ export function createStore(seed = {}, options = {}) {
       createdAt: new Date().toISOString(),
     };
     invoice.balanceAmount = Math.max(0, invoice.total - invoice.paidAmount);
+    refreshInvoicePaymentStatus(invoice);
     state.invoices.push(invoice);
     persist();
     return clone(invoice);
   }
 
   function createPurchaseOrder(input, limits) {
-    const items = input.items.map((item) => ({
-      description: item.description.trim(),
-      hsnSac: item.hsnSac?.trim() ?? "",
-      unit: item.unit?.trim() ?? "",
+    const rawItems = Array.isArray(input.items) ? input.items : [];
+    const items = rawItems.map((item) => ({
+      description: String(item.description || "").trim(),
+      hsnSac: String(item.hsnSac || "").trim(),
+      unit: String(item.unit || "").trim(),
       quantity: toNumber(item.quantity),
       rate: toNumber(item.rate),
       discount: toNumber(item.discount),
@@ -442,12 +494,13 @@ export function createStore(seed = {}, options = {}) {
     }));
 
     if (items.length > limits.invoiceItemsPerInvoice) {
-      throw new Error("purchase order items exceed free plan limit");
+      throw new Error("purchase/work order items exceed active plan limit");
     }
 
     const totals = calculateInvoiceTotals(items, toNumber(input.taxRate), input);
     const ownerUserId = input.ownerUserId ?? null;
     const company = state.companies.find((entry) => entry.id === input.companyId) ?? null;
+    const status = normalizeRecordStatus(input.status, "created");
     const poCode = input.poCode || makeCodeFromText(company?.companyCode || input.ownerCode || "PO", `PO${state.counters.purchaseOrder + 1}`);
     const poSequence = String(state.counters.purchaseOrder + 1).padStart(4, "0");
     const vendorCode = input.vendorCode?.trim() || `VEN-${poSequence}`;
@@ -459,7 +512,7 @@ export function createStore(seed = {}, options = {}) {
       documentType: input.documentType?.trim() || "po",
       poCode,
       poNumber: input.poNumber?.trim() ?? `${poCode}-${poSequence}`,
-      status: input.status?.trim() || "created",
+      status,
       customerId: input.customerId ?? null,
       poDate: input.poDate ?? new Date().toISOString().slice(0, 10),
       dueDate: input.dueDate ?? "",
@@ -496,12 +549,7 @@ export function createStore(seed = {}, options = {}) {
     const amount = Number(input.amount ?? 0);
     const billingCycle = input.billingCycle ?? "yearly";
     const createdAt = new Date().toISOString();
-    const renewalDate = new Date(createdAt);
-    if (billingCycle === "monthly") {
-      renewalDate.setUTCMonth(renewalDate.getUTCMonth() + 1);
-    } else {
-      renewalDate.setUTCFullYear(renewalDate.getUTCFullYear() + 1);
-    }
+    const renewalDate = nextSubscriptionRenewalDate(createdAt, billingCycle);
     const subscription = {
       id: nextId("sub", ++state.counters.subscription),
       subscriberType: input.subscriberType ?? "individual",
@@ -520,12 +568,14 @@ export function createStore(seed = {}, options = {}) {
       gateway: input.gateway?.trim() || "",
       gatewayPaymentId: input.gatewayPaymentId?.trim() || "",
       gatewayOrderId: input.gatewayOrderId?.trim() || "",
+      previousSubscriptionId: input.previousSubscriptionId || "",
+      lifecycleAction: input.lifecycleAction || "",
       startedAt: input.startedAt ?? createdAt,
       expiresAt: input.expiresAt ?? renewalDate.toISOString(),
       renewsAt: input.renewsAt ?? renewalDate.toISOString(),
       createdAt,
     };
-    if (isActivePaidSubscription(subscription)) {
+    if (isActiveSubscription(subscription)) {
       state.subscriptions.forEach((entry) => {
         const sameAccount = subscription.userId
           ? entry.userId === subscription.userId
@@ -534,6 +584,7 @@ export function createStore(seed = {}, options = {}) {
           entry.status = "superseded";
           entry.supersededAt = createdAt;
           entry.supersededByGatewayOrderId = subscription.gatewayOrderId || "";
+          entry.supersededBySubscriptionId = subscription.id;
         }
       });
     }
@@ -607,6 +658,110 @@ export function createStore(seed = {}, options = {}) {
 
   function listSubscriptionsForUser(userId) {
     return clone(state.subscriptions.filter((subscription) => subscription.userId === userId));
+  }
+
+  function getSubscription(id) {
+    const subscription = state.subscriptions.find((entry) => entry.id === id);
+    return subscription ? clone(subscription) : null;
+  }
+
+  function updateSubscription(id, updates = {}) {
+    const subscription = state.subscriptions.find((entry) => entry.id === id);
+    if (!subscription) return null;
+    const updatedAt = new Date().toISOString();
+    [
+      "subscriberType",
+      "subscriberName",
+      "companyId",
+      "userId",
+      "groupName",
+      "plan",
+      "currency",
+      "billingCycle",
+      "status",
+      "gateway",
+      "gatewayPaymentId",
+      "gatewayOrderId",
+      "startedAt",
+      "expiresAt",
+      "renewsAt",
+      "cancelledAt",
+      "cancellationReason",
+      "expiredAt",
+      "renewedAt",
+      "supersededAt",
+      "supersededByGatewayOrderId",
+      "supersededBySubscriptionId",
+      "previousSubscriptionId",
+    ].forEach((field) => {
+      if (updates[field] !== undefined) subscription[field] = updates[field] ?? "";
+    });
+    if (updates.amount !== undefined) subscription.amount = toNumber(updates.amount);
+    if (updates.monthlyAmount !== undefined) subscription.monthlyAmount = toNumber(updates.monthlyAmount);
+    if (updates.annualAmount !== undefined) subscription.annualAmount = toNumber(updates.annualAmount);
+    if (updates.renewalCount !== undefined) subscription.renewalCount = toNumber(updates.renewalCount);
+    subscription.updatedAt = updatedAt;
+    persist();
+    return clone(subscription);
+  }
+
+  function cancelSubscription(id, input = {}) {
+    const now = new Date().toISOString();
+    return updateSubscription(id, {
+      status: "cancelled",
+      cancelledAt: input.cancelledAt || now,
+      cancellationReason: String(input.reason || input.cancellationReason || "").trim(),
+      expiresAt: input.expiresAt || now,
+      renewsAt: input.renewsAt || "",
+    });
+  }
+
+  function renewSubscription(id, input = {}) {
+    const subscription = state.subscriptions.find((entry) => entry.id === id);
+    if (!subscription) return null;
+    const now = new Date();
+    const existingExpiry = subscription.expiresAt ? new Date(subscription.expiresAt) : null;
+    const base = existingExpiry && !Number.isNaN(existingExpiry.getTime()) && existingExpiry > now
+      ? existingExpiry
+      : now;
+    const renewalDate = input.expiresAt
+      ? new Date(input.expiresAt)
+      : nextSubscriptionRenewalDate(base.toISOString(), input.billingCycle || subscription.billingCycle || "yearly");
+    const renewedAt = new Date().toISOString();
+    return updateSubscription(id, {
+      status: "active",
+      amount: input.amount ?? subscription.amount,
+      monthlyAmount: input.monthlyAmount ?? subscription.monthlyAmount,
+      annualAmount: input.annualAmount ?? subscription.annualAmount,
+      currency: input.currency ?? subscription.currency,
+      billingCycle: input.billingCycle ?? subscription.billingCycle,
+      gateway: input.gateway ?? subscription.gateway,
+      gatewayPaymentId: input.gatewayPaymentId ?? subscription.gatewayPaymentId,
+      gatewayOrderId: input.gatewayOrderId ?? subscription.gatewayOrderId,
+      expiresAt: Number.isNaN(renewalDate.getTime()) ? subscription.expiresAt : renewalDate.toISOString(),
+      renewsAt: Number.isNaN(renewalDate.getTime()) ? subscription.renewsAt : renewalDate.toISOString(),
+      renewedAt,
+      renewalCount: toNumber(subscription.renewalCount) + 1,
+    });
+  }
+
+  function expireSubscriptions(nowInput = new Date()) {
+    const now = nowInput instanceof Date ? nowInput : new Date(nowInput);
+    if (Number.isNaN(now.getTime())) return [];
+    const expiredAt = now.toISOString();
+    const expired = [];
+    state.subscriptions.forEach((subscription) => {
+      if (!isActiveSubscription(subscription) || !subscription.expiresAt) return;
+      const expiresAt = new Date(subscription.expiresAt);
+      if (!Number.isNaN(expiresAt.getTime()) && expiresAt <= now) {
+        subscription.status = "expired";
+        subscription.expiredAt = expiredAt;
+        subscription.updatedAt = expiredAt;
+        expired.push(clone(subscription));
+      }
+    });
+    if (expired.length) persist();
+    return expired;
   }
 
   function listMonetization() {
@@ -1123,11 +1278,18 @@ export function createStore(seed = {}, options = {}) {
   function recordInvoicePayment(invoiceId, input = {}) {
     const invoice = state.invoices.find((entry) => entry.id === invoiceId);
     if (!invoice) return null;
+    assertInvoiceCanReceivePayment(invoice);
+    const amount = toNumber(input.amount);
+    if (amount <= 0) throw new Error("Enter a valid received amount.");
+    const balance = toNumber(invoice.balanceAmount, invoice.total);
+    if (balance > 0 && amount > balance + 0.01) {
+      throw new Error("Payment amount cannot be more than the pending invoice balance.");
+    }
     const payment = {
       id: nextId("pay", ++state.counters.payment),
       ownerUserId: invoice.ownerUserId,
       invoiceId,
-      amount: toNumber(input.amount),
+      amount,
       currency: input.currency?.trim() || invoice.currency || "INR",
       mode: input.mode?.trim() || "manual",
       reference: input.reference?.trim() || "",
@@ -1148,6 +1310,7 @@ export function createStore(seed = {}, options = {}) {
   function createInvoicePaymentLink(invoiceId, input = {}) {
     const invoice = state.invoices.find((entry) => entry.id === invoiceId);
     if (!invoice) return null;
+    assertInvoiceCanReceivePayment(invoice);
     const linkId = `plink_${invoice.id}_${Date.now()}`;
     invoice.paymentGateway = input.gateway?.trim() || "razorpay";
     invoice.paymentLink = {
@@ -1292,6 +1455,7 @@ export function createStore(seed = {}, options = {}) {
   function updateInvoice(id, updates, limits) {
     const invoice = state.invoices.find((entry) => entry.id === id);
     if (!invoice) return null;
+    assertInvoiceCanBeEdited(invoice);
 
     [
       "status",
@@ -1312,7 +1476,9 @@ export function createStore(seed = {}, options = {}) {
       "billToName",
       "billToAddress",
     ].forEach((field) => {
-      if (updates[field] !== undefined) invoice[field] = String(updates[field] || "").trim();
+      if (updates[field] !== undefined) invoice[field] = field === "status"
+        ? normalizeRecordStatus(updates[field], invoice.status || "draft")
+        : String(updates[field] || "").trim();
     });
     if (updates.recurringEnabled !== undefined) invoice.recurringEnabled = Boolean(updates.recurringEnabled);
     if (updates.recurringFrequency !== undefined) {
@@ -1336,9 +1502,10 @@ export function createStore(seed = {}, options = {}) {
       })).filter((item) => item.description);
     }
 
-    if (updates.items !== undefined || updates.taxRate !== undefined) {
+    const totalsNeedRefresh = ["items", "taxRate", "discount", "shipping", "roundOff"].some((field) => updates[field] !== undefined);
+    if (totalsNeedRefresh) {
       if (invoice.items.length > limits.invoiceItemsPerInvoice) {
-        throw new Error("invoice items exceed free plan limit");
+        throw new Error("invoice items exceed active plan limit");
       }
 
       const totals = calculateInvoiceTotals(invoice.items, toNumber(invoice.taxRate), invoice);
@@ -1353,6 +1520,7 @@ export function createStore(seed = {}, options = {}) {
   function updatePurchaseOrder(id, updates, limits) {
     const purchaseOrder = state.purchaseOrders.find((entry) => entry.id === id);
     if (!purchaseOrder) return null;
+    assertPurchaseOrderCanBeEdited(purchaseOrder);
 
     [
       "status",
@@ -1373,7 +1541,9 @@ export function createStore(seed = {}, options = {}) {
       "billToName",
       "billToAddress",
     ].forEach((field) => {
-      if (updates[field] !== undefined) purchaseOrder[field] = String(updates[field] || "").trim();
+      if (updates[field] !== undefined) purchaseOrder[field] = field === "status"
+        ? normalizeRecordStatus(updates[field], purchaseOrder.status || "created")
+        : String(updates[field] || "").trim();
     });
     if (updates.companyId !== undefined) purchaseOrder.companyId = updates.companyId || null;
     if (updates.taxRate !== undefined) purchaseOrder.taxRate = toNumber(updates.taxRate);
@@ -1392,9 +1562,10 @@ export function createStore(seed = {}, options = {}) {
       })).filter((item) => item.description);
     }
 
-    if (updates.items !== undefined || updates.taxRate !== undefined) {
+    const totalsNeedRefresh = ["items", "taxRate", "discount", "shipping", "roundOff"].some((field) => updates[field] !== undefined);
+    if (totalsNeedRefresh) {
       if (purchaseOrder.items.length > limits.invoiceItemsPerInvoice) {
-        throw new Error("purchase order items exceed free plan limit");
+        throw new Error("purchase/work order items exceed active plan limit");
       }
       Object.assign(purchaseOrder, calculateInvoiceTotals(purchaseOrder.items, toNumber(purchaseOrder.taxRate), purchaseOrder));
     }
@@ -1469,6 +1640,11 @@ export function createStore(seed = {}, options = {}) {
     revokeApiKey,
     listSubscriptions,
     listSubscriptionsForUser,
+    getSubscription,
+    updateSubscription,
+    cancelSubscription,
+    renewSubscription,
+    expireSubscriptions,
     listMonetization,
     summarizeMonetization,
     listReportsForUser,

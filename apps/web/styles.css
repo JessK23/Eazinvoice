@@ -430,6 +430,51 @@ html { scroll-behavior: smooth; }
   border-radius: 16px;
   padding: 14px;
 }
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+.usage-grid > div {
+  min-height: 76px;
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid rgba(37, 99, 235, .16);
+  border-radius: 14px;
+  background: linear-gradient(145deg, rgba(255,255,255,.96), rgba(239,246,255,.82));
+}
+.usage-grid strong {
+  color: var(--navy);
+  font-size: 17px;
+}
+.plan-card.selected {
+  border-color: rgba(37, 99, 235, .38);
+  box-shadow: 0 18px 46px rgba(37,99,235,.12);
+}
+.ai-usage-history {
+  margin-top: 16px;
+  border: 1px solid rgba(37, 99, 235, .14);
+  border-radius: 18px;
+  background: rgba(255,255,255,.86);
+  padding: 18px;
+}
+.ai-usage-history .record-card.compact {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(248,250,252,.86);
+}
+.compact-list {
+  display: grid;
+  gap: 10px;
+}
 .wordpress-product-card {
   display: flex;
   justify-content: space-between;
@@ -988,6 +1033,35 @@ input, textarea, select {
   width: min(760px, 100%);
   box-shadow: none;
 }
+.ai-quota-panel {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+.ai-quota-panel > div {
+  min-height: 78px;
+  display: grid;
+  gap: 6px;
+  align-content: center;
+  padding: 14px;
+  border: 1px solid rgba(37, 99, 235, .18);
+  border-radius: 14px;
+  background: linear-gradient(145deg, rgba(255,255,255,.95), rgba(239,246,255,.82));
+}
+.ai-quota-panel strong {
+  font-size: 18px;
+  color: var(--navy);
+}
+.ai-quota-panel[data-state="locked"] > div,
+.ai-quota-panel[data-state="red"] > div {
+  border-color: rgba(122,31,53,.22);
+  background: linear-gradient(145deg, rgba(255,255,255,.95), rgba(255,241,242,.84));
+}
+.ai-quota-panel[data-state="amber"] > div {
+  border-color: rgba(214,161,30,.28);
+  background: linear-gradient(145deg, rgba(255,255,255,.95), rgba(255,251,235,.88));
+}
 .ai-result-list {
   display: grid;
   gap: 12px;
@@ -1424,7 +1498,7 @@ input, textarea, select {
   .workflow-item-row label span { display: block; }
 }
 @media (max-width: 760px) {
-  .grid.two, .totals, .preview-total, .preview-meta, .feature-grid, .subscription-grid, .admin-grid, .metric-grid, .quick-actions, .quick-grid, .dashboard-search, .stepper, .access-tabs, .plan-feature-grid, .invoice-summary-grid, .invoice-start-grid, .invoice-board, .report-detail-controls, .standard-feature-grid { grid-template-columns: 1fr; }
+  .grid.two, .totals, .preview-total, .preview-meta, .feature-grid, .subscription-grid, .admin-grid, .metric-grid, .quick-actions, .quick-grid, .dashboard-search, .stepper, .access-tabs, .plan-feature-grid, .invoice-summary-grid, .invoice-start-grid, .invoice-board, .report-detail-controls, .standard-feature-grid, .ai-quota-panel, .usage-grid { grid-template-columns: 1fr; }
   .hero { flex-direction: column; align-items: start; }
   .item-row, .workflow-item-row { grid-template-columns: 1fr; }
   .invoice-items-head { display: none; }

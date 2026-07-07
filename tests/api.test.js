@@ -5,6 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import { createApi } from "../apps/api/src/index.js";
 import { describePersistence } from "../apps/api/src/persistence.js";
+import { resolveReportPeriod } from "../apps/api/src/postgres-reporting.js";
+import { buildPlanUsageDetails, getFeatureRequirement, getPlanDefinition, resolvePlanUsageStatus } from "../apps/api/src/plans.js";
 import { createStore } from "../apps/api/src/store.js";
 import { createServer } from "../apps/api/src/server.js";
 
@@ -25,6 +27,33 @@ function useTestAdminEmail() {
 test("health check is ok", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   assert.equal(api.healthCheck().ok, true);
+});
+
+test("Postgres report periods support monthly, yearly, custom, and financial-year filters", () => {
+  assert.deepEqual(resolveReportPeriod({ month: "6", year: "2026" }), {
+    mode: "month",
+    year: 2026,
+    month: 6,
+    startDate: "2026-06-01",
+    endDate: "2026-06-30",
+  });
+  assert.deepEqual(resolveReportPeriod({ year: "2026" }), {
+    mode: "year",
+    year: 2026,
+    startDate: "2026-01-01",
+    endDate: "2026-12-31",
+  });
+  assert.deepEqual(resolveReportPeriod({ financialYear: "2026-2027" }), {
+    mode: "financial-year",
+    financialYear: "2026-2027",
+    startDate: "2026-04-01",
+    endDate: "2027-03-31",
+  });
+  assert.deepEqual(resolveReportPeriod({ startDate: "2026-05-01", endDate: "2026-05-15" }), {
+    mode: "custom",
+    startDate: "2026-05-01",
+    endDate: "2026-05-15",
+  });
 });
 
 test("persistence can use a mounted production data directory", () => {
@@ -66,6 +95,29 @@ test("persistence keeps a backup before replacing saved state", () => {
     }
     fs.rmSync(mountedDir, { recursive: true, force: true });
   }
+});
+
+test("store can use an injected persistence adapter", () => {
+  const savedStates = [];
+  const store = createStore({}, {
+    persistenceAdapter: {
+      load() {
+        return {
+          users: [{ id: "usr_0001", name: "Loaded User", email: "loaded@example.com" }],
+          counters: { user: 1 },
+        };
+      },
+      save(state) {
+        savedStates.push(state);
+      },
+    },
+  });
+
+  assert.equal(store.getUserByEmail("loaded@example.com").name, "Loaded User");
+  const created = store.createUser({ name: "Saved User", email: "saved@example.com" });
+  assert.equal(created.id, "usr_0002");
+  assert.equal(savedStates.length, 1);
+  assert.equal(savedStates[0].users.length, 2);
 });
 
 test("can create invoice and calculate totals", () => {
@@ -161,6 +213,39 @@ test("purchase orders follow the same ownership rules", () => {
   assert.ok(api.getPurchaseOrder(po.id, user));
 });
 
+test("purchase/work order drafts edit safely and deleted records are preserved historically", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "PO User", email: "po-user@example.com" });
+  const draft = api.createPurchaseOrder({
+    ownerUserId: user.id,
+    status: "draft",
+    documentType: "wo",
+    taxRate: 18,
+    items: [{ description: "Vendor work", quantity: 1, rate: 1000, gstRate: 18 }],
+  });
+  assert.equal(draft.status, "draft");
+  assert.equal(draft.documentType, "wo");
+  assert.equal(draft.total, 1180);
+
+  const edited = api.updatePurchaseOrder(draft.id, { discount: 100 });
+  assert.equal(edited.subtotal, 1000);
+  assert.equal(edited.discount, 100);
+  assert.equal(edited.taxAmount, 162);
+  assert.equal(edited.total, 1062);
+
+  const created = api.updatePurchaseOrder(draft.id, { status: "created" });
+  assert.equal(created.status, "created");
+  assert.equal(created.total, 1062);
+
+  const deleted = api.deletePurchaseOrder(draft.id, user);
+  assert.equal(deleted.status, "deleted");
+  assert.equal(api.listPurchaseOrders(user).some((entry) => entry.id === draft.id && entry.status === "deleted"), true);
+  assert.throws(
+    () => api.updatePurchaseOrder(draft.id, { discount: 0 }),
+    /Deleted purchase\/work orders cannot be edited/,
+  );
+});
+
 test("invoice totals default invalid numbers to zero and support item GST rates", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const company = api.createCompany({ name: "GST Co" });
@@ -230,6 +315,92 @@ test("manual payments update invoice payment status", () => {
   });
   assert.equal(paid.invoice.paymentStatus, "paid");
   assert.equal(paid.invoice.balanceAmount, 0);
+});
+
+test("draft and deleted invoices cannot receive payments", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Guarded User", email: "guarded@example.com" });
+  const draft = api.createInvoice({
+    ownerUserId: user.id,
+    status: "draft",
+    taxRate: 0,
+    items: [{ description: "Draft work", quantity: 1, rate: 1000 }],
+  });
+
+  assert.throws(
+    () => api.recordInvoicePayment(draft.id, { amount: 100 }),
+    /Create the invoice before recording payment/,
+  );
+  assert.throws(
+    () => api.createInvoicePaymentLink(draft.id, { gateway: "razorpay" }),
+    /Create the invoice before recording payment/,
+  );
+
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    status: "created",
+    taxRate: 0,
+    items: [{ description: "Created work", quantity: 1, rate: 500 }],
+  });
+  const deleted = api.deleteInvoice(invoice.id, user);
+  assert.equal(deleted.status, "deleted");
+  assert.throws(
+    () => api.recordInvoicePayment(invoice.id, { amount: 100 }),
+    /Deleted invoices cannot receive payments/,
+  );
+});
+
+test("invoice amount edits recalculate totals and payment balance", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const invoice = api.createInvoice({
+    status: "created",
+    taxRate: 18,
+    items: [{ description: "Design", quantity: 1, rate: 1000, gstRate: 18 }],
+  });
+  assert.equal(invoice.total, 1180);
+
+  const discounted = api.updateInvoice(invoice.id, { discount: 100 });
+  assert.equal(discounted.subtotal, 1000);
+  assert.equal(discounted.discount, 100);
+  assert.equal(discounted.taxAmount, 162);
+  assert.equal(discounted.total, 1062);
+  assert.equal(discounted.balanceAmount, 1062);
+});
+
+test("online invoice collection links require Standard or higher", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const freeUser = api.createUser({ name: "Free Link User", email: "free-link@example.com" });
+  const freeInvoice = api.createInvoice({
+    ownerUserId: freeUser.id,
+    status: "created",
+    taxRate: 0,
+    items: [{ description: "Consulting", quantity: 1, rate: 1000 }],
+  });
+
+  assert.throws(
+    () => api.createInvoicePaymentLink(freeInvoice.id, { gateway: "razorpay" }),
+    /Razorpay collection links are available on Standard, Pro, and Business plans/,
+  );
+
+  const standardUser = api.createUser({ name: "Standard Link User", email: "standard-link@example.com" });
+  api.createSubscription({
+    userId: standardUser.id,
+    subscriberName: standardUser.name,
+    plan: "standard",
+    amount: 3588,
+    billingCycle: "yearly",
+    status: "active",
+  });
+  const standardInvoice = api.createInvoice({
+    ownerUserId: standardUser.id,
+    status: "created",
+    taxRate: 0,
+    items: [{ description: "Retainer", quantity: 1, rate: 2000 }],
+  });
+  const linked = api.createInvoicePaymentLink(standardInvoice.id, { gateway: "razorpay" });
+  assert.equal(linked.paymentGateway, "razorpay");
+  assert.equal(linked.paymentLink.status, "created");
+  assert.equal(linked.paymentLink.amount, 2000);
 });
 
 test("admin can restrict and restore accounts", () => {
@@ -1077,6 +1248,28 @@ test("active paid plans change limits and unlock feature flags", () => {
   assert.equal(api.userCanUseFeature(user, "aiPoAssist"), true);
 });
 
+test("plan usage status names the active tier and exposes remaining counts", () => {
+  const standard = getPlanDefinition("standard");
+  const blockedStatus = resolvePlanUsageStatus(
+    { invoicesPerMonth: standard.limits.invoicesPerMonth + 1 },
+    standard.limits,
+    { planLabel: standard.label },
+  );
+  assert.equal(blockedStatus.allowed, false);
+  assert.equal(blockedStatus.limitKey, "invoicesPerMonth");
+  assert.equal(blockedStatus.limitLabel, "monthly invoices");
+  assert.match(blockedStatus.reason, /monthly invoices exceeds Standard plan limit/);
+
+  const pro = getPlanDefinition("pro");
+  const usageDetails = buildPlanUsageDetails(
+    { aiCommandsPerMonth: pro.limits.aiCommandsPerMonth - 1 },
+    pro.limits,
+  );
+  assert.equal(usageDetails.aiCommandsPerMonth.label, "AI commands this month");
+  assert.equal(usageDetails.aiCommandsPerMonth.remaining, 1);
+  assert.equal(usageDetails.aiCommandsPerMonth.exceeded, false);
+});
+
 test("new active paid subscription supersedes older paid entitlement without deleting history", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const user = api.createUser({ name: "Upgrade User", email: "upgrade@example.com" });
@@ -1109,6 +1302,60 @@ test("new active paid subscription supersedes older paid entitlement without del
   assert.equal(subscriptions.find((subscription) => subscription.id === standard.id).status, "superseded");
   assert.equal(subscriptions.find((subscription) => subscription.id === pro.id).status, "active");
   assert.equal(api.getFreePlanSummary(user).plan, "pro");
+});
+
+test("subscription lifecycle updates cancel renew downgrade without deleting history", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Lifecycle User", email: "lifecycle@example.com" });
+
+  const standard = api.createSubscription({
+    userId: user.id,
+    subscriberType: "individual",
+    subscriberName: user.name,
+    plan: "standard",
+    amount: 3588,
+    monthlyAmount: 299,
+    annualAmount: 3588,
+    status: "active",
+    gateway: "razorpay",
+    gatewayOrderId: "order_lifecycle_standard",
+    gatewayPaymentId: "pay_lifecycle_standard",
+  });
+
+  const cancelled = api.cancelSubscription(standard.id, { reason: "user requested downgrade" });
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(api.getFreePlanSummary(user).plan, "free");
+
+  const renewed = api.renewSubscription(standard.id, {
+    amount: 3588,
+    monthlyAmount: 299,
+    annualAmount: 3588,
+    gatewayPaymentId: "pay_lifecycle_renewal",
+  });
+  assert.equal(renewed.status, "active");
+  assert.equal(renewed.renewalCount, 1);
+  assert.equal(api.getFreePlanSummary(user).plan, "standard");
+
+  const freeDowngrade = api.createSubscription({
+    userId: user.id,
+    subscriberType: "individual",
+    subscriberName: user.name,
+    plan: "free",
+    amount: 0,
+    monthlyAmount: 0,
+    annualAmount: 0,
+    status: "active",
+    gateway: "manual",
+    previousSubscriptionId: renewed.id,
+    lifecycleAction: "downgrade",
+  });
+
+  const subscriptions = api.listSubscriptionsForUser(user);
+  assert.equal(subscriptions.length, 2);
+  assert.equal(subscriptions.find((subscription) => subscription.id === renewed.id).status, "superseded");
+  assert.equal(subscriptions.find((subscription) => subscription.id === freeDowngrade.id).status, "active");
+  assert.equal(freeDowngrade.previousSubscriptionId, renewed.id);
+  assert.equal(api.getFreePlanSummary(user).plan, "free");
 });
 
 test("expired active subscription does not unlock paid features", () => {
@@ -1200,7 +1447,7 @@ test("admin plan preview unlocks tiers without creating a subscription", async (
       body: { billToName: "Blocked Customer", items: manyItems },
     });
     assert.equal(blockedUserInvoice.response.status, 400);
-    assert.match(blockedUserInvoice.payload.error, /free plan limit/);
+    assert.match(blockedUserInvoice.payload.error, /active plan limit/);
 
     const adminInvoice = await request("/invoices", {
       method: "POST",
@@ -1250,12 +1497,16 @@ test("paid tier catalog keeps promised feature gates explicit", () => {
   assert.equal(plans.pro.features.multiBusiness, true);
   assert.equal(plans.pro.billingCycle, "yearly");
   assert.equal(plans.pro.discountedAnnualAmount, 8388);
+  assert.equal(plans.pro.implementation.status, "active");
   assert.equal(plans.pro.implementation.pending.length, 0);
 
   assert.equal(plans.business.features.teamAccess, true);
   assert.equal(plans.business.features.apiAccess, true);
   assert.equal(plans.business.features.approvals, true);
-  assert.equal(plans.business.implementation.pending.includes("Customer API key portal"), true);
+  assert.equal(plans.business.implementation.status, "active");
+  assert.equal(plans.business.implementation.ready.includes("Customer API key portal"), true);
+  assert.equal(plans.business.implementation.ready.includes("Business Razorpay gateway settings"), true);
+  assert.equal(plans.business.implementation.pending.length, 0);
 });
 
 test("paid tier inheritance flows upward only", () => {
@@ -1293,6 +1544,54 @@ test("paid tier inheritance flows upward only", () => {
     assert.equal(plans.pro.features[feature], false);
     assert.equal(plans.business.features[feature], true);
   });
+});
+
+test("paid feature requirements give the correct upgrade tier", () => {
+  assert.equal(getFeatureRequirement("whatsappShare").minimumPlan, "standard");
+  assert.match(getFeatureRequirement("whatsappShare").message, /Standard, Pro, and Business/);
+  assert.equal(getFeatureRequirement("razorpayCollections").minimumPlan, "standard");
+  assert.match(getFeatureRequirement("recurringInvoices").message, /Standard, Pro, and Business/);
+
+  assert.equal(getFeatureRequirement("aiInvoiceAssist").minimumPlan, "pro");
+  assert.match(getFeatureRequirement("aiPoAssist").message, /Pro and Business/);
+  assert.match(getFeatureRequirement("advancedReports").message, /Pro and Business/);
+
+  assert.equal(getFeatureRequirement("teamAccess").minimumPlan, "business");
+  assert.match(getFeatureRequirement("apiAccess").message, /Business plan/);
+  assert.match(getFeatureRequirement("approvals").message, /Business plan/);
+});
+
+test("paid tier runtime gates stop at the correct tier boundary", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const standardUser = api.createUser({ name: "Standard User", email: "standard-boundary@example.com" });
+  api.createSubscription({
+    userId: standardUser.id,
+    subscriberName: standardUser.name,
+    plan: "standard",
+    amount: 3588,
+    billingCycle: "yearly",
+    status: "active",
+  });
+
+  assert.throws(
+    () => api.runAiCommand(standardUser, { command: "Create invoice for Rahul INR 1000 plus GST" }),
+    /AI invoice assistant is available on Pro and Business plans/,
+  );
+
+  const proUser = api.createUser({ name: "Pro User", email: "pro-boundary@example.com" });
+  api.createSubscription({
+    userId: proUser.id,
+    subscriberName: proUser.name,
+    plan: "pro",
+    amount: 8388,
+    billingCycle: "yearly",
+    status: "active",
+  });
+
+  assert.throws(
+    () => api.createApiKey(proUser, { label: "WordPress site" }),
+    /API access is available on the Business plan/,
+  );
 });
 
 test("standard tier recurring scheduler creates due invoice drafts once", () => {
@@ -1480,6 +1779,8 @@ test("Pro AI command assistant drafts invoices, PO/WO, and report summaries", ()
   assert.equal(previewResult.intent, "invoice");
   assert.equal(previewResult.createdRecord, undefined);
   assert.equal(previewResult.proposedRecord.total, 17700);
+  assert.equal(previewResult.quota.used, 1);
+  assert.equal(previewResult.quota.remaining, 299);
   assert.equal(api.listInvoices(user).length, 0);
 
   const invoiceResult = api.runAiCommand(user, {
@@ -1519,6 +1820,8 @@ test("Pro AI command assistant drafts invoices, PO/WO, and report summaries", ()
   assert.equal(report.intent, "report");
   assert.equal(report.metrics.totalInvoices, 0);
   assert.equal(report.metrics.totalPurchaseOrders, 0);
+  assert.equal(report.quota.used, 5);
+  assert.equal(report.quota.remaining, 295);
   const aiUsage = api.exportDataSnapshot().aiUsageLogs;
   assert.equal(aiUsage.length, 5);
   assert.equal(aiUsage.every((entry) => entry.ownerUserId === user.id), true);
@@ -1566,6 +1869,7 @@ test("Pro AI assistant can refine commands with OpenAI JSON and save the approve
   assert.equal(preview.intent, "invoice");
   assert.equal(preview.proposedRecord.billToName, "Priya Nair");
   assert.equal(preview.proposedRecord.total, 28320);
+  assert.equal(preview.quota.used, 1);
   assert.equal(api.listInvoices(user).length, 0);
 
   const saved = api.runAiCommand(user, {
@@ -1578,7 +1882,8 @@ test("Pro AI assistant can refine commands with OpenAI JSON and save the approve
   });
   assert.equal(saved.createdRecord.billToName, "Priya Nair");
   assert.equal(saved.createdRecord.total, 28320);
-  assert.equal(api.exportDataSnapshot().aiUsageLogs.filter((entry) => entry.billable).length, 1);
+  assert.equal(saved.quota.used, 2);
+  assert.equal(api.exportDataSnapshot().aiUsageLogs.filter((entry) => entry.billable).length, 2);
 });
 
 test("AI assistant asks for missing details instead of creating unsafe drafts", async () => {
@@ -1614,7 +1919,193 @@ test("AI assistant asks for missing details instead of creating unsafe drafts", 
 
   assert.equal(result.intent, "clarification");
   assert.deepEqual(result.missingFields, ["customer", "amount"]);
+  assert.equal(result.quota.used, 1);
   assert.equal(api.listInvoices(user).length, 0);
+});
+
+test("Pro AI monthly quota blocks after the active limit is used", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Quota User", email: "quota-ai@example.com" });
+  api.createSubscription({
+    userId: user.id,
+    subscriberName: user.name,
+    subscriberType: "individual",
+    plan: "pro",
+    amount: 999,
+    status: "active",
+  });
+
+  const options = { planLimits: { aiCommandsPerMonth: 1 } };
+  const first = api.runAiCommand(user, {
+    command: "Create invoice for Rahul Sharma INR 1000 plus 18% GST",
+    previewOnly: true,
+  }, options);
+  assert.equal(first.quota.used, 1);
+  assert.equal(first.quota.remaining, 0);
+
+  assert.throws(
+    () => api.runAiCommand(user, {
+      command: "Create invoice for Rahul Sharma INR 2000 plus 18% GST",
+      previewOnly: true,
+    }, options),
+    /AI command monthly limit reached/,
+  );
+});
+
+test("AI usage summary exposes monthly quota, history, and reset information", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Usage User", email: "usage-ai@example.com" });
+  api.createSubscription({
+    userId: user.id,
+    subscriberName: user.name,
+    subscriberType: "individual",
+    plan: "pro",
+    amount: 999,
+    status: "active",
+  });
+
+  api.runAiCommand(user, {
+    command: "Create invoice for Usage Client INR 2000 plus 18% GST",
+    previewOnly: true,
+  });
+  api.runAiCommand(user, { command: "Show revenue report summary" });
+
+  const summary = api.getAiUsageSummary(user);
+  assert.equal(summary.quota.plan, "pro");
+  assert.equal(summary.quota.used, 2);
+  assert.equal(summary.summary.billable, 2);
+  assert.equal(summary.history.length, 2);
+  assert.match(summary.reset.nextResetAt, /^\d{4}-\d{2}-01$/);
+  assert.equal(summary.history.every((entry) => entry.ownerUserId === user.id), true);
+});
+
+test("Admin AI usage summary aggregates users and rejects normal users", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const admin = api.createUser({ name: "Admin", email: "support@eazinvoice.com", role: "admin" });
+  const user = api.createUser({ name: "Normal AI", email: "normal-ai@example.com" });
+  api.createSubscription({
+    userId: user.id,
+    subscriberName: user.name,
+    subscriberType: "individual",
+    plan: "pro",
+    amount: 999,
+    status: "active",
+  });
+
+  api.runAiCommand(user, {
+    command: "Create invoice for Normal Client INR 3000 plus 18% GST",
+    previewOnly: true,
+  });
+
+  const adminSummary = api.getAdminAiUsageSummary(admin);
+  assert.equal(adminSummary.summary.billable, 1);
+  assert.equal(adminSummary.users.length, 1);
+  assert.equal(adminSummary.users[0].email, "normal-ai@example.com");
+  assert.throws(() => api.getAdminAiUsageSummary(user), /Forbidden/);
+});
+
+test("Business AI quota is treated as unlimited", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Business AI", email: "business-ai@example.com" });
+  api.createSubscription({
+    userId: user.id,
+    subscriberName: user.name,
+    subscriberType: "company",
+    plan: "business",
+    amount: 1999,
+    status: "active",
+  });
+
+  const first = api.runAiCommand(user, { command: "Show report summary" });
+  const second = api.runAiCommand(user, {
+    command: "Create invoice for Client INR 2000 plus 18% GST",
+    previewOnly: true,
+  });
+  const third = api.runAiCommand(user, {
+    command: "Generate PO for laptops quantity 2 INR 50000 plus 18% GST",
+    previewOnly: true,
+  });
+
+  assert.equal(first.quota.unlimited, true);
+  assert.equal(second.quota.unlimited, true);
+  assert.equal(third.quota.unlimited, true);
+  assert.equal(third.quota.remaining, null);
+  assert.equal(third.quota.used, 3);
+});
+
+test("Approved AI invoice drafts still obey invoice item limits", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "AI Limit User", email: "ai-limit@example.com" });
+  api.createSubscription({
+    userId: user.id,
+    subscriberName: user.name,
+    subscriberType: "individual",
+    plan: "pro",
+    amount: 999,
+    status: "active",
+  });
+
+  assert.throws(
+    () => api.runAiCommand(user, {
+      command: "approved draft with too many items",
+      approvedDraft: {
+        intent: "invoice",
+        payload: {
+          billToName: "Limit Customer",
+          currency: "INR",
+          items: [
+            { description: "Service One", quantity: 1, rate: 1000, gstRate: 18 },
+            { description: "Service Two", quantity: 1, rate: 2000, gstRate: 18 },
+          ],
+        },
+      },
+    }, { planLimits: { aiCommandsPerMonth: 5, invoiceItemsPerInvoice: 1 } }),
+    /invoice items exceed active plan limit/,
+  );
+  assert.equal(api.listInvoices(user).length, 0);
+  assert.equal(api.exportDataSnapshot().aiUsageLogs.length, 0);
+});
+
+test("AI usage logs and approved drafts are included in persisted state snapshots", () => {
+  const savedStates = [];
+  const api = createApi({
+    store: createStore({}, {
+      persistenceAdapter: {
+        load() {
+          return {};
+        },
+        save(state) {
+          savedStates.push(state);
+        },
+      },
+    }),
+  });
+  const user = api.createUser({ name: "Persisted AI", email: "persisted-ai@example.com" });
+  api.createSubscription({
+    userId: user.id,
+    subscriberName: user.name,
+    subscriberType: "individual",
+    plan: "pro",
+    amount: 999,
+    status: "active",
+  });
+
+  const preview = api.runAiCommand(user, {
+    command: "Create invoice for Persisted Customer INR 1000 plus 18% GST",
+    previewOnly: true,
+  });
+  const saved = api.runAiCommand(user, {
+    command: "approved persisted preview",
+    approvedDraft: {
+      intent: preview.intent,
+      payload: preview.payload,
+    },
+  });
+
+  const latest = savedStates.at(-1);
+  assert.ok(latest);
+  assert.equal(latest.aiUsageLogs.filter((entry) => entry.ownerUserId === user.id && entry.billable).length, 2);
+  assert.equal(latest.invoices.some((invoice) => invoice.id === saved.createdRecord.id && invoice.status === "draft"), true);
 });
 
 test("AI command endpoint is gated and unlocks for Pro subscriptions", async () => {
@@ -1774,7 +2265,7 @@ test("business tier unlocks team approvals and API keys", () => {
 
   assert.throws(
     () => api.createTeamMember(user, { email: "accountant@example.com", role: "accountant" }),
-    /Business tier required/,
+    /Team access is available on the Business plan/,
   );
 
   api.createSubscription({

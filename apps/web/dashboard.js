@@ -100,7 +100,17 @@ const aiPoExample = document.getElementById("aiPoExample");
 const aiReportExample = document.getElementById("aiReportExample");
 const aiVoiceButton = document.getElementById("aiVoiceButton");
 const aiAssistantStatus = document.getElementById("aiAssistantStatus");
+const aiQuotaPanel = document.getElementById("aiQuotaPanel");
+const aiQuotaPlan = document.getElementById("aiQuotaPlan");
+const aiQuotaRemaining = document.getElementById("aiQuotaRemaining");
+const aiQuotaFeatures = document.getElementById("aiQuotaFeatures");
 const aiAssistantResult = document.getElementById("aiAssistantResult");
+const aiUsageStats = document.getElementById("aiUsageStats");
+const aiUsageHistoryList = document.getElementById("aiUsageHistoryList");
+const aiUsageResetNote = document.getElementById("aiUsageResetNote");
+const aiUsagePeriodBadge = document.getElementById("aiUsagePeriodBadge");
+const adminAiUsagePanel = document.getElementById("adminAiUsagePanel");
+const adminAiUsageList = document.getElementById("adminAiUsageList");
 const businessWorkspaceBadge = document.getElementById("businessWorkspaceBadge");
 const businessWorkspaceNotice = document.getElementById("businessWorkspaceNotice");
 const businessWorkspaceNavGroup = document.getElementById("businessWorkspaceNavGroup");
@@ -142,6 +152,8 @@ let dashboardCompanies = [];
 let dashboardPurchaseOrders = [];
 let dashboardCustomers = [];
 let dashboardPayments = [];
+let dashboardReportSummary = null;
+let detailReportSummary = null;
 let dashboardTeamMembers = [];
 let dashboardApprovalRequests = [];
 let dashboardApiKeys = [];
@@ -201,6 +213,11 @@ function showDashboardPage(page = currentDashboardPage()) {
   if (page.startsWith("report-")) {
     syncDetailFilterVisibility();
     renderReportDetail(page.replace("report-", ""));
+    refreshDetailReportSummary().then(() => {
+      if (currentDashboardPage().startsWith("report-")) {
+        renderReportDetail(currentDashboardPage().replace("report-", ""));
+      }
+    });
   }
   if (page === "reports") renderMainReportCharts();
 }
@@ -230,11 +247,12 @@ function isUnlimitedLimit(value) {
 }
 
 function planLimitLine(key, summary) {
-  const limit = Number(summary?.limits?.[key] ?? 0);
-  const used = Number(summary?.usage?.[key] ?? 0);
-  const label = LIMIT_LABELS[key] || key;
-  if (isUnlimitedLimit(limit)) return { label, value: "Unlimited", tone: "blue" };
-  const remaining = Math.max(0, limit - used);
+  const detail = summary?.usageDetails?.[key];
+  const limit = Number(detail?.limit ?? summary?.limits?.[key] ?? 0);
+  const used = Number(detail?.used ?? summary?.usage?.[key] ?? 0);
+  const label = detail?.label || LIMIT_LABELS[key] || key;
+  if (detail?.unlimited || isUnlimitedLimit(limit)) return { label, value: "Unlimited", tone: "blue" };
+  const remaining = Number(detail?.remaining ?? Math.max(0, limit - used));
   const value = `${remaining} left (${used}/${limit})`;
   return {
     label,
@@ -288,11 +306,165 @@ function canUseAiAssistant() {
   return activePlanAllows("aiInvoiceAssist") || activePlanAllows("aiPoAssist") || activePlanAllows("advancedReports");
 }
 
+function aiQuotaExceeded() {
+  if (!canUseAiAssistant()) return false;
+  const detail = activePlanSummary?.usageDetails?.aiCommandsPerMonth;
+  if (detail?.unlimited || isUnlimitedLimit(detail?.limit ?? activePlanSummary?.limits?.aiCommandsPerMonth)) return false;
+  const limit = Number(detail?.limit ?? activePlanSummary?.limits?.aiCommandsPerMonth ?? 0);
+  const used = Number(detail?.used ?? activePlanSummary?.usage?.aiCommandsPerMonth ?? 0);
+  return limit > 0 && used >= limit;
+}
+
 function setAiAssistantStatus(message, tone = "") {
   if (!aiAssistantStatus) return;
   aiAssistantStatus.hidden = !message;
   aiAssistantStatus.textContent = message || "";
   aiAssistantStatus.dataset.tone = tone;
+}
+
+function aiIncludedFeatureText(summary = activePlanSummary) {
+  const features = [];
+  if (summary?.features?.aiInvoiceAssist) features.push("Invoices");
+  if (summary?.features?.aiPoAssist) features.push("PO / WO");
+  if (summary?.features?.advancedReports) features.push("Reports");
+  return features.length ? features.join(", ") : "Locked";
+}
+
+function applyAiQuotaResult(quota) {
+  if (!quota) return;
+  const usage = {
+    ...(activePlanSummary.usage || {}),
+    aiCommandsPerMonth: Number(quota.used || 0),
+  };
+  const limits = {
+    ...(activePlanSummary.limits || {}),
+    aiCommandsPerMonth: Number(quota.limit || 0),
+  };
+  activePlanSummary = {
+    ...activePlanSummary,
+    plan: quota.plan || activePlanSummary.plan,
+    label: quota.label || activePlanSummary.label,
+    usage,
+    limits,
+    usageDetails: {
+      ...(activePlanSummary.usageDetails || {}),
+      aiCommandsPerMonth: {
+        label: LIMIT_LABELS.aiCommandsPerMonth,
+        used: Number(quota.used || 0),
+        limit: Number(quota.limit || 0),
+        remaining: quota.remaining,
+        unlimited: Boolean(quota.unlimited),
+        exceeded: Boolean(quota.exceeded),
+      },
+    },
+  };
+}
+
+function renderAiQuotaPanel() {
+  if (!aiQuotaPanel) return;
+  const allowed = canUseAiAssistant();
+  const aiLimit = planLimitLine("aiCommandsPerMonth", activePlanSummary);
+  aiQuotaPanel.dataset.state = allowed ? aiLimit.tone : "locked";
+  if (aiQuotaPlan) aiQuotaPlan.textContent = activePlanSummary?.label || "Free";
+  if (aiQuotaRemaining) {
+    aiQuotaRemaining.textContent = allowed
+      ? aiLimit.value
+      : "Upgrade to Pro";
+  }
+  if (aiQuotaFeatures) {
+    aiQuotaFeatures.textContent = aiIncludedFeatureText(activePlanSummary);
+  }
+}
+
+function aiUsageLimitText(quota = {}) {
+  if (quota.unlimited) return "Unlimited";
+  const limit = Number(quota.limit || 0);
+  return limit > 0 ? String(limit) : "Not included";
+}
+
+function aiUsageRemainingText(quota = {}) {
+  if (quota.unlimited) return "Unlimited";
+  if (Number(quota.limit || 0) <= 0) return "Upgrade to Pro";
+  return String(Math.max(0, Number(quota.remaining || 0)));
+}
+
+function formatAiDate(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
+  return date.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function renderAiUsageSummary(payload) {
+  if (!payload) return;
+  const quota = payload.quota || {};
+  if (aiUsagePeriodBadge) aiUsagePeriodBadge.textContent = payload.period || "Current month";
+  if (aiUsageResetNote) {
+    aiUsageResetNote.textContent = `AI usage resets monthly. Next reset: ${payload.reset?.nextResetAt || "next month"}.`;
+  }
+  if (aiUsageStats) {
+    aiUsageStats.innerHTML = `
+      <div><span>Used</span><strong>${Number(quota.used || 0)}</strong></div>
+      <div><span>Remaining</span><strong>${escapeHtml(aiUsageRemainingText(quota))}</strong></div>
+      <div><span>Included</span><strong>${escapeHtml(aiUsageLimitText(quota))}</strong></div>
+      <div><span>Plan</span><strong>${escapeHtml(quota.label || "Free")}</strong></div>
+    `;
+  }
+  if (!aiUsageHistoryList) return;
+  const history = Array.isArray(payload.history) ? payload.history : [];
+  aiUsageHistoryList.innerHTML = history.length
+    ? history.map((entry) => `
+      <article class="record-card compact">
+        <div>
+          <strong>${escapeHtml(entry.commandPreview || "AI command")}</strong>
+          <div class="hint">${escapeHtml(entry.intent || "unknown")} - ${escapeHtml(entry.status || "recorded")} - ${formatAiDate(entry.createdAt)}</div>
+        </div>
+        <span class="pill ${entry.billable === false ? "gold" : "blue"}">${entry.billable === false ? "Not counted" : "Counted"}</span>
+      </article>
+    `).join("")
+    : "<p class=\"hint\">No AI commands recorded for this month yet.</p>";
+}
+
+function renderAdminAiUsageSummary(payload) {
+  if (!adminAiUsagePanel || !adminAiUsageList) return;
+  const authorized = Boolean(sessionContext?.session?.admin?.authorized);
+  adminAiUsagePanel.hidden = !authorized;
+  if (!authorized) return;
+  const users = Array.isArray(payload?.users) ? payload.users : [];
+  adminAiUsageList.innerHTML = users.length
+    ? users.map((entry) => `
+      <article class="record-card compact">
+        <div>
+          <strong>${escapeHtml(entry.name || "Unknown user")}</strong>
+          <div class="hint">${escapeHtml(entry.email || "No email")} - latest ${formatAiDate(entry.latestAt)}</div>
+        </div>
+        <span class="pill blue">${Number(entry.summary?.billable || 0)} counted</span>
+      </article>
+    `).join("")
+    : "<p class=\"hint\">No user AI usage for this month.</p>";
+}
+
+async function loadAiUsage() {
+  try {
+    const usage = await apiClient.getAiUsage(token);
+    applyAiQuotaResult(usage.quota);
+    renderAiQuotaPanel();
+    renderAiUsageSummary(usage);
+    if (sessionContext?.session?.admin?.authorized) {
+      const adminUsage = await apiClient.getAdminAiUsage(token).catch(() => null);
+      renderAdminAiUsageSummary(adminUsage);
+    }
+  } catch (error) {
+    if (aiUsageHistoryList) {
+      aiUsageHistoryList.innerHTML = `<p class="inline-status" data-tone="error">${escapeHtml(error.message || "Could not load AI usage.")}</p>`;
+    }
+  }
 }
 
 function appendAiChatMessage(role, content, { html = false, thinking = false } = {}) {
@@ -338,19 +510,21 @@ function attachFormValidityStatus(form, statusElement, message) {
 function renderAiAssistantAccess() {
   if (!aiAssistantPanel) return;
   const allowed = canUseAiAssistant();
+  const quotaBlocked = aiQuotaExceeded();
+  renderAiQuotaPanel();
   if (aiAssistantPlanBadge) {
     aiAssistantPlanBadge.textContent = allowed
       ? `${activePlanSummary.label || "Pro"} AI enabled`
       : "Pro / Business";
     aiAssistantPlanBadge.className = `pill ${allowed ? "blue" : "gold"}`;
   }
-  if (aiCommandRun) aiCommandRun.disabled = !allowed;
-  if (aiCommandInput) aiCommandInput.disabled = !allowed;
+  if (aiCommandRun) aiCommandRun.disabled = !allowed || quotaBlocked;
+  if (aiCommandInput) aiCommandInput.disabled = !allowed || quotaBlocked;
   [aiInvoiceExample, aiPoExample, aiReportExample].forEach((button) => {
-    if (button) button.disabled = !allowed;
+    if (button) button.disabled = !allowed || quotaBlocked;
   });
   if (aiVoiceButton) {
-    aiVoiceButton.disabled = !allowed || !("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
+    aiVoiceButton.disabled = !allowed || quotaBlocked || !("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
     aiVoiceButton.title = aiVoiceButton.disabled && allowed
       ? "Voice input is not available in this browser. Typed commands still work."
       : "Speak an invoice, PO, or report command";
@@ -359,10 +533,15 @@ function renderAiAssistantAccess() {
     const adminPreviewHint = sessionContext?.session?.admin?.authorized
       ? " Admin plan preview can be used to test this locally."
       : "";
-    setAiAssistantStatus(`AI command drafting and AI report summaries are available on Pro and Business plans.${adminPreviewHint}`, "error");
+    setAiAssistantStatus(`AI command drafting, PO/WO drafting, and AI report summaries are available on Pro and Business plans.${adminPreviewHint}`, "error");
   } else {
     const aiLimit = planLimitLine("aiCommandsPerMonth", activePlanSummary);
-    setAiAssistantStatus(`AI Assistant is live on this plan. ${aiLimit.label}: ${aiLimit.value}.`, aiLimit.tone === "red" ? "error" : "success");
+    setAiAssistantStatus(
+      quotaBlocked
+        ? `Monthly AI command limit reached for ${activePlanSummary.label || "this"} plan. Upgrade or wait for the next monthly reset.`
+        : `AI Assistant is live on this plan. ${aiLimit.label}: ${aiLimit.value}.`,
+      aiLimit.tone === "red" ? "error" : "success"
+    );
   }
 }
 
@@ -465,9 +644,12 @@ async function savePendingAiDraft() {
     });
     if (result.intent === "invoice" && result.createdRecord) replaceInvoice(result.createdRecord);
     if (result.intent === "purchase_order" && result.createdRecord) replacePurchaseOrder(result.createdRecord);
+    applyAiQuotaResult(result.quota);
     pendingAiDraftCommand = null;
     pendingAiDraftResult = null;
     rerenderDashboardData();
+    renderAiAssistantAccess();
+    await loadAiUsage();
     renderAiResult(result);
     setAiAssistantStatus("AI draft saved. You can open and edit it before final creation.", "success");
   } catch (error) {
@@ -562,6 +744,12 @@ function renderPlanCards(currentPlan) {
     const annualAmount = Number(plan.discountedAnnualAmount ?? plan.annualAmount ?? (monthlyAmount * 12));
     const priceLabel = planId === "free" ? "INR 0" : `INR ${money(monthlyAmount)}/mo`;
     const billingHint = planId === "free" ? "No yearly billing" : `Billed yearly: INR ${money(annualAmount)}`;
+    const aiLimit = Number(plan.limits?.aiCommandsPerMonth || 0);
+    const aiHint = isUnlimitedLimit(aiLimit)
+      ? "AI commands: Unlimited"
+      : aiLimit > 0
+        ? `AI commands: ${aiLimit}/month`
+        : "AI commands: Not included";
     return `
     <div class="plan-tile ${isCurrent ? "selected" : ""}">
       <div class="panel-head">
@@ -572,6 +760,7 @@ function renderPlanCards(currentPlan) {
         </div>
         <span class="pill ${planId === "free" ? "gold" : planId === "standard" ? "blue" : "maroon"}">${escapeHtml(priceLabel)}</span>
       </div>
+      <div class="notice compact">${escapeHtml(aiHint)}. AI usage resets monthly; paid plans are collected yearly.</div>
       <ul class="feature-list">
         ${featureList.map((feature) => `<li>${escapeHtml(feature)}</li>`).join("")}
       </ul>
@@ -905,7 +1094,43 @@ function renderReportDetailChart(type, invoices, purchaseOrders) {
   renderLiveBarChart(reportDetailChart, buckets, config.key, { tone: config.tone, prefix: "INR", format: config.format });
 }
 
+function activeReportSummary() {
+  return currentDashboardPage().startsWith("report-") && detailReportSummary?.available
+    ? detailReportSummary
+    : dashboardReportSummary;
+}
+
+function reportSourceInvoices() {
+  const summary = activeReportSummary();
+  return summary?.available && Array.isArray(summary.invoices)
+    ? summary.invoices
+    : dashboardInvoices;
+}
+
+function reportSourcePurchaseOrders() {
+  const summary = activeReportSummary();
+  return summary?.available && Array.isArray(summary.purchaseOrders)
+    ? summary.purchaseOrders
+    : dashboardPurchaseOrders;
+}
+
 function renderMainReportCharts() {
+  if (dashboardReportSummary?.available && Array.isArray(dashboardReportSummary.monthlyTrend)) {
+    const buckets = dashboardReportSummary.monthlyTrend.map((row) => ({
+      key: row.month,
+      label: dateLabelFromKey(row.month),
+      revenue: Number(row.income || 0),
+      paid: 0,
+      receivable: 0,
+      expenses: Number(row.expenses || 0),
+      profit: Number(row.profit || 0),
+      invoiceCount: 0,
+      poCount: 0,
+    }));
+    renderLiveBarChart(mainRevenueChart, buckets.slice(-6), "revenue", { tone: "revenue" });
+    renderLiveBarChart(mainProfitChart, buckets.slice(-6), "profit", { tone: "profit" });
+    return;
+  }
   const invoices = selectedPeriodInvoices(createdInvoicesOnly(dashboardInvoices));
   const purchaseOrders = selectedPeriodPurchaseOrders(activeCreatedPurchaseOrders());
   const buckets = buildMonthlyBuckets(invoices, purchaseOrders, recentMonthKeys(6));
@@ -938,8 +1163,11 @@ function renderReportDetail(rawType = "revenue") {
   if (reportDetailBadge) reportDetailBadge.textContent = config.badge;
   if (reportDetailTitle) reportDetailTitle.textContent = config.title;
 
-  const invoices = filterRecordsByDetailPeriod(createdInvoicesOnly(dashboardInvoices), "invoice");
-  const purchaseOrders = filterRecordsByDetailPeriod(activeCreatedPurchaseOrders(), "po");
+  const invoices = filterRecordsByDetailPeriod(createdInvoicesOnly(reportSourceInvoices()), "invoice");
+  const purchaseOrders = filterRecordsByDetailPeriod(reportSourcePurchaseOrders().filter((po) => {
+    const status = String(po.status || "created").toLowerCase();
+    return status !== "draft" && status !== "deleted";
+  }), "po");
   const invoiceTotal = invoices.reduce((sum, invoice) => sum + Number(invoice.total || 0), 0);
   const paidTotal = invoices.reduce((sum, invoice) => sum + Number(invoice.paidAmount || 0), 0);
   const unpaidTotal = invoices.reduce((sum, invoice) => sum + Number(invoice.balanceAmount ?? invoice.total ?? 0), 0);
@@ -1133,6 +1361,20 @@ function populateReportFilters(invoices, purchaseOrders = dashboardPurchaseOrder
 }
 
 function renderDashboardMetrics(invoices) {
+  if (dashboardReportSummary?.available && dashboardReportSummary.totals) {
+    const totals = dashboardReportSummary.totals;
+    if (totalInvoices) totalInvoices.textContent = String(totals.createdInvoices || 0);
+    if (paidAmount) paidAmount.textContent = `INR ${money(totals.paidAmount || 0)}`;
+    if (unpaidAmount) unpaidAmount.textContent = `INR ${money(totals.unpaidAmount || 0)}`;
+    if (overdueCount) overdueCount.textContent = String(totals.overdueInvoices || 0);
+    if (monthlyRevenue) monthlyRevenue.textContent = `INR ${money(totals.paymentTotal || totals.paidAmount || 0)}`;
+    if (pendingPayments) pendingPayments.textContent = String(totals.pendingPayments || 0);
+    if (reportIncomeTotal) reportIncomeTotal.textContent = `INR ${money(totals.revenue || 0)}`;
+    if (reportExpenseTotal) reportExpenseTotal.textContent = `INR ${money(totals.expenses || 0)}`;
+    if (reportProfitTotal) reportProfitTotal.textContent = `INR ${money(totals.profit || 0)}`;
+    renderMainReportCharts();
+    return;
+  }
   const createdInvoices = selectedPeriodInvoices(createdInvoicesOnly(invoices));
   const createdPurchaseOrders = selectedPeriodPurchaseOrders(dashboardPurchaseOrders.filter((po) => {
     const status = String(po.status || "created").toLowerCase();
@@ -1160,6 +1402,67 @@ function renderDashboardMetrics(invoices) {
   if (reportExpenseTotal) reportExpenseTotal.textContent = `INR ${money(expenses)}`;
   if (reportProfitTotal) reportProfitTotal.textContent = `INR ${money(total - expenses)}`;
   renderMainReportCharts();
+}
+
+function currentReportSummaryFilters() {
+  return {
+    month: reportMonth?.value || "",
+    year: reportYear?.value || "",
+  };
+}
+
+function currentDetailReportSummaryFilters() {
+  const period = detailReportPeriod?.value || "all";
+  const today = new Date();
+  if (period === "weekly") {
+    const sevenDaysAgo = new Date(today);
+    sevenDaysAgo.setDate(today.getDate() - 6);
+    return {
+      startDate: sevenDaysAgo.toISOString().slice(0, 10),
+      endDate: today.toISOString().slice(0, 10),
+    };
+  }
+  if (period === "monthly") {
+    return {
+      month: detailReportMonth?.value || String(today.getMonth() + 1).padStart(2, "0"),
+      year: detailReportYear?.value || String(today.getFullYear()),
+    };
+  }
+  if (period === "yearly") {
+    return {
+      year: detailReportYear?.value || String(today.getFullYear()),
+    };
+  }
+  if (period === "financial-year") {
+    return {
+      financialYear: detailFinancialYear?.value || currentFinancialYearLabel(today),
+    };
+  }
+  if (period === "custom") {
+    return {
+      startDate: detailStartDate?.value || "",
+      endDate: detailEndDate?.value || "",
+    };
+  }
+  return {};
+}
+
+async function refreshDashboardReportSummary() {
+  try {
+    const summary = await apiClient.getReportSummary(token, currentReportSummaryFilters());
+    dashboardReportSummary = summary?.available ? summary : null;
+  } catch {
+    dashboardReportSummary = null;
+  }
+}
+
+async function refreshDetailReportSummary() {
+  try {
+    const summary = await apiClient.getReportSummary(token, currentDetailReportSummaryFilters());
+    detailReportSummary = summary?.available ? summary : null;
+  } catch {
+    detailReportSummary = null;
+  }
 }
 
 function renderRecentActivity(invoices, companies) {
@@ -1870,6 +2173,9 @@ async function sendAiCommand() {
   try {
     const result = await apiClient.runAiCommand(token, { command, previewOnly: true });
     removeAiThinking();
+    applyAiQuotaResult(result.quota);
+    renderAiAssistantAccess();
+    await loadAiUsage();
     pendingAiDraftCommand = result.intent === "invoice" || result.intent === "purchase_order" ? command : null;
     pendingAiDraftResult = pendingAiDraftCommand ? result : null;
     renderAiResult(result);
@@ -1890,7 +2196,7 @@ async function sendAiCommand() {
     appendAiChatMessage("assistant", message);
     setAiAssistantStatus(message, "error");
   } finally {
-    aiCommandRun.disabled = !canUseAiAssistant();
+    aiCommandRun.disabled = !canUseAiAssistant() || aiQuotaExceeded();
   }
 }
 
@@ -2179,7 +2485,8 @@ runRecurringDraftsBtn?.addEventListener("click", async () => {
 });
 
 [reportMonth, reportYear].forEach((filter) => {
-  filter?.addEventListener("change", () => {
+  filter?.addEventListener("change", async () => {
+    await refreshDashboardReportSummary();
     renderDashboardMetrics(dashboardInvoices);
     renderInvoiceWorkspace(dashboardInvoices);
     renderPoWorkspace(dashboardPurchaseOrders);
@@ -2187,8 +2494,9 @@ runRecurringDraftsBtn?.addEventListener("click", async () => {
 });
 
 [detailReportPeriod, detailReportMonth, detailReportYear, detailFinancialYear, detailStartDate, detailEndDate].forEach((filter) => {
-  filter?.addEventListener("change", () => {
+  filter?.addEventListener("change", async () => {
     syncDetailFilterVisibility();
+    await refreshDetailReportSummary();
     if (currentDashboardPage().startsWith("report-")) renderReportDetail(currentDashboardPage().replace("report-", ""));
   });
 });
@@ -2252,6 +2560,7 @@ async function initializeDashboard() {
   dashboardPurchaseOrders = purchaseOrders;
   dashboardPayments = payments;
   populateReportFilters(dashboardInvoices, dashboardPurchaseOrders);
+  await refreshDashboardReportSummary();
   const activeOrg = companies[0] || null;
   renderDashboardMetrics(dashboardInvoices);
   renderInvoiceWorkspace(dashboardInvoices);
@@ -2290,6 +2599,7 @@ async function initializeDashboard() {
     loadSubscriptionPanel(subscriptions).catch((error) => {
       if (subscriptionStatus) subscriptionStatus.textContent = error.message || "Could not load subscription details.";
     });
+    loadAiUsage().catch(() => {});
     showDashboardPage();
   } catch (error) {
     renderProfile(currentUser, null);
