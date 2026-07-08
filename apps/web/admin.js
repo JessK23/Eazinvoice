@@ -68,6 +68,43 @@ function renderBillingOrderAudit(orders) {
     : "<p>No Razorpay billing orders yet.</p>";
 }
 
+function renderAdminSubscriptions(payload) {
+  if (!adminSubscriptions) return;
+  const subscriptions = payload?.subscriptions || [];
+  const summary = payload?.summary || {};
+  adminSubscriptions.innerHTML = `
+    <div class="metric-grid gateway-metrics">
+      <article class="metric-card"><span>Total</span><strong>${escapeHtml(summary.total ?? subscriptions.length)}</strong></article>
+      <article class="metric-card"><span>Paid Plans</span><strong>${escapeHtml(summary.paid ?? 0)}</strong></article>
+      <article class="metric-card"><span>Active</span><strong>${escapeHtml(summary.byStatus?.active ?? 0)}</strong></article>
+      <article class="metric-card"><span>Sync Issues</span><strong>${escapeHtml(summary.syncIssues ?? 0)}</strong></article>
+    </div>
+    ${subscriptions.length
+      ? subscriptions.slice().reverse().map((subscription) => {
+        const sync = subscription.entitlementSync || {};
+        const syncTone = sync.status === "matched" ? "blue" : sync.status === "not_configured" ? "gold" : "maroon";
+        return `
+          <div class="invoice-card">
+            <div>
+              <strong>${escapeHtml(subscription.userName || subscription.subscriberName || "Subscriber")}</strong>
+              <div class="hint">${escapeHtml(subscription.userEmail || "")} - ${escapeHtml(subscription.subscriberType || "user")}</div>
+              <div class="hint">${escapeHtml(subscription.plan || "free")} - ${escapeHtml(subscription.currency || "INR")} ${money(subscription.amount)} yearly - ${escapeHtml(subscription.status || "active")}</div>
+              <div class="hint">Renews: ${escapeHtml(String(subscription.renewsAt || subscription.expiresAt || "-").slice(0, 10))}</div>
+              <div class="hint">Order: <code>${escapeHtml(subscription.gatewayOrderId || "Not available")}</code></div>
+              <div class="hint">Payment: <code>${escapeHtml(subscription.gatewayPaymentId || "Not available")}</code></div>
+              <div class="hint">${escapeHtml(sync.message || "Runtime entitlement only")}</div>
+            </div>
+            <div class="actions">
+              <span class="pill ${statusTone(subscription.status)}">${escapeHtml(String(subscription.status || "active").toUpperCase())}</span>
+              <span class="pill ${syncTone}">${escapeHtml(String(sync.status || "runtime").toUpperCase())}</span>
+            </div>
+          </div>
+        `;
+      }).join("")
+      : "<p>No subscriptions yet.</p>"}
+  `;
+}
+
 function renderUserControls(users) {
   if (!adminUsers) return;
   adminUsers.innerHTML = users.length
@@ -268,31 +305,20 @@ function renderRecurringScheduler(payload) {
 
 Promise.all([
   apiClient.getAdminMoney(token),
+  apiClient.getAdminSubscriptionAudit(token),
   apiClient.listAdminUsers(token),
   apiClient.getAdminKycReview(token),
   apiClient.getAdminGateway(token),
   apiClient.getAdminPersistence(token),
   apiClient.getAdminRecurringStatus(token),
-]).then(([payload, usersPayload, kycPayload, gatewayPayload, persistencePayload, recurringPayload]) => {
+]).then(([payload, subscriptionAuditPayload, usersPayload, kycPayload, gatewayPayload, persistencePayload, recurringPayload]) => {
   const summary = payload.summary;
   if (adminTotal) adminTotal.textContent = money(summary.totalAmount);
   if (adminCount) adminCount.textContent = String(summary.count);
   if (adminCompany) adminCompany.textContent = money(summary.byType.company || 0);
   if (adminIndividual) adminIndividual.textContent = money(summary.byType.individual || 0);
   if (adminGroup) adminGroup.textContent = money(summary.byType.group || 0);
-  if (adminSubscriptions) {
-    adminSubscriptions.innerHTML = payload.subscriptions.length
-      ? payload.subscriptions.map((subscription) => `
-        <div class="invoice-card">
-          <div>
-            <strong>${escapeHtml(subscription.subscriberName || subscription.groupName || subscription.subscriberType || "Subscriber")}</strong>
-            <div>${escapeHtml(subscription.subscriberType || "user")} - ${escapeHtml(subscription.plan || "free")} - ${escapeHtml(subscription.currency || "INR")} ${money(subscription.amount)}</div>
-          </div>
-          <span class="pill blue">${escapeHtml(subscription.status || "active")}</span>
-        </div>
-      `).join("")
-      : "<p>No subscriptions yet.</p>";
-  }
+  renderAdminSubscriptions(subscriptionAuditPayload);
   renderBillingOrderAudit(payload.billingOrders || []);
   renderGatewayManagement(gatewayPayload);
   renderRecurringScheduler(recurringPayload);

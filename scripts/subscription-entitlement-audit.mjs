@@ -153,6 +153,19 @@ async function assertPaidPlanFlow(baseUrl, planId, expected, capturedOrders) {
   assert.equal(capturedOrders[planId].amount, expected.paise, `${planId} captured Razorpay amount`);
   assert.equal(capturedOrders[planId].currency, "INR", `${planId} captured Razorpay currency`);
 
+  const rejected = await request(baseUrl, "/billing/razorpay/verify", {
+    method: "POST",
+    token: user.token,
+    body: {
+      razorpay_order_id: order.payload.order.id,
+      razorpay_payment_id: `pay_audit_${planId}`,
+      razorpay_signature: "invalid",
+    },
+  });
+  assert.equal(rejected.response.status, 401, `${planId} rejects bad Razorpay signature`);
+  const stillFree = await request(baseUrl, "/plans", { token: user.token });
+  assert.equal(stillFree.payload.active.plan, "free", `${planId} stays free after failed payment verification`);
+
   const signature = crypto
     .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
     .update(`${order.payload.order.id}|pay_audit_${planId}`)

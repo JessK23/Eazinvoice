@@ -1309,6 +1309,62 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/admin/subscription-audit" && req.method === "GET") {
+      if (!isConfiguredAdminUser(user)) {
+        sendJson(res, 403, { error: "Forbidden" });
+        return;
+      }
+      const users = api.listUsers();
+      const usersById = new Map(users.map((entry) => [entry.id, entry]));
+      const subscriptions = api.listSubscriptions();
+      const billingOrders = api.listBillingOrders();
+      const rows = await Promise.all(subscriptions.map(async (subscription) => {
+        const subscriber = usersById.get(subscription.userId) || null;
+        const activeSummary = subscriber
+          ? await resolvePlanSummary(api, subscriber, "", options)
+          : null;
+        const postgresStatus = {
+          checked: false,
+          status: "not_configured",
+          message: "Postgres entitlement reads are not enabled for this request.",
+        };
+        if (subscriber && usePostgresEntitlements(options)) {
+          try {
+            const postgresSummary = await summarizePostgresEntitlements(subscriber);
+            postgresStatus.checked = true;
+            postgresStatus.status = postgresSummary.available && postgresSummary.plan === activeSummary?.plan
+              ? "matched"
+              : "mismatch";
+            postgresStatus.message = postgresSummary.available
+              ? `Postgres plan ${postgresSummary.plan || "free"} / runtime plan ${activeSummary?.plan || "free"}`
+              : "Postgres entitlement summary was unavailable.";
+          } catch (error) {
+            postgresStatus.checked = true;
+            postgresStatus.status = "failed";
+            postgresStatus.message = error.message;
+          }
+        }
+        return {
+          ...subscription,
+          userEmail: subscriber?.email || "",
+          userName: subscriber?.name || "",
+          activePlan: activeSummary?.plan || "free",
+          activePlanLabel: activeSummary?.label || "Free",
+          entitlementSync: postgresStatus,
+        };
+      }));
+      const summary = rows.reduce((acc, subscription) => {
+        const status = String(subscription.status || "active").toLowerCase();
+        acc.total += 1;
+        acc.byStatus[status] = (acc.byStatus[status] || 0) + 1;
+        if (String(subscription.plan || "free").toLowerCase() !== "free") acc.paid += 1;
+        if (subscription.entitlementSync?.status === "mismatch" || subscription.entitlementSync?.status === "failed") acc.syncIssues += 1;
+        return acc;
+      }, { total: 0, paid: 0, syncIssues: 0, byStatus: {} });
+      sendJson(res, 200, { summary, subscriptions: rows, billingOrders });
+      return;
+    }
+
     if (url.pathname === "/admin/gateway" && req.method === "GET") {
       if (!isConfiguredAdminUser(user)) {
         sendJson(res, 403, { error: "Forbidden" });

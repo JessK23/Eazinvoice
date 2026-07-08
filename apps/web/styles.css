@@ -9,6 +9,26 @@
   --line: #e7e0f3;
 }
 
+.status[data-tone="success"] {
+  color: #047857;
+  font-weight: 800;
+}
+
+.status[data-tone="error"] {
+  color: #b91c1c;
+  font-weight: 800;
+}
+
+.subscription-history {
+  margin-top: 18px;
+  display: grid;
+  gap: 12px;
+}
+
+.subscription-history h3 {
+  margin: 0;
+}
+
 * { box-sizing: border-box; }
 body {
   margin: 0;

@@ -130,6 +130,15 @@ export const apiClient = {
   listMySubscriptions(token) {
     return request("/subscriptions/me", { token });
   },
+  cancelSubscription(token, subscriptionId, body = {}) {
+    return request(`/subscriptions/${subscriptionId}/cancel`, { method: "POST", token, body });
+  },
+  renewSubscription(token, subscriptionId, body = {}) {
+    return request(`/subscriptions/${subscriptionId}/renew`, { method: "POST", token, body });
+  },
+  downgradeSubscription(token, subscriptionId, body = {}) {
+    return request(`/subscriptions/${subscriptionId}/downgrade`, { method: "POST", token, body });
+  },
   createReport(token, body) {
     return request("/reports", { method: "POST", token, body });
   },
@@ -147,6 +156,9 @@ export const apiClient = {
   },
   getAdminMoney(token) {
     return request("/admin/money", { token });
+  },
+  getAdminSubscriptionAudit(token) {
+    return request("/admin/subscription-audit", { token });
   },
   getAdminGateway(token) {
     return request("/admin/gateway", { token });
