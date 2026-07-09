@@ -85,6 +85,9 @@ const detailEndDate = document.getElementById("detailEndDate");
 const reportDetailMetrics = document.getElementById("reportDetailMetrics");
 const reportDetailHead = document.getElementById("reportDetailHead");
 const reportDetailBody = document.getElementById("reportDetailBody");
+const reportExportCsv = document.getElementById("reportExportCsv");
+const reportExportPrint = document.getElementById("reportExportPrint");
+const reportExportStatus = document.getElementById("reportExportStatus");
 const reportDetailChart = document.getElementById("reportDetailChart");
 const reportDetailChartTitle = document.getElementById("reportDetailChartTitle");
 const reportDetailChartBadge = document.getElementById("reportDetailChartBadge");
@@ -163,6 +166,7 @@ let dashboardApprovalRequests = [];
 let dashboardApiKeys = [];
 let dashboardBusinessSettings = { emailSettings: {}, paymentSettings: {}, complianceProfile: {} };
 let dashboardBusinessCompliance = null;
+let currentReportExport = { title: "Detailed Report", headers: [], rows: [] };
 let razorpayCheckoutPromise = null;
 let pendingAiDraftCommand = null;
 let pendingAiDraftResult = null;
@@ -921,6 +925,7 @@ function reportTypeConfig(type) {
     expenses: { title: "Expense Report", badge: "Expenses", description: "Expenses from created Purchase Orders and Work Orders." },
     po: { title: "PO / WO Report", badge: "PO / WO", description: "Purchase Order and Work Order records." },
     "profit-loss": { title: "Profit and Loss Report", badge: "P&L", description: "Revenue minus expenses for the selected period." },
+    gst: { title: "GST Compliance Report", badge: "GST", description: "Output GST, input GST and estimated net GST payable." },
     paid: { title: "Paid Reports", badge: "Paid feature", description: "Advanced reports available in paid plans." },
   };
   return configs[type] || configs.revenue;
@@ -1091,9 +1096,19 @@ function renderReportDetailChart(type, invoices, purchaseOrders) {
     expenses: { title: "Expenses by Month", badge: "Expense", key: "expenses", tone: "expense" },
     po: { title: "PO / WO by Month", badge: "Count", key: "poCount", tone: "count", format: "count" },
     "profit-loss": { title: "Profit by Month", badge: "Net", key: "profit", tone: "profit" },
+    gst: { title: "Net GST by Month", badge: "GST", key: "gst", tone: "profit" },
     paid: { title: "Paid Revenue by Month", badge: "Paid", key: "paid", tone: "profit" },
   };
   const config = chartConfig[type] || chartConfig.revenue;
+  if (type === "gst") {
+    buckets.forEach((bucket) => {
+      const monthInvoices = invoices.filter((invoice) => monthKeyForRecord(invoice, "invoice") === bucket.key);
+      const monthPurchaseOrders = purchaseOrders.filter((po) => monthKeyForRecord(po, "po") === bucket.key);
+      const output = monthInvoices.reduce((sum, invoice) => sum + Number(invoice.taxAmount || 0), 0);
+      const input = monthPurchaseOrders.reduce((sum, po) => sum + Number(po.taxAmount || 0), 0);
+      bucket.gst = output - input;
+    });
+  }
   if (reportDetailChartTitle) reportDetailChartTitle.textContent = config.title;
   if (reportDetailChartBadge) reportDetailChartBadge.textContent = config.badge;
   renderLiveBarChart(reportDetailChart, buckets, config.key, { tone: config.tone, prefix: "INR", format: config.format });
@@ -1144,6 +1159,13 @@ function renderMainReportCharts() {
 }
 
 function renderReportTable(headers, rows) {
+  currentReportExport = {
+    title: reportDetailTitle?.textContent || "Detailed Report",
+    generatedAt: new Date().toLocaleString("en-IN"),
+    period: selectedReportPeriodLabel(),
+    headers,
+    rows,
+  };
   if (reportDetailHead) {
     reportDetailHead.innerHTML = `<tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>`;
   }
@@ -1152,6 +1174,92 @@ function renderReportTable(headers, rows) {
       ? rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")
       : `<tr><td colspan="${headers.length}">No records for this report period.</td></tr>`;
   }
+}
+
+function selectedReportPeriodLabel() {
+  const period = detailReportPeriod?.value || "all";
+  if (period === "weekly") return "Current week";
+  if (period === "monthly") {
+    const month = detailReportMonth?.selectedOptions?.[0]?.textContent || "Selected month";
+    const year = detailReportYear?.value || String(new Date().getFullYear());
+    return `${month} ${year}`;
+  }
+  if (period === "yearly") return detailReportYear?.value ? `Year ${detailReportYear.value}` : "Current year";
+  if (period === "financial-year") return detailFinancialYear?.value ? `FY ${detailFinancialYear.value}` : "Selected financial year";
+  if (period === "custom") return `${detailStartDate?.value || "Start"} to ${detailEndDate?.value || "End"}`;
+  return "All time";
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function downloadCurrentReportCsv() {
+  if (!currentReportExport.headers.length) {
+    if (reportExportStatus) reportExportStatus.textContent = "Open a report with records before exporting.";
+    return;
+  }
+  const lines = [
+    [currentReportExport.title],
+    [`Period: ${currentReportExport.period}`],
+    [`Generated: ${currentReportExport.generatedAt}`],
+    [],
+    currentReportExport.headers,
+    ...currentReportExport.rows,
+  ].map((row) => row.map(csvCell).join(","));
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const link = document.createElement("a");
+  const fileName = `${currentReportExport.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "report"}.csv`;
+  link.href = URL.createObjectURL(blob);
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  URL.revokeObjectURL(link.href);
+  link.remove();
+  if (reportExportStatus) reportExportStatus.textContent = `CSV export prepared: ${fileName}`;
+}
+
+function printCurrentReport() {
+  if (!currentReportExport.headers.length) {
+    if (reportExportStatus) reportExportStatus.textContent = "Open a report with records before printing.";
+    return;
+  }
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    window.print();
+    return;
+  }
+  const tableHead = currentReportExport.headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("");
+  const tableRows = currentReportExport.rows.length
+    ? currentReportExport.rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")
+    : `<tr><td colspan="${currentReportExport.headers.length}">No records for this report period.</td></tr>`;
+  printWindow.document.write(`
+    <!doctype html>
+    <html>
+      <head>
+        <title>${escapeHtml(currentReportExport.title)}</title>
+        <style>
+          body { font-family: Arial, sans-serif; color: #101828; margin: 32px; }
+          h1 { margin: 0 0 8px; font-size: 24px; }
+          p { margin: 4px 0; color: #475467; }
+          table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 12px; }
+          th, td { border: 1px solid #d0d5dd; padding: 8px; text-align: left; vertical-align: top; }
+          th { background: #eef4ff; color: #123b8f; }
+        </style>
+      </head>
+      <body>
+        <h1>${escapeHtml(currentReportExport.title)}</h1>
+        <p>Period: ${escapeHtml(currentReportExport.period)}</p>
+        <p>Generated: ${escapeHtml(currentReportExport.generatedAt)}</p>
+        <table><thead><tr>${tableHead}</tr></thead><tbody>${tableRows}</tbody></table>
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
+  printWindow.focus();
+  printWindow.print();
+  if (reportExportStatus) reportExportStatus.textContent = "Print/PDF view opened.";
 }
 
 function activeCreatedPurchaseOrders() {
@@ -1257,6 +1365,23 @@ function renderReportDetail(rawType = "revenue") {
   const gstOutput = invoices.reduce((sum, invoice) => sum + Number(invoice.taxAmount || 0), 0);
   const gstInput = purchaseOrders.reduce((sum, po) => sum + Number(po.taxAmount || 0), 0);
   const netGst = gstOutput - gstInput;
+
+  if (type === "gst") {
+    if (reportDetailMetrics) reportDetailMetrics.innerHTML = [
+      metricCard("Output GST", `INR ${money(gstOutput)}`),
+      metricCard("Input GST", `INR ${money(gstInput)}`),
+      metricCard("Net GST Payable", `INR ${money(netGst)}`),
+      metricCard("GST Records", String(invoices.length + purchaseOrders.length)),
+    ].join("");
+    renderReportTable(["GST Report", "Source", "Records", "Taxable / Total", "GST Amount"], [
+      ["Output GST", "Created Tax Invoices", String(invoices.length), `INR ${money(invoiceTotal)}`, `INR ${money(gstOutput)}`],
+      ["Input GST", "Created PO / WO", String(purchaseOrders.length), `INR ${money(expenseTotal)}`, `INR ${money(gstInput)}`],
+      ["Estimated Net GST", "Output GST - Input GST", "-", "-", `INR ${money(netGst)}`],
+      ["Compliance Note", "Use this as a working report before filing reconciliation.", "-", selectedReportPeriodLabel(), netGst >= 0 ? "Payable" : "Input credit"],
+    ]);
+    return;
+  }
+
   const receivables = unpaidTotal;
   const customerTotals = groupRecordsByName(
     invoices,
@@ -2564,6 +2689,9 @@ runRecurringDraftsBtn?.addEventListener("click", async () => {
     if (currentDashboardPage().startsWith("report-")) renderReportDetail(currentDashboardPage().replace("report-", ""));
   });
 });
+
+reportExportCsv?.addEventListener("click", downloadCurrentReportCsv);
+reportExportPrint?.addEventListener("click", printCurrentReport);
 
 workspaceTargetLinks.forEach((link) => {
   link.addEventListener("click", (event) => {

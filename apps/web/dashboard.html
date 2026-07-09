@@ -227,7 +227,8 @@
           <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-expenses"><strong>Expenses</strong><span>Expense tracking from created PO/WO records and vendor spend.</span></a>
           <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-po"><strong>PO / WO</strong><span>Purchase order and work order activity, value, drafts and created records.</span></a>
           <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-profit-loss"><strong>Profit and Loss</strong><span>Revenue minus expenses with monthly and yearly filters.</span></a>
-          <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-paid"><strong>Paid Reports</strong><span>Balance sheet, GST reports, growth graphs, customer aging and advanced analytics.</span></a>
+          <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-gst"><strong>GST Compliance</strong><span>Output GST, input GST and estimated net GST payable.</span></a>
+          <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-paid"><strong>Paid Reports</strong><span>Balance sheet, growth graphs, customer aging and advanced analytics.</span></a>
         </div>
         <div class="report-command compact">
           <div class="report-filter">
@@ -259,8 +260,13 @@
             <span id="reportDetailBadge" class="pill blue">Report</span>
             <h2 id="reportDetailTitle">Detailed Report</h2>
           </div>
-          <a class="ghost" href="/apps/web/dashboard.html#reports">Back to Reports</a>
+          <div class="row-actions report-export-actions">
+            <button id="reportExportCsv" class="ghost" type="button">Export CSV</button>
+            <button id="reportExportPrint" class="ghost" type="button">Print / PDF</button>
+            <a class="ghost" href="/apps/web/dashboard.html#reports">Back to Reports</a>
+          </div>
         </div>
+        <p id="reportExportStatus" class="inline-status" aria-live="polite"></p>
         <div class="report-detail-controls">
           <label data-report-filter="period">Report Period
             <select id="detailReportPeriod">
