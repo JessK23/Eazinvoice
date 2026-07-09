@@ -233,6 +233,9 @@ export const apiClient = {
   validateBusinessEmailSettings(token, body) {
     return request("/business/settings/email/test", { method: "POST", token, body });
   },
+  getBusinessComplianceDashboard(token) {
+    return request("/business/compliance-dashboard", { token });
+  },
   listApprovalRequests(token) {
     return request("/business/approvals", { token });
   },

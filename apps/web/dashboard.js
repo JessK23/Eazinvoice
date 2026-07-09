@@ -114,6 +114,10 @@ const adminAiUsageList = document.getElementById("adminAiUsageList");
 const businessWorkspaceBadge = document.getElementById("businessWorkspaceBadge");
 const businessWorkspaceNotice = document.getElementById("businessWorkspaceNotice");
 const businessWorkspaceNavGroup = document.getElementById("businessWorkspaceNavGroup");
+const complianceOverallBadge = document.getElementById("complianceOverallBadge");
+const complianceHealthCards = document.getElementById("complianceHealthCards");
+const complianceReadinessList = document.getElementById("complianceReadinessList");
+const gstComplianceSummary = document.getElementById("gstComplianceSummary");
 const teamMemberCount = document.getElementById("teamMemberCount");
 const approvalRequestCount = document.getElementById("approvalRequestCount");
 const apiKeyCount = document.getElementById("apiKeyCount");
@@ -140,9 +144,9 @@ const workspaceGroups = document.querySelectorAll(".workspace-group");
 
 let planCatalog = [
   { id: "free", label: "Free", amount: 0, monthlyAmount: 0, annualAmount: 0, billingCycle: "yearly", description: "Basic invoice creation and tracking", features: ["1 company", "limited invoices", "basic reports", "dashboard access", "free WordPress CTA plugin"] },
-  { id: "standard", label: "Standard", amount: 1800, monthlyAmount: 150, annualAmount: 1800, billingCycle: "yearly", description: "For growing small businesses", features: ["WhatsApp sharing", "payment links", "recurring drafts", "WordPress paid access"] },
-  { id: "pro", label: "Pro", amount: 7200, monthlyAmount: 600, annualAmount: 7200, billingCycle: "yearly", description: "For AI-assisted billing and reporting", features: ["AI invoices", "AI PO/WO", "advanced reports", "multiple businesses"] },
-  { id: "business", label: "Business", amount: 18000, monthlyAmount: 1500, annualAmount: 18000, billingCycle: "yearly", description: "For teams, approvals, API access, and analytics", features: ["team access", "approval workflows", "API access", "SMTP and gateway controls"] },
+  { id: "standard", label: "Standard", amount: 2388, monthlyAmount: 199, annualAmount: 2388, billingCycle: "yearly", description: "For growing small businesses", features: ["WhatsApp sharing", "payment links", "recurring drafts", "WordPress paid access"] },
+  { id: "pro", label: "Pro", amount: 5988, monthlyAmount: 499, annualAmount: 5988, billingCycle: "yearly", description: "For AI-assisted billing and reporting", features: ["AI invoices", "AI PO/WO", "advanced reports", "multiple businesses"] },
+  { id: "business", label: "Business", amount: 11988, monthlyAmount: 999, annualAmount: 11988, billingCycle: "yearly", description: "For teams, approvals, API access, and analytics", features: ["team access", "approval workflows", "API access", "SMTP and gateway controls"] },
 ];
 
 let currentSubscription = { plan: "free", amount: 0, status: "active" };
@@ -158,6 +162,7 @@ let dashboardTeamMembers = [];
 let dashboardApprovalRequests = [];
 let dashboardApiKeys = [];
 let dashboardBusinessSettings = { emailSettings: {}, paymentSettings: {}, complianceProfile: {} };
+let dashboardBusinessCompliance = null;
 let razorpayCheckoutPromise = null;
 let pendingAiDraftCommand = null;
 let pendingAiDraftResult = null;
@@ -1879,6 +1884,57 @@ function renderPoWorkspace(purchaseOrders) {
   });
 }
 
+function renderComplianceDashboard(enabled) {
+  const data = dashboardBusinessCompliance || {};
+  const readiness = data.readiness || {};
+  const financials = data.financials || {};
+  const gst = data.gst || {};
+  const review = data.complianceReview || {};
+  const readyCount = ["compliance", "gst", "smtp", "gateway"].filter((key) => readiness[key]).length;
+  if (complianceOverallBadge) {
+    complianceOverallBadge.textContent = enabled
+      ? readiness.overall ? "Ready" : `${readyCount}/4 ready`
+      : "Business required";
+    complianceOverallBadge.className = `pill ${enabled && readiness.overall ? "blue" : "gold"}`;
+  }
+  if (complianceHealthCards) {
+    complianceHealthCards.innerHTML = [
+      ["Compliance", readiness.compliance ? "Ready" : "Review", review.message || "Profile not checked"],
+      ["GST Position", `INR ${money(gst.netGstPayable || 0)}`, `Output INR ${money(gst.outputGst || 0)} less input INR ${money(gst.inputGst || 0)}`],
+      ["SMTP", readiness.smtp ? "Ready" : "Not ready", data.communication?.status || "not_configured"],
+      ["Gateway", readiness.gateway ? "Ready" : "Not ready", data.gateway?.paymentLinkEnabled ? "Payment links enabled" : "Payment links not enabled"],
+      ["Profit", `INR ${money(financials.profit || 0)}`, `Revenue INR ${money(financials.revenue || 0)} less expenses INR ${money(financials.expenses || 0)}`],
+      ["Receivables", `INR ${money(financials.receivables || 0)}`, `Paid INR ${money(financials.paid || 0)}`],
+    ].map(([title, value, hint]) => `
+      <article class="quick-card">
+        <strong>${escapeHtml(title)}</strong>
+        <span>${escapeHtml(hint)}</span>
+        <strong>${escapeHtml(value)}</strong>
+      </article>
+    `).join("");
+  }
+  if (complianceReadinessList) {
+    const missing = review.missing || [];
+    const issues = review.issues || [];
+    complianceReadinessList.innerHTML = `
+      <strong>Compliance readiness</strong>
+      <p>${escapeHtml(review.message || "Business compliance profile has not been checked yet.")}</p>
+      ${missing.length ? `<p class="hint"><strong>Missing:</strong> ${escapeHtml(missing.join(", "))}</p>` : ""}
+      ${issues.length ? `<p class="hint"><strong>Issues:</strong> ${escapeHtml(issues.join(", "))}</p>` : ""}
+      <p class="hint">Financial year starts in month ${escapeHtml(review.fiscalYearStartMonth || 4)}.</p>
+    `;
+  }
+  if (gstComplianceSummary) {
+    gstComplianceSummary.innerHTML = `
+      <strong>GST and audit summary</strong>
+      <p>Invoices: ${escapeHtml(gst.invoiceCount || 0)} | PO/WO: ${escapeHtml(gst.purchaseOrderCount || 0)}</p>
+      <p>Output GST: INR ${money(gst.outputGst || 0)}</p>
+      <p>Input GST: INR ${money(gst.inputGst || 0)}</p>
+      <p><strong>Estimated net GST payable: INR ${money(gst.netGstPayable || 0)}</strong></p>
+    `;
+  }
+}
+
 function renderBusinessWorkspace() {
   const enabled = activePlanAllows("teamAccess") && activePlanAllows("approvals") && activePlanAllows("apiAccess");
   if (businessWorkspaceBadge) {
@@ -1898,6 +1954,7 @@ function renderBusinessWorkspace() {
   if (teamMemberCount) teamMemberCount.textContent = String(dashboardTeamMembers.length);
   if (approvalRequestCount) approvalRequestCount.textContent = String(dashboardApprovalRequests.length);
   if (apiKeyCount) apiKeyCount.textContent = String(dashboardApiKeys.filter((key) => key.status !== "revoked").length);
+  renderComplianceDashboard(enabled);
   const emailSettings = dashboardBusinessSettings.emailSettings || {};
   const paymentSettings = dashboardBusinessSettings.paymentSettings || {};
   const complianceProfile = dashboardBusinessSettings.complianceProfile || {};
@@ -2034,19 +2091,22 @@ async function loadBusinessWorkspace() {
     dashboardApprovalRequests = [];
     dashboardApiKeys = [];
     dashboardBusinessSettings = { emailSettings: {}, paymentSettings: {}, complianceProfile: {} };
+    dashboardBusinessCompliance = null;
     renderBusinessWorkspace();
     return;
   }
-  const [members, approvals, apiKeys, settings] = await Promise.all([
+  const [members, approvals, apiKeys, settings, compliance] = await Promise.all([
     apiClient.listTeamMembers(token).catch(() => []),
     apiClient.listApprovalRequests(token).catch(() => []),
     apiClient.listApiKeys(token).catch(() => []),
     apiClient.getBusinessSettings(token).catch(() => ({ emailSettings: {}, paymentSettings: {}, complianceProfile: {} })),
+    apiClient.getBusinessComplianceDashboard(token).catch(() => null),
   ]);
   dashboardTeamMembers = members;
   dashboardApprovalRequests = approvals;
   dashboardApiKeys = apiKeys;
   dashboardBusinessSettings = settings;
+  dashboardBusinessCompliance = compliance;
   renderBusinessWorkspace();
 }
 
@@ -2264,6 +2324,7 @@ businessEmailSettingsForm?.addEventListener("submit", async (event) => {
     });
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = "Business email settings saved. SMTP password is hidden after saving.";
     setInlineStatus(businessEmailStatus, "Business email settings saved. SMTP password is hidden after saving.", "success");
+    dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token).catch(() => dashboardBusinessCompliance);
     renderBusinessWorkspace();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not save email settings.";
@@ -2309,6 +2370,7 @@ businessEmailTestButton?.addEventListener("click", async () => {
         : `SMTP settings need attention: ${status}`,
       status === "ready" ? "success" : "error",
     );
+    dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token).catch(() => dashboardBusinessCompliance);
     renderBusinessWorkspace();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not validate SMTP settings.";
@@ -2331,6 +2393,7 @@ businessPaymentSettingsForm?.addEventListener("submit", async (event) => {
     });
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = "Business Razorpay settings saved. Secrets are hidden after saving.";
     setInlineStatus(businessPaymentStatus, "Business Razorpay settings saved. Secrets are hidden after saving.", "success");
+    dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token).catch(() => dashboardBusinessCompliance);
     renderBusinessWorkspace();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not save payment gateway settings.";
@@ -2359,6 +2422,7 @@ businessComplianceForm?.addEventListener("submit", async (event) => {
     });
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = "Compliance profile saved for reports, audit trails, and future GST exports.";
     setInlineStatus(businessComplianceStatus, "Compliance profile saved for reports, audit trails, and future GST exports.", "success");
+    dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token).catch(() => dashboardBusinessCompliance);
     renderBusinessWorkspace();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not save compliance profile.";

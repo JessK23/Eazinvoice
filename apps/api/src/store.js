@@ -858,6 +858,7 @@ export function createStore(seed = {}, options = {}) {
         paymentLinkEnabled: Boolean(paymentSettings.paymentLinkEnabled),
       },
       complianceProfile: {
+        entityType: String(complianceProfile.entityType || "").trim().toLowerCase(),
         legalName: String(complianceProfile.legalName || "").trim(),
         gstRegistered: Boolean(complianceProfile.gstRegistered),
         gstin: String(complianceProfile.gstin || "").trim().toUpperCase(),
@@ -872,8 +873,49 @@ export function createStore(seed = {}, options = {}) {
     };
   }
 
+  function assessComplianceProfile(profile = {}, user = {}) {
+    const entityType = profile.entityType || user?.subscriberType || "individual";
+    const required = [
+      ["legalName", "legal name"],
+      ["pan", "PAN"],
+      ["state", "state"],
+      ["address", "registered address"],
+      ["placeOfBusiness", "place of business"],
+      ["invoicePrefix", "invoice prefix"],
+    ];
+    const missing = required
+      .filter(([field]) => !String(profile[field] || "").trim())
+      .map(([, label]) => label);
+    const issues = [];
+    const panPattern = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+    const tanPattern = /^[A-Z]{4}[0-9]{5}[A-Z]$/;
+    const gstinPattern = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+
+    if (profile.pan && !panPattern.test(profile.pan)) issues.push("PAN format should be ABCDE1234F");
+    if (profile.tan && !tanPattern.test(profile.tan)) issues.push("TAN format should be ABCD12345E");
+    if (profile.gstRegistered && !profile.gstin) missing.push("GSTIN");
+    if (profile.gstin && !gstinPattern.test(profile.gstin)) issues.push("GSTIN format is invalid");
+    if (profile.gstRegistered && profile.gstin && profile.pan && profile.gstin.slice(2, 12) !== profile.pan) {
+      issues.push("GSTIN PAN segment should match the PAN field");
+    }
+    const fiscalYearStartMonth = Math.min(12, Math.max(1, Number(profile.fiscalYearStartMonth || 4)));
+    return {
+      entityType,
+      fiscalYearStartMonth,
+      ready: missing.length === 0 && issues.length === 0,
+      gstReady: !profile.gstRegistered || Boolean(profile.gstin && !issues.some((issue) => issue.includes("GSTIN"))),
+      missing,
+      issues,
+      status: missing.length || issues.length ? "attention_required" : "ready",
+      message: missing.length || issues.length
+        ? [...missing.map((item) => `missing ${item}`), ...issues].join("; ")
+        : "Compliance profile is ready for GST/audit reports.",
+    };
+  }
+
   function sanitizeBusinessSettings(settings) {
     if (!settings) return null;
+    const complianceReview = assessComplianceProfile(settings.complianceProfile || {});
     return clone({
       ...settings,
       emailSettings: {
@@ -891,6 +933,8 @@ export function createStore(seed = {}, options = {}) {
           ? (String(settings.paymentSettings.keyId).startsWith("rzp_live_") ? "live_ready" : "test_mode")
           : "not_configured",
       },
+      complianceStatus: complianceReview.status,
+      complianceReview,
     });
   }
 
@@ -989,6 +1033,73 @@ export function createStore(seed = {}, options = {}) {
     stored.emailSettings.lastTestStatus = issues.length ? issues.join("; ") : "ready";
     persist();
     return sanitizeBusinessSettings(stored);
+  }
+
+  function getBusinessComplianceDashboard(user, companyId = null) {
+    if (!user?.id) throw new Error("Authentication required");
+    const settings = getBusinessSettingsForUser(user, companyId) || {
+      emailSettings: {},
+      paymentSettings: {},
+      complianceProfile: {},
+      complianceReview: assessComplianceProfile({}, user),
+    };
+    const invoices = listInvoicesForUser(user).filter((invoice) => (
+      String(invoice.status || "").toLowerCase() === "created"
+      && String(invoice.currency || "INR").toUpperCase() === "INR"
+      && (!companyId || invoice.companyId === companyId)
+    ));
+    const purchaseOrders = listPurchaseOrdersForUser(user).filter((po) => (
+      String(po.status || "").toLowerCase() === "created"
+      && String(po.currency || "INR").toUpperCase() === "INR"
+      && (!companyId || po.companyId === companyId)
+    ));
+    const outputGst = invoices.reduce((sum, invoice) => sum + toNumber(invoice.taxAmount, 0), 0);
+    const inputGst = purchaseOrders.reduce((sum, po) => sum + toNumber(po.taxAmount, 0), 0);
+    const revenue = invoices.reduce((sum, invoice) => sum + toNumber(invoice.total, 0), 0);
+    const expenses = purchaseOrders.reduce((sum, po) => sum + toNumber(po.total, 0), 0);
+    const paid = invoices.reduce((sum, invoice) => sum + toNumber(invoice.paidAmount, 0), 0);
+    const receivables = invoices.reduce((sum, invoice) => sum + toNumber(invoice.balanceAmount, Math.max(0, toNumber(invoice.total, 0) - toNumber(invoice.paidAmount, 0))), 0);
+    const payables = expenses;
+    const paymentSettings = settings.paymentSettings || {};
+    const emailSettings = settings.emailSettings || {};
+    const gatewayReady = Boolean(paymentSettings.keyId && paymentSettings.keySecretConfigured && paymentSettings.webhookSecretConfigured && paymentSettings.paymentLinkEnabled);
+    const smtpReady = Boolean(emailSettings.smtpHost && emailSettings.smtpPort && emailSettings.smtpUser && emailSettings.fromEmail && emailSettings.smtpPassConfigured);
+    const complianceReview = settings.complianceReview || assessComplianceProfile(settings.complianceProfile || {}, user);
+    return clone({
+      complianceProfile: settings.complianceProfile || {},
+      complianceReview,
+      readiness: {
+        compliance: complianceReview.ready,
+        gst: complianceReview.gstReady,
+        smtp: smtpReady,
+        gateway: gatewayReady,
+        overall: complianceReview.ready && smtpReady && gatewayReady,
+      },
+      financials: {
+        revenue,
+        expenses,
+        profit: revenue - expenses,
+        paid,
+        receivables,
+        payables,
+      },
+      gst: {
+        outputGst,
+        inputGst,
+        netGstPayable: outputGst - inputGst,
+        invoiceCount: invoices.length,
+        purchaseOrderCount: purchaseOrders.length,
+      },
+      communication: {
+        smtpReady,
+        status: emailSettings.lastTestStatus || (smtpReady ? "ready" : "not_configured"),
+      },
+      gateway: {
+        ready: gatewayReady,
+        status: paymentSettings.status || "not_configured",
+        paymentLinkEnabled: Boolean(paymentSettings.paymentLinkEnabled),
+      },
+    });
   }
 
   function listTeamMembersForUser(user) {
@@ -1631,6 +1742,7 @@ export function createStore(seed = {}, options = {}) {
     getRawBusinessSettingsForUser,
     upsertBusinessSettings,
     validateBusinessEmailSettings,
+    getBusinessComplianceDashboard,
     createApprovalRequest,
     listApprovalRequestsForUser,
     decideApprovalRequest,

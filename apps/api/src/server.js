@@ -1948,6 +1948,18 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/business/compliance-dashboard" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.getBusinessComplianceDashboard(user, {
+          previewPlan,
+          companyId: url.searchParams.get("companyId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+
     if (url.pathname === "/business/team" && req.method === "POST") {
       try {
         const body = await readBody(req);

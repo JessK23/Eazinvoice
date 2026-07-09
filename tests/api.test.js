@@ -2330,6 +2330,56 @@ test("business tier unlocks team approvals and API keys", () => {
   assert.equal(settings.paymentSettings.status, "live_ready");
   assert.equal(settings.complianceProfile.gstin, "27ABCDE1234F1Z5");
 
+  const initialCompliance = api.getBusinessComplianceDashboard(user);
+  assert.equal(initialCompliance.readiness.compliance, false);
+  assert.ok(initialCompliance.complianceReview.missing.includes("state"));
+
+  api.updateBusinessSettings(user, {
+    complianceProfile: {
+      legalName: "Business Owner LLP",
+      entityType: "company",
+      gstRegistered: true,
+      gstin: "27ABCDE1234F1Z5",
+      pan: "ABCDE1234F",
+      state: "Maharashtra",
+      address: "Pune, Maharashtra",
+      placeOfBusiness: "Pune",
+      invoicePrefix: "BO",
+    },
+  });
+
+  api.createInvoice({
+    ownerUserId: user.id,
+    customerName: "Compliance Buyer",
+    currency: "INR",
+    status: "created",
+    invoiceDate: "2026-07-01",
+    taxRate: 18,
+    items: [{ description: "Business consulting", quantity: 1, rate: 10000 }],
+  });
+  api.createPurchaseOrder({
+    ownerUserId: user.id,
+    vendorName: "Compliance Vendor",
+    currency: "INR",
+    status: "created",
+    taxRate: 18,
+    items: [{ description: "Vendor service", quantity: 1, rate: 2000 }],
+  });
+
+  const complianceDashboard = api.getBusinessComplianceDashboard(user);
+  assert.equal(complianceDashboard.readiness.compliance, true);
+  assert.equal(complianceDashboard.readiness.gst, true);
+  assert.equal(complianceDashboard.readiness.smtp, true);
+  assert.equal(complianceDashboard.readiness.gateway, true);
+  assert.equal(complianceDashboard.readiness.overall, true);
+  assert.equal(complianceDashboard.gst.outputGst, 1800);
+  assert.equal(complianceDashboard.gst.inputGst, 360);
+  assert.equal(complianceDashboard.gst.netGstPayable, 1440);
+  assert.equal(complianceDashboard.financials.revenue, 11800);
+  assert.equal(complianceDashboard.financials.expenses, 2360);
+  assert.equal(complianceDashboard.financials.profit, 9440);
+  assert.equal(complianceDashboard.financials.receivables, 11800);
+
   const invitee = api.createUser({ name: "Accountant", email: "accountant@example.com" });
   const accepted = api.acceptTeamInvite(invitee, member.inviteToken);
   assert.equal(accepted.status, "active");
@@ -2375,6 +2425,9 @@ test("business workspace endpoints honor plan preview and gating", async () => {
     const blocked = await request("/business/api-keys", { token: signup.payload.token });
     assert.equal(blocked.response.status, 402);
 
+    const blockedCompliance = await request("/business/compliance-dashboard", { token: signup.payload.token });
+    assert.equal(blockedCompliance.response.status, 402);
+
     const created = await request("/business/api-keys", {
       method: "POST",
       token: signup.payload.token,
@@ -2409,6 +2462,16 @@ test("business workspace endpoints honor plan preview and gating", async () => {
           webhookSecret: "webhook",
           paymentLinkEnabled: true,
         },
+        complianceProfile: {
+          legalName: "EazInvoice Admin",
+          gstRegistered: true,
+          gstin: "27ABCDE1234F1Z5",
+          pan: "ABCDE1234F",
+          state: "Maharashtra",
+          address: "Pune, Maharashtra",
+          placeOfBusiness: "Pune",
+          invoicePrefix: "EA",
+        },
       },
     });
     assert.equal(settings.response.status, 200);
@@ -2416,6 +2479,7 @@ test("business workspace endpoints honor plan preview and gating", async () => {
     assert.equal(settings.payload.emailSettings.smtpPassConfigured, true);
     assert.equal(settings.payload.paymentSettings.keySecret, "");
     assert.equal(settings.payload.paymentSettings.status, "test_mode");
+    assert.equal(settings.payload.complianceReview.status, "ready");
 
     const validated = await request("/business/settings/email/test", {
       method: "POST",
@@ -2433,6 +2497,14 @@ test("business workspace endpoints honor plan preview and gating", async () => {
     });
     assert.equal(validated.response.status, 200);
     assert.equal(validated.payload.emailSettings.lastTestStatus, "ready");
+
+    const compliance = await request("/business/compliance-dashboard", {
+      token: signup.payload.token,
+      previewPlan: "business",
+    });
+    assert.equal(compliance.response.status, 200);
+    assert.equal(compliance.payload.readiness.compliance, true);
+    assert.equal(compliance.payload.readiness.gateway, true);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     restoreAdminEmail();

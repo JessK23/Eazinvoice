@@ -281,6 +281,12 @@ export function createApi(deps = {}) {
       return store.validateBusinessEmailSettings(user, input);
     },
 
+    getBusinessComplianceDashboard(user, options = {}) {
+      if (!user?.id) throw new Error("Authentication required");
+      this.requireFeature(user, "teamAccess", options);
+      return store.getBusinessComplianceDashboard(user, options.companyId || null);
+    },
+
     listApprovalRequests(user, options = {}) {
       this.requireFeature(user, "approvals", options);
       return store.listApprovalRequestsForUser(user);
