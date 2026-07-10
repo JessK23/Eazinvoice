@@ -84,9 +84,25 @@ function featureRows(summary) {
   return rows.map(([label, enabled, tier]) => `
     <div class="entitlement-row">
       <span>${escapeHtml(label)}</span>
-      <strong>${enabled ? "Unlocked" : `Upgrade to ${tier}`}</strong>
+      <strong>${enabled ? "Unlocked" : `Locked - ${tier}+`}</strong>
     </div>
   `).join("");
+}
+
+function tierAuditRows(catalog = []) {
+  return catalog
+    .filter((plan) => (plan.plan || plan.id) !== "free")
+    .map((plan) => {
+      const monthlyAmount = Number(plan.monthlyAmount ?? plan.amount ?? 0);
+      const annualAmount = Number(plan.annualAmount ?? (monthlyAmount * 12));
+      return `
+        <div class="entitlement-row">
+          <span>${escapeHtml(plan.label || plan.plan)} checkout</span>
+          <strong>INR ${money(annualAmount)} yearly (${Math.round(annualAmount * 100)} paise)</strong>
+        </div>
+      `;
+    })
+    .join("");
 }
 
 function renderUsage(summary, subscriptions = []) {
@@ -125,7 +141,7 @@ function renderUsage(summary, subscriptions = []) {
   }
   if (usageNote) {
     const preview = summary?.preview?.enabled ? " Admin preview is active and does not change billing." : "";
-    usageNote.textContent = `Paid plans display monthly pricing but collect yearly billing through Razorpay.${preview}`;
+    usageNote.textContent = `Paid plans show monthly pricing for easy comparison, but Razorpay collects the full yearly amount at checkout.${preview}`;
   }
 }
 
@@ -154,6 +170,7 @@ function renderPlanCards(catalog = [], activePlan = "free") {
         <p class="hint">${planId === "free" ? "No yearly billing" : `Collected yearly: INR ${money(annualAmount)}`}</p>
         <p class="plan-summary">${escapeHtml(plan.description || (plan.highlights || []).join(", "))}</p>
         <div class="notice compact">${escapeHtml(aiLine)}</div>
+        <div class="notice compact">${planId === "free" ? "Free features stay available forever." : `Razorpay order should be INR ${money(annualAmount)} yearly (${Math.round(annualAmount * 100)} paise).`}</div>
         <div class="badge-row">
           ${(plan.highlights || []).slice(0, 4).map((item) => `<span class="pill blue">${escapeHtml(item)}</span>`).join("")}
         </div>
@@ -186,6 +203,10 @@ function renderManagement(summary, subscriptions = []) {
       <div class="notice compact">
         <strong>Feature access</strong>
         ${featureRows(summary)}
+      </div>
+      <div class="notice compact">
+        <strong>Checkout verification</strong>
+        ${tierAuditRows(currentCatalog)}
       </div>
     </div>
     <div class="subscription-history">

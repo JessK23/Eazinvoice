@@ -834,6 +834,59 @@ test("admin access is restricted to the configured admin email", async () => {
   }
 });
 
+test("admin subscription audit exposes yearly tier checkout amounts", async () => {
+  const restoreAdminEmail = useTestAdminEmail();
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  try {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email: TEST_ADMIN_EMAIL, phone: "9665444554" },
+    });
+    const admin = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "EazInvoice Admin",
+        email: TEST_ADMIN_EMAIL,
+        password: "AdminSecure123",
+        phone: "9665444554",
+        otp: otp.payload.devOtp,
+      },
+    });
+    assert.equal(admin.response.status, 201);
+
+    const audit = await request("/admin/subscription-audit", { token: admin.payload.token });
+    assert.equal(audit.response.status, 200);
+    const catalog = Object.fromEntries(audit.payload.catalog.map((plan) => [plan.plan, plan]));
+    assert.equal(catalog.standard.monthlyAmount, 199);
+    assert.equal(catalog.standard.annualAmount, 2388);
+    assert.equal(catalog.standard.razorpayAmountPaise, 238800);
+    assert.equal(catalog.pro.monthlyAmount, 499);
+    assert.equal(catalog.pro.annualAmount, 5988);
+    assert.equal(catalog.pro.razorpayAmountPaise, 598800);
+    assert.equal(catalog.business.monthlyAmount, 999);
+    assert.equal(catalog.business.annualAmount, 11988);
+    assert.equal(catalog.business.razorpayAmountPaise, 1198800);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    restoreAdminEmail();
+  }
+});
+
 test("paid subscriptions require submitted KYC documents while free does not", async () => {
   const server = createServer({ persist: false, useSupabaseEmailOtp: false });
   await new Promise((resolve) => server.listen(0, resolve));

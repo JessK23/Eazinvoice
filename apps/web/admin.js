@@ -16,6 +16,7 @@ const adminCompany = document.getElementById("adminCompany");
 const adminIndividual = document.getElementById("adminIndividual");
 const adminGroup = document.getElementById("adminGroup");
 const adminSubscriptions = document.getElementById("adminSubscriptions");
+const subscriptionTierAudit = document.getElementById("subscriptionTierAudit");
 const billingOrderAudit = document.getElementById("billingOrderAudit");
 const gatewayManagement = document.getElementById("gatewayManagement");
 const recurringSchedulerPanel = document.getElementById("recurringSchedulerPanel");
@@ -72,6 +73,32 @@ function renderAdminSubscriptions(payload) {
   if (!adminSubscriptions) return;
   const subscriptions = payload?.subscriptions || [];
   const summary = payload?.summary || {};
+  const catalog = payload?.catalog || [];
+  if (subscriptionTierAudit) {
+    subscriptionTierAudit.innerHTML = `
+      <div class="invoice-card gateway-card">
+        <div>
+          <div class="panel-head compact">
+            <div>
+              <strong>Paid Tier Verification</strong>
+              <div class="hint">Use this to confirm live pricing, yearly collection, and Razorpay order amounts before deeper paid-feature testing.</div>
+            </div>
+            ${badge(summary.syncIssues ? "SYNC REVIEW" : "AUDIT READY", summary.syncIssues ? "gold" : "blue")}
+          </div>
+          <div class="metric-grid gateway-metrics">
+            ${catalog.filter((plan) => plan.plan !== "free").map((plan) => `
+              <article class="metric-card">
+                <span>${escapeHtml(plan.label || plan.plan)}</span>
+                <strong>${escapeHtml(plan.monthlyAmount)} / month</strong>
+                <small>${escapeHtml(plan.annualAmount)} yearly - ${escapeHtml(plan.razorpayAmountPaise)} paise</small>
+              </article>
+            `).join("")}
+          </div>
+          <div class="notice compact">Admin preview does not create subscriptions. Real activation must come through verified Razorpay payment or an admin-controlled lifecycle action.</div>
+        </div>
+      </div>
+    `;
+  }
   adminSubscriptions.innerHTML = `
     <div class="metric-grid gateway-metrics">
       <article class="metric-card"><span>Total</span><strong>${escapeHtml(summary.total ?? subscriptions.length)}</strong></article>

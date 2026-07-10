@@ -1314,6 +1314,17 @@ export function createServer(options = {}) {
         sendJson(res, 403, { error: "Forbidden" });
         return;
       }
+      const catalog = api.listPlans().map((plan) => ({
+        plan: plan.plan,
+        label: plan.label,
+        monthlyAmount: plan.monthlyAmount ?? plan.amount ?? 0,
+        annualAmount: plan.annualAmount ?? annualPlanCharge(plan),
+        razorpayAmountPaise: Math.round(Number(plan.annualAmount ?? annualPlanCharge(plan)) * 100),
+        billingCycle: plan.billingCycle || "yearly",
+        expected: plan.plan === "free"
+          ? "No paid checkout"
+          : `${plan.currency || "INR"} ${plan.monthlyAmount ?? plan.amount}/month collected yearly as ${plan.currency || "INR"} ${plan.annualAmount ?? annualPlanCharge(plan)}`,
+      }));
       const users = api.listUsers();
       const usersById = new Map(users.map((entry) => [entry.id, entry]));
       const subscriptions = api.listSubscriptions();
@@ -1361,7 +1372,7 @@ export function createServer(options = {}) {
         if (subscription.entitlementSync?.status === "mismatch" || subscription.entitlementSync?.status === "failed") acc.syncIssues += 1;
         return acc;
       }, { total: 0, paid: 0, syncIssues: 0, byStatus: {} });
-      sendJson(res, 200, { summary, subscriptions: rows, billingOrders });
+      sendJson(res, 200, { summary, catalog, subscriptions: rows, billingOrders });
       return;
     }
 

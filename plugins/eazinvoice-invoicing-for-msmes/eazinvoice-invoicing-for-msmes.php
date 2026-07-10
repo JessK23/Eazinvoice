@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'EAZINVOICE_VERSION', '1.0.2' );
+define( 'EAZINVOICE_VERSION', '1.0.3' );
 define( 'EAZINVOICE_PLUGIN_FILE', __FILE__ );
 define( 'EAZINVOICE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'EAZINVOICE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
