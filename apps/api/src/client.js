@@ -212,8 +212,11 @@ export const apiClient = {
     const suffix = query.toString() ? `?${query.toString()}` : "";
     return request(`/reports/summary${suffix}`, { token });
   },
-  listTeamMembers(token) {
-    return request("/business/team", { token });
+  listTeamMembers(token, options = {}) {
+    return request(`/business/team${queryString(options)}`, { token });
+  },
+  listBusinessWorkspaces(token) {
+    return request("/business/workspaces", { token });
   },
   createTeamMember(token, body) {
     return request("/business/team", { method: "POST", token, body });
@@ -224,8 +227,8 @@ export const apiClient = {
   acceptTeamInvite(token, inviteToken) {
     return request("/business/team/accept", { method: "POST", token, body: { inviteToken } });
   },
-  getBusinessSettings(token) {
-    return request("/business/settings", { token });
+  getBusinessSettings(token, options = {}) {
+    return request(`/business/settings${queryString(options)}`, { token });
   },
   updateBusinessSettings(token, body) {
     return request("/business/settings", { method: "PATCH", token, body });
@@ -233,11 +236,17 @@ export const apiClient = {
   validateBusinessEmailSettings(token, body) {
     return request("/business/settings/email/test", { method: "POST", token, body });
   },
-  getBusinessComplianceDashboard(token) {
-    return request("/business/compliance-dashboard", { token });
+  getBusinessComplianceDashboard(token, options = {}) {
+    return request(`/business/compliance-dashboard${queryString(options)}`, { token });
   },
-  listApprovalRequests(token) {
-    return request("/business/approvals", { token });
+  updateComplianceTask(token, taskId, body) {
+    return request(`/business/compliance-tasks/${encodeURIComponent(taskId)}`, { method: "PATCH", token, body });
+  },
+  sendComplianceReminder(token, taskId, body = {}) {
+    return request(`/business/compliance-tasks/${encodeURIComponent(taskId)}/reminder`, { method: "POST", token, body });
+  },
+  listApprovalRequests(token, options = {}) {
+    return request(`/business/approvals${queryString(options)}`, { token });
   },
   createApprovalRequest(token, body) {
     return request("/business/approvals", { method: "POST", token, body });
@@ -245,13 +254,13 @@ export const apiClient = {
   decideApprovalRequest(token, approvalId, body) {
     return request(`/business/approvals/${approvalId}`, { method: "PATCH", token, body });
   },
-  listApiKeys(token) {
-    return request("/business/api-keys", { token });
+  listApiKeys(token, options = {}) {
+    return request(`/business/api-keys${queryString(options)}`, { token });
   },
   createApiKey(token, body) {
     return request("/business/api-keys", { method: "POST", token, body });
   },
-  revokeApiKey(token, apiKeyId) {
-    return request(`/business/api-keys/${apiKeyId}`, { method: "DELETE", token });
+  revokeApiKey(token, apiKeyId, options = {}) {
+    return request(`/business/api-keys/${apiKeyId}${queryString(options)}`, { method: "DELETE", token });
   },
 };

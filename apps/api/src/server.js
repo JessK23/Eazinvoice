@@ -68,6 +68,35 @@ function fillInviteTemplate(template, values = {}) {
     .replace(/\{\{\s*inviteLink\s*\}\}/gi, values.inviteLink || "");
 }
 
+function buildComplianceReminderMessage(emailSettings = {}, task = {}, recipient = "") {
+  const businessName = emailSettings.senderName || "EazInvoice workspace";
+  const complianceName = task.complianceName || task.id || "Compliance task";
+  const dueDate = task.dueDate || task.dueDateLabel || "not set";
+  const documents = Array.isArray(task.requiredDocuments) && task.requiredDocuments.length
+    ? task.requiredDocuments.join(", ")
+    : "As applicable";
+  const lines = [
+    "Hi,",
+    "",
+    `This is a compliance reminder from ${businessName}.`,
+    "",
+    `Task: ${complianceName}`,
+    `Department: ${task.department || "Compliance"}`,
+    `Due date: ${dueDate}`,
+    `Responsible: ${task.responsiblePerson || "Not assigned"}`,
+    `Required documents: ${documents}`,
+    task.notes ? `Notes: ${task.notes}` : "",
+    "",
+    "Please review this task in your EazInvoice Business Workspace.",
+    "",
+    "EazInvoice",
+  ];
+  return {
+    to: recipient,
+    subject: `Compliance reminder: ${complianceName}`,
+    text: lines.filter((line) => line !== "").join("\n"),
+  };
+}
 function buildTeamInviteMessage(emailSettings = {}, member = {}, user = {}, req = null) {
   const appUrl = getPublicAppUrl(req);
   const inviteLink = `${appUrl}/apps/web/auth.html?tab=signup&invite=${encodeURIComponent(member.inviteToken || "")}`;
@@ -1875,9 +1904,21 @@ export function createServer(options = {}) {
 
     if (url.pathname === "/business/team" && req.method === "GET") {
       try {
-        sendJson(res, 200, api.listTeamMembers(user, { previewPlan }));
+        sendJson(res, 200, api.listTeamMembers(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        }));
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/business/workspaces" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listBusinessWorkspaces(user));
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
       }
       return;
     }
@@ -1886,6 +1927,7 @@ export function createServer(options = {}) {
       try {
         sendJson(res, 200, api.getBusinessSettings(user, {
           previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
           companyId: url.searchParams.get("companyId") || null,
         }));
       } catch (error) {
@@ -1915,6 +1957,7 @@ export function createServer(options = {}) {
         if (body.sendTestEmail && status === "ready") {
           const deliverySettings = api.getBusinessEmailDeliverySettings(user, {
             previewPlan,
+            workspaceOwnerUserId: body.workspaceOwnerUserId || null,
             companyId: body.companyId || null,
           });
           const recipient = String(
@@ -1963,10 +2006,101 @@ export function createServer(options = {}) {
       try {
         sendJson(res, 200, api.getBusinessComplianceDashboard(user, {
           previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
           companyId: url.searchParams.get("companyId") || null,
         }));
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/business/compliance-tasks/") && url.pathname.endsWith("/reminder") && req.method === "POST") {
+      try {
+        const taskId = decodeURIComponent(url.pathname.split("/")[3] || "");
+        const body = await readBody(req);
+        const compliance = api.getBusinessComplianceDashboard(user, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          companyId: body.companyId || null,
+        });
+        const task = (compliance.complianceTasks || []).find((entry) => entry.id === taskId);
+        if (!task) {
+          sendJson(res, 404, { error: "Compliance task not found" });
+          return;
+        }
+        if (task.reminderEnabled === false) {
+          sendJson(res, 400, { error: "Reminder is disabled for this compliance task." });
+          return;
+        }
+        const deliverySettings = api.getBusinessEmailDeliverySettings(user, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          companyId: body.companyId || null,
+        });
+        const recipient = String(
+          body.recipient
+          || deliverySettings.replyToEmail
+          || deliverySettings.fromEmail
+          || user.email
+          || "",
+        ).trim();
+        const emailReady = deliverySettings.smtpHost
+          && deliverySettings.smtpPort
+          && deliverySettings.smtpUser
+          && deliverySettings.smtpPass
+          && deliverySettings.fromEmail;
+        if (!emailReady) {
+          sendJson(res, 400, { error: "Configure and validate Business SMTP settings before sending compliance reminders." });
+          return;
+        }
+        try {
+          await sendSmtpMail(deliverySettings, buildComplianceReminderMessage(deliverySettings, task, recipient));
+          const updatedTask = api.recordComplianceReminderDelivery(user, taskId, {
+            companyId: body.companyId || null,
+            workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+            to: recipient,
+            status: "sent",
+            message: `Reminder sent to ${recipient}`,
+          }, { previewPlan });
+          const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-compliance-reminder-sent");
+          sendJson(res, 200, {
+            ...updatedTask,
+            deliveryStatus: "sent",
+            deliveryMessage: `Compliance reminder sent to ${recipient}`,
+            businessWorkspaceSync,
+          });
+        } catch (deliveryError) {
+          const updatedTask = api.recordComplianceReminderDelivery(user, taskId, {
+            companyId: body.companyId || null,
+            workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+            to: recipient,
+            status: "failed",
+            message: deliveryError.message,
+          }, { previewPlan });
+          const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-compliance-reminder-failed");
+          sendJson(res, 400, {
+            error: `Compliance reminder failed: ${deliveryError.message}`,
+            ...updatedTask,
+            deliveryStatus: "failed",
+            deliveryMessage: deliveryError.message,
+            businessWorkspaceSync,
+          });
+        }
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+    if (url.pathname.startsWith("/business/compliance-tasks/") && req.method === "PATCH") {
+      try {
+        const taskId = decodeURIComponent(url.pathname.split("/").pop() || "");
+        const body = await readBody(req);
+        const task = api.updateComplianceTask(user, taskId, body, { previewPlan });
+        const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-compliance-task-update");
+        sendJson(res, 200, { ...task, businessWorkspaceSync });
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 404, { error: error.message });
       }
       return;
     }
@@ -1980,6 +2114,7 @@ export function createServer(options = {}) {
         try {
           const deliverySettings = api.getBusinessEmailDeliverySettings(user, {
             previewPlan,
+            workspaceOwnerUserId: body.workspaceOwnerUserId || null,
             companyId: body.companyId || null,
           });
           const emailReady = deliverySettings.smtpHost
@@ -2045,7 +2180,10 @@ export function createServer(options = {}) {
 
     if (url.pathname === "/business/approvals" && req.method === "GET") {
       try {
-        sendJson(res, 200, api.listApprovalRequests(user, { previewPlan }));
+        sendJson(res, 200, api.listApprovalRequests(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        }));
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
       }
@@ -2079,7 +2217,10 @@ export function createServer(options = {}) {
 
     if (url.pathname === "/business/api-keys" && req.method === "GET") {
       try {
-        sendJson(res, 200, api.listApiKeys(user, { previewPlan }));
+        sendJson(res, 200, api.listApiKeys(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        }));
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
       }
@@ -2101,7 +2242,10 @@ export function createServer(options = {}) {
     if (url.pathname.startsWith("/business/api-keys/") && req.method === "DELETE") {
       try {
         const id = url.pathname.split("/")[3];
-        const apiKey = api.revokeApiKey(user, id, { previewPlan });
+        const apiKey = api.revokeApiKey(user, id, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        });
         const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-api-key-revoke");
         sendJson(res, 200, { ...apiKey, businessWorkspaceSync });
       } catch (error) {

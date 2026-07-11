@@ -667,6 +667,45 @@ async function syncBusinessSettings(client, businessSettings) {
   }
 }
 
+async function syncComplianceTasks(client, complianceTasks) {
+  for (const task of complianceTasks) {
+    await client.query(
+      `insert into eazinvoice_compliance_tasks
+        (id, owner_user_id, company_id, compliance_rule_id, compliance_name, department, frequency,
+         due_date, due_date_label, status, responsible_person, record, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8::date, $9, $10, $11, $12::jsonb, coalesce($13::timestamptz, now()), now())
+       on conflict (id) do update set
+        owner_user_id = excluded.owner_user_id,
+        company_id = excluded.company_id,
+        compliance_rule_id = excluded.compliance_rule_id,
+        compliance_name = excluded.compliance_name,
+        department = excluded.department,
+        frequency = excluded.frequency,
+        due_date = excluded.due_date,
+        due_date_label = excluded.due_date_label,
+        status = excluded.status,
+        responsible_person = excluded.responsible_person,
+        record = excluded.record,
+        updated_at = now()`,
+      [
+        text(task.id),
+        text(task.ownerUserId, task.userId),
+        text(task.companyId),
+        text(task.complianceRuleId),
+        text(task.complianceName),
+        text(task.department),
+        text(task.frequency),
+        dateOnly(task.dueDate),
+        text(task.dueDateLabel),
+        lowerText(task.status, "pending"),
+        text(task.responsiblePerson),
+        json(task),
+        timestamp(task.createdAt),
+      ],
+    );
+  }
+}
+
 async function syncTeamMembers(client, teamMembers) {
   for (const member of teamMembers) {
     await client.query(
@@ -775,6 +814,7 @@ async function syncApiKeys(client, apiKeys) {
 
 export async function syncBusinessWorkspaceTables(client, state = {}, options = {}) {
   await syncBusinessSettings(client, toArray(state.businessSettings));
+  await syncComplianceTasks(client, toArray(state.complianceTasks));
   await syncTeamMembers(client, toArray(state.teamMembers));
   await syncApprovalRequests(client, toArray(state.approvalRequests));
   await syncApiKeys(client, toArray(state.apiKeys));
@@ -789,6 +829,7 @@ export async function syncBusinessWorkspaceTables(client, state = {}, options = 
         json({
           counts: {
             businessSettings: toArray(state.businessSettings).length,
+            complianceTasks: toArray(state.complianceTasks).length,
             teamMembers: toArray(state.teamMembers).length,
             approvalRequests: toArray(state.approvalRequests).length,
             apiKeys: toArray(state.apiKeys).length,

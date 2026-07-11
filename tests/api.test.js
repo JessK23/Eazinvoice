@@ -2425,6 +2425,15 @@ test("business tier unlocks team approvals and API keys", () => {
   assert.equal(complianceDashboard.readiness.smtp, true);
   assert.equal(complianceDashboard.readiness.gateway, true);
   assert.equal(complianceDashboard.readiness.overall, true);
+  assert.equal(complianceDashboard.complianceEngine.enabled, true);
+  assert.equal(complianceDashboard.complianceEngine.export.headers[0], "Compliance");
+  assert.ok(complianceDashboard.complianceEngine.export.rows.length > 0);
+  assert.ok(complianceDashboard.complianceEngine.reminders.counts.actionable > 0);
+  const gstTask = complianceDashboard.complianceTasks.find((task) => task.id === "gst_return_reconciliation");
+  assert.ok(gstTask);
+  assert.match(gstTask.dueDate, /^\d{4}-\d{2}-\d{2}$/);
+  assert.match(gstTask.nextReminderDate, /^\d{4}-\d{2}-\d{2}$/);
+  assert.ok(gstTask.requiredDocuments.includes("GSTIN"));
   assert.equal(complianceDashboard.gst.outputGst, 1800);
   assert.equal(complianceDashboard.gst.inputGst, 360);
   assert.equal(complianceDashboard.gst.netGstPayable, 1440);
@@ -2433,10 +2442,171 @@ test("business tier unlocks team approvals and API keys", () => {
   assert.equal(complianceDashboard.financials.profit, 9440);
   assert.equal(complianceDashboard.financials.receivables, 11800);
 
+  const filedTask = api.updateComplianceTask(user, "gst_return_reconciliation", {
+    status: "filed",
+    reminderDaysBefore: 5,
+    responsiblePerson: "Finance Head",
+    dueDate: "2026-08-20",
+    notes: "GSTR reconciliation checked for July.",
+  });
+  assert.equal(filedTask.status, "filed");
+  assert.equal(filedTask.reminderDaysBefore, 5);
+  assert.equal(filedTask.dueDate, "2026-08-20");
+  assert.equal(filedTask.nextReminderDate, "2026-08-15");
+  const refreshedCompliance = api.getBusinessComplianceDashboard(user);
+  const refreshedGstTask = refreshedCompliance.complianceTasks.find((task) => task.id === "gst_return_reconciliation");
+  assert.equal(refreshedGstTask.status, "filed");
+  assert.equal(refreshedGstTask.responsiblePerson, "Finance Head");
+  assert.equal(refreshedGstTask.record.auditTrail.at(-1).toStatus, "filed");
+  assert.equal(refreshedCompliance.complianceEngine.summary.filed, 1);
+  assert.equal(refreshedCompliance.complianceEngine.summary.total, complianceDashboard.complianceEngine.summary.total);
+  assert.ok(refreshedCompliance.complianceEngine.summary.pending < complianceDashboard.complianceEngine.summary.pending);
+
   const invitee = api.createUser({ name: "Accountant", email: "accountant@example.com" });
   const accepted = api.acceptTeamInvite(invitee, member.inviteToken);
   assert.equal(accepted.status, "active");
   assert.equal(accepted.acceptedUserId, invitee.id);
+  assert.ok(accepted.acceptedAt);
+  assert.equal(accepted.auditTrail.at(-1).action, "accepted");
+
+  const accountantWorkspaces = api.listBusinessWorkspaces(invitee);
+  const ownerWorkspace = accountantWorkspaces.find((workspace) => workspace.ownerUserId === user.id);
+  assert.ok(ownerWorkspace);
+  assert.equal(ownerWorkspace.role, "accountant");
+  assert.equal(ownerWorkspace.permissions.read, true);
+  assert.equal(ownerWorkspace.permissions.writeRecords, true);
+  assert.equal(ownerWorkspace.permissions.compliance, true);
+  assert.equal(ownerWorkspace.permissions.approvals, true);
+  assert.equal(ownerWorkspace.permissions.apiAccess, false);
+  assert.equal(ownerWorkspace.permissions.manageTeam, false);
+  assert.equal(ownerWorkspace.permissions.manageSettings, false);
+
+  const accountantTeamView = api.listTeamMembers(invitee, { workspaceOwnerUserId: user.id });
+  assert.equal(accountantTeamView.length, 1);
+
+  const accountantCompliance = api.updateComplianceTask(invitee, "gst_return_reconciliation", {
+    workspaceOwnerUserId: user.id,
+    status: "pending",
+    notes: "Accountant reopened this for owner review.",
+  });
+  assert.equal(accountantCompliance.status, "pending");
+  assert.match(accountantCompliance.notes, /Accountant reopened/);
+
+  assert.throws(
+    () => api.updateBusinessSettings(invitee, {
+      workspaceOwnerUserId: user.id,
+      emailSettings: { senderName: "Should not save" },
+    }),
+    /team role cannot perform/i,
+  );
+
+  const viewerMember = api.createTeamMember(user, {
+    name: "Viewer",
+    email: "viewer@example.com",
+    role: "viewer",
+  });
+  const viewer = api.createUser({ name: "Viewer", email: "viewer@example.com" });
+  const acceptedViewer = api.acceptTeamInvite(viewer, viewerMember.inviteToken);
+  assert.equal(acceptedViewer.role, "viewer");
+  const viewerWorkspace = api.listBusinessWorkspaces(viewer).find((workspace) => workspace.ownerUserId === user.id);
+  assert.equal(viewerWorkspace.permissions.read, true);
+  assert.equal(viewerWorkspace.permissions.writeRecords, false);
+  assert.equal(viewerWorkspace.permissions.compliance, false);
+  assert.equal(viewerWorkspace.permissions.approvals, false);
+  assert.equal(viewerWorkspace.permissions.apiAccess, false);
+  assert.equal(viewerWorkspace.permissions.manageTeam, false);
+  assert.equal(viewerWorkspace.permissions.manageSettings, false);
+  assert.throws(
+    () => api.updateComplianceTask(viewer, "gst_return_reconciliation", {
+      workspaceOwnerUserId: user.id,
+      status: "filed",
+    }),
+    /team role cannot perform/i,
+  );
+
+  const removedMember = api.updateTeamMember(user, member.id, { status: "removed" });
+  assert.equal(removedMember.status, "removed");
+  assert.equal(removedMember.auditTrail.at(-1).action, "revoked");
+  assert.throws(
+    () => api.listTeamMembers(invitee, { workspaceOwnerUserId: user.id }),
+    /Business workspace access denied/,
+  );
+});
+
+test("entity-aware compliance engine distinguishes company and freelancer obligations", () => {
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const api = createApi({ store });
+  const companyUser = api.createUser({ name: "Company Owner", email: "company-owner@example.com", subscriberType: "company" });
+  api.createSubscription({
+    userId: companyUser.id,
+    subscriberName: companyUser.name,
+    subscriberType: "company",
+    plan: "business",
+    amount: 11988,
+    billingCycle: "yearly",
+    status: "active",
+  });
+  api.updateBusinessSettings(companyUser, {
+    complianceProfile: {
+      legalName: "Company Owner Private Limited",
+      entityType: "private_limited_company",
+      businessCategory: "service",
+      gstRegistered: true,
+      gstin: "27ABCDE1234F1Z5",
+      pan: "ABCDE1234F",
+      tan: "ABCD12345E",
+      tanAvailable: true,
+      state: "Maharashtra",
+      address: "Pune, Maharashtra",
+      placeOfBusiness: "Pune",
+      invoicePrefix: "CO",
+      employeeCount: 4,
+      annualTurnover: 12000000,
+      importExport: true,
+      auditApplicable: true,
+      responsiblePerson: "Finance Head",
+    },
+  });
+  const companyCompliance = api.getBusinessComplianceDashboard(companyUser);
+  const companyTaskIds = companyCompliance.complianceTasks.map((task) => task.id);
+  assert.equal(companyCompliance.complianceReview.entityAwareReady, true);
+  assert.ok(companyTaskIds.includes("gst_return_reconciliation"));
+  assert.ok(companyTaskIds.includes("tds_tcs_review"));
+  assert.ok(companyTaskIds.includes("mca_annual_filing"));
+  assert.ok(companyTaskIds.includes("statutory_audit_review"));
+  assert.ok(companyTaskIds.includes("iec_import_export_review"));
+  const mcaTask = companyCompliance.complianceTasks.find((task) => task.id === "mca_annual_filing");
+  assert.equal(mcaTask.periodLabel, "2026-27");
+  assert.match(mcaTask.dueDate, /^2027-10-30$/);
+
+  const freelancer = api.createUser({ name: "Solo Freelancer", email: "solo-freelancer@example.com", subscriberType: "individual" });
+  api.createSubscription({
+    userId: freelancer.id,
+    subscriberName: freelancer.name,
+    subscriberType: "individual",
+    plan: "business",
+    amount: 11988,
+    billingCycle: "yearly",
+    status: "active",
+  });
+  api.updateBusinessSettings(freelancer, {
+    complianceProfile: {
+      legalName: "Solo Freelancer",
+      entityType: "freelancer",
+      pan: "FGHIJ1234K",
+      state: "Kerala",
+      address: "Kochi, Kerala",
+      placeOfBusiness: "Kochi",
+      invoicePrefix: "SF",
+    },
+  });
+  const freelancerCompliance = api.getBusinessComplianceDashboard(freelancer);
+  const freelancerTaskIds = freelancerCompliance.complianceTasks.map((task) => task.id);
+  assert.equal(freelancerCompliance.complianceReview.entityAwareReady, true);
+  assert.ok(freelancerTaskIds.includes("income_tax_return"));
+  assert.ok(freelancerTaskIds.includes("records_retention"));
+  assert.ok(!freelancerTaskIds.includes("mca_annual_filing"));
+  assert.ok(!freelancerTaskIds.includes("gst_return_reconciliation"));
 });
 
 test("business workspace endpoints honor plan preview and gating", async () => {
@@ -2496,6 +2666,15 @@ test("business workspace endpoints honor plan preview and gating", async () => {
     });
     assert.equal(listed.response.status, 200);
     assert.equal(listed.payload[0].token, "");
+
+    const missingSmtpReminder = await request("/business/compliance-tasks/income_tax_return/reminder", {
+      method: "POST",
+      token: signup.payload.token,
+      previewPlan: "business",
+      body: { recipient: "finance@example.com" },
+    });
+    assert.equal(missingSmtpReminder.response.status, 400);
+    assert.match(missingSmtpReminder.payload.error, /Configure and validate Business SMTP settings/);
 
     const settings = await request("/business/settings", {
       method: "PATCH",
@@ -2558,9 +2737,182 @@ test("business workspace endpoints honor plan preview and gating", async () => {
     assert.equal(compliance.response.status, 200);
     assert.equal(compliance.payload.readiness.compliance, true);
     assert.equal(compliance.payload.readiness.gateway, true);
+    assert.ok(compliance.payload.complianceEngine.export.rows.length > 0);
+    assert.ok(compliance.payload.complianceEngine.reminders.counts.actionable > 0);
+
+    const blockedTaskUpdate = await request("/business/compliance-tasks/income_tax_return", {
+      method: "PATCH",
+      token: signup.payload.token,
+      body: { status: "filed" },
+    });
+    assert.equal(blockedTaskUpdate.response.status, 402);
+
+    const taskUpdate = await request("/business/compliance-tasks/income_tax_return", {
+      method: "PATCH",
+      token: signup.payload.token,
+      previewPlan: "business",
+      body: { status: "filed", dueDate: "2026-09-30", reminderDaysBefore: 10, notes: "Filed through endpoint test." },
+    });
+    assert.equal(taskUpdate.response.status, 200);
+    assert.equal(taskUpdate.payload.status, "filed");
+    assert.equal(taskUpdate.payload.dueDate, "2026-09-30");
+    assert.equal(taskUpdate.payload.nextReminderDate, "2026-09-20");
+    assert.equal(taskUpdate.payload.record.auditTrail.at(-1).toStatus, "filed");
+
+    const refreshedCompliance = await request("/business/compliance-dashboard", {
+      token: signup.payload.token,
+      previewPlan: "business",
+    });
+    assert.equal(refreshedCompliance.payload.complianceEngine.summary.filed, 1);
+    assert.equal(refreshedCompliance.payload.complianceEngine.summary.total, compliance.payload.complianceEngine.summary.total);
+    assert.ok(refreshedCompliance.payload.complianceEngine.summary.pending < compliance.payload.complianceEngine.summary.pending);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     restoreAdminEmail();
+  }
+});
+
+test("business workspace invite routes enforce owner accountant and viewer permissions", async () => {
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const api = createApi({ store });
+  const server = createServer({ store, persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  async function signup(name, email, phone) {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email, phone },
+    });
+    const created = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name,
+        email,
+        password: "SecurePass123",
+        phone,
+        otp: otp.payload.devOtp,
+      },
+    });
+    assert.equal(created.response.status, 201);
+    return created.payload;
+  }
+
+  try {
+    const owner = await signup("Workspace Owner", "workspace-owner@example.com", "9000000001");
+    api.createSubscription({
+      userId: owner.user.id,
+      subscriberName: owner.user.name,
+      subscriberType: "company",
+      plan: "business",
+      amount: 11988,
+      billingCycle: "yearly",
+      status: "active",
+    });
+
+    const accountantInvite = await request("/business/team", {
+      method: "POST",
+      token: owner.token,
+      body: { name: "Accountant User", email: "workspace-accountant@example.com", role: "accountant" },
+    });
+    assert.equal(accountantInvite.response.status, 201);
+    assert.equal(accountantInvite.payload.role, "accountant");
+    assert.ok(accountantInvite.payload.inviteToken);
+
+    const accountant = await signup("Accountant User", "workspace-accountant@example.com", "9000000002");
+    const accountantAccept = await request("/business/team/accept", {
+      method: "POST",
+      token: accountant.token,
+      body: { inviteToken: accountantInvite.payload.inviteToken },
+    });
+    assert.equal(accountantAccept.response.status, 200);
+    assert.equal(accountantAccept.payload.status, "active");
+
+    const accountantWorkspaces = await request("/business/workspaces", { token: accountant.token });
+    assert.equal(accountantWorkspaces.response.status, 200);
+    const sharedWorkspace = accountantWorkspaces.payload.find((workspace) => workspace.ownerUserId === owner.user.id);
+    assert.equal(sharedWorkspace.role, "accountant");
+    assert.equal(sharedWorkspace.permissions.approvals, true);
+    assert.equal(sharedWorkspace.permissions.manageSettings, false);
+    assert.equal(sharedWorkspace.permissions.apiAccess, false);
+
+    const accountantApproval = await request("/business/approvals", {
+      method: "POST",
+      token: accountant.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        documentType: "invoice",
+        documentNumber: "RA/2026/0099",
+        notes: "Accountant route-level approval request.",
+      },
+    });
+    assert.equal(accountantApproval.response.status, 201);
+    assert.equal(accountantApproval.payload.status, "pending");
+
+    const accountantSettingsDenied = await request("/business/settings", {
+      method: "PATCH",
+      token: accountant.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        emailSettings: { smtpHost: "smtp.example.com" },
+      },
+    });
+    assert.notEqual(accountantSettingsDenied.response.status, 200);
+    assert.match(accountantSettingsDenied.payload.error, /team role cannot perform/i);
+
+    const viewerInvite = await request("/business/team", {
+      method: "POST",
+      token: owner.token,
+      body: { name: "Viewer User", email: "workspace-viewer@example.com", role: "viewer" },
+    });
+    assert.equal(viewerInvite.response.status, 201);
+
+    const viewer = await signup("Viewer User", "workspace-viewer@example.com", "9000000003");
+    const viewerAccept = await request("/business/team/accept", {
+      method: "POST",
+      token: viewer.token,
+      body: { inviteToken: viewerInvite.payload.inviteToken },
+    });
+    assert.equal(viewerAccept.response.status, 200);
+
+    const viewerWorkspaces = await request("/business/workspaces", { token: viewer.token });
+    const viewerWorkspace = viewerWorkspaces.payload.find((workspace) => workspace.ownerUserId === owner.user.id);
+    assert.equal(viewerWorkspace.role, "viewer");
+    assert.equal(viewerWorkspace.permissions.read, true);
+    assert.equal(viewerWorkspace.permissions.approvals, false);
+
+    const viewerApprovals = await request(`/business/approvals?workspaceOwnerUserId=${owner.user.id}`, { token: viewer.token });
+    assert.equal(viewerApprovals.response.status, 200);
+    assert.equal(viewerApprovals.payload.length, 1);
+
+    const viewerTaskDenied = await request("/business/compliance-tasks/income_tax_return", {
+      method: "PATCH",
+      token: viewer.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        status: "filed",
+      },
+    });
+    assert.notEqual(viewerTaskDenied.response.status, 200);
+    assert.match(viewerTaskDenied.payload.error, /team role cannot perform/i);
+
+    const viewerApiDenied = await request(`/business/api-keys?workspaceOwnerUserId=${owner.user.id}`, { token: viewer.token });
+    assert.notEqual(viewerApiDenied.response.status, 200);
+    assert.match(viewerApiDenied.payload.error, /team role cannot perform/i);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
   }
 });
 

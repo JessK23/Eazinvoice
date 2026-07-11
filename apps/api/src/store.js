@@ -1,7 +1,15 @@
 import crypto from "node:crypto";
 import { loadPersistedState, savePersistedState } from "./persistence.js";
+import {
+  assessComplianceProfile,
+  buildComplianceReminderDigest,
+  generateComplianceSchedule,
+  normalizeComplianceProfile,
+  summarizeComplianceTasks,
+} from "./compliance-engine.js";
 
 function clone(value) {
+  if (value === undefined) return undefined;
   return JSON.parse(JSON.stringify(value));
 }
 
@@ -35,6 +43,13 @@ function formatDocumentNumber(code, dateValue, sequence) {
 function toNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function addDays(dateValue, days) {
+  const date = new Date(String(dateValue || "") + "T00:00:00.000Z");
+  if (Number.isNaN(date.getTime())) return "";
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 function normalizeRecordStatus(value, fallback = "draft") {
@@ -150,6 +165,7 @@ export function createStore(seed = {}, options = {}) {
     approvalRequests: [],
     apiKeys: [],
     businessSettings: [],
+    complianceTasks: [],
     counters: {
       user: 0,
       company: 0,
@@ -166,6 +182,7 @@ export function createStore(seed = {}, options = {}) {
       approvalRequest: 0,
       apiKey: 0,
       businessSetting: 0,
+      complianceTask: 0,
     },
     ...clone(seed),
     ...clone(persisted),
@@ -187,6 +204,7 @@ export function createStore(seed = {}, options = {}) {
     approvalRequest: 0,
     apiKey: 0,
     businessSetting: 0,
+    complianceTask: 0,
     ...(clone(seed).counters || {}),
     ...(clone(persisted).counters || {}),
   };
@@ -209,6 +227,7 @@ export function createStore(seed = {}, options = {}) {
       approvalRequests: state.approvalRequests,
       apiKeys: state.apiKeys,
       businessSettings: state.businessSettings,
+      complianceTasks: state.complianceTasks,
       counters: state.counters,
     });
   }
@@ -836,7 +855,7 @@ export function createStore(seed = {}, options = {}) {
   function normalizeBusinessSettings(input = {}) {
     const emailSettings = input.emailSettings || {};
     const paymentSettings = input.paymentSettings || {};
-    const complianceProfile = input.complianceProfile || {};
+    const complianceProfile = normalizeComplianceProfile(input.complianceProfile || {});
     return {
       emailSettings: {
         smtpHost: String(emailSettings.smtpHost || "").trim(),
@@ -857,59 +876,7 @@ export function createStore(seed = {}, options = {}) {
         webhookSecret: paymentSettings.webhookSecret !== undefined ? String(paymentSettings.webhookSecret || "") : undefined,
         paymentLinkEnabled: Boolean(paymentSettings.paymentLinkEnabled),
       },
-      complianceProfile: {
-        entityType: String(complianceProfile.entityType || "").trim().toLowerCase(),
-        legalName: String(complianceProfile.legalName || "").trim(),
-        gstRegistered: Boolean(complianceProfile.gstRegistered),
-        gstin: String(complianceProfile.gstin || "").trim().toUpperCase(),
-        pan: String(complianceProfile.pan || "").trim().toUpperCase(),
-        tan: String(complianceProfile.tan || "").trim().toUpperCase(),
-        state: String(complianceProfile.state || "").trim(),
-        address: String(complianceProfile.address || "").trim(),
-        placeOfBusiness: String(complianceProfile.placeOfBusiness || "").trim(),
-        invoicePrefix: String(complianceProfile.invoicePrefix || "").trim().toUpperCase(),
-        fiscalYearStartMonth: Math.min(12, Math.max(1, Number(complianceProfile.fiscalYearStartMonth || 4))),
-      },
-    };
-  }
-
-  function assessComplianceProfile(profile = {}, user = {}) {
-    const entityType = profile.entityType || user?.subscriberType || "individual";
-    const required = [
-      ["legalName", "legal name"],
-      ["pan", "PAN"],
-      ["state", "state"],
-      ["address", "registered address"],
-      ["placeOfBusiness", "place of business"],
-      ["invoicePrefix", "invoice prefix"],
-    ];
-    const missing = required
-      .filter(([field]) => !String(profile[field] || "").trim())
-      .map(([, label]) => label);
-    const issues = [];
-    const panPattern = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
-    const tanPattern = /^[A-Z]{4}[0-9]{5}[A-Z]$/;
-    const gstinPattern = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
-
-    if (profile.pan && !panPattern.test(profile.pan)) issues.push("PAN format should be ABCDE1234F");
-    if (profile.tan && !tanPattern.test(profile.tan)) issues.push("TAN format should be ABCD12345E");
-    if (profile.gstRegistered && !profile.gstin) missing.push("GSTIN");
-    if (profile.gstin && !gstinPattern.test(profile.gstin)) issues.push("GSTIN format is invalid");
-    if (profile.gstRegistered && profile.gstin && profile.pan && profile.gstin.slice(2, 12) !== profile.pan) {
-      issues.push("GSTIN PAN segment should match the PAN field");
-    }
-    const fiscalYearStartMonth = Math.min(12, Math.max(1, Number(profile.fiscalYearStartMonth || 4)));
-    return {
-      entityType,
-      fiscalYearStartMonth,
-      ready: missing.length === 0 && issues.length === 0,
-      gstReady: !profile.gstRegistered || Boolean(profile.gstin && !issues.some((issue) => issue.includes("GSTIN"))),
-      missing,
-      issues,
-      status: missing.length || issues.length ? "attention_required" : "ready",
-      message: missing.length || issues.length
-        ? [...missing.map((item) => `missing ${item}`), ...issues].join("; ")
-        : "Compliance profile is ready for GST/audit reports.",
+      complianceProfile,
     };
   }
 
@@ -1035,6 +1002,211 @@ export function createStore(seed = {}, options = {}) {
     return sanitizeBusinessSettings(stored);
   }
 
+  function buildComplianceTaskKey(user, companyId, taskId) {
+    return [
+      user?.id || "unknown",
+      companyId || "default",
+      String(taskId || "").trim(),
+    ].join(":");
+  }
+
+  function normalizeComplianceTaskStatus(value) {
+    const status = String(value || "pending").trim().toLowerCase();
+    return ["pending", "filed", "overdue", "not_applicable", "needs_document", "profile_missing"].includes(status)
+      ? status
+      : "pending";
+  }
+
+  function normalizeComplianceTaskOverride(user, companyId, taskId, input = {}) {
+    const reminderDaysBefore = Math.max(0, Math.floor(toNumber(input.reminderDaysBefore, 7)));
+    return {
+      ownerUserId: user.id,
+      companyId: companyId || null,
+      complianceRuleId: String(taskId || "").trim(),
+      status: normalizeComplianceTaskStatus(input.status),
+      responsiblePerson: String(input.responsiblePerson || "").trim(),
+      dueDate: String(input.dueDate || "").trim(),
+      dueDateLabel: String(input.dueDateLabel || "").trim(),
+      reminderEnabled: input.reminderEnabled !== false,
+      reminderDaysBefore,
+      notes: String(input.notes || "").trim().slice(0, 1000),
+    };
+  }
+
+  function listComplianceTaskOverridesForUser(user, companyId = null) {
+    if (!user?.id) return [];
+    return state.complianceTasks.filter((task) => (
+      task.ownerUserId === user.id
+      && (task.companyId || null) === (companyId || null)
+      && String(task.status || "").toLowerCase() !== "deleted"
+    ));
+  }
+
+  function mergeComplianceTasksWithOverrides(user, companyId, generatedTasks = []) {
+    const overrides = new Map(listComplianceTaskOverridesForUser(user, companyId).map((task) => [task.complianceRuleId, task]));
+    return generatedTasks.map((task) => {
+      const override = overrides.get(task.id);
+      if (!override) {
+        return {
+          ...task,
+          persisted: false,
+          reminderEnabled: true,
+          reminderDaysBefore: 7,
+          notes: "",
+        };
+      }
+      return {
+        ...task,
+        ...override,
+        id: task.id,
+        complianceRuleId: task.id,
+        complianceName: task.complianceName,
+        department: task.department,
+        frequency: task.frequency,
+        dueDateLabel: override.dueDateLabel || task.dueDateLabel,
+        reminderSchedule: task.reminderSchedule,
+        requiredDocuments: task.requiredDocuments,
+        penaltyInformation: task.penaltyInformation,
+        persisted: true,
+      };
+    });
+  }
+
+  function updateComplianceTask(user, taskId, input = {}) {
+    if (!user?.id) throw new Error("Authentication required");
+    const companyId = input.companyId || null;
+    const generatedTasks = generateComplianceSchedule(
+      getRawBusinessSettingsForUser(user, companyId)?.complianceProfile || {},
+      user,
+    );
+    const sourceTask = generatedTasks.find((task) => task.id === taskId);
+    if (!sourceTask) throw new Error("Compliance task not found");
+    const now = new Date().toISOString();
+    const taskKey = buildComplianceTaskKey(user, companyId, taskId);
+    const normalized = normalizeComplianceTaskOverride(user, companyId, taskId, input);
+    let stored = state.complianceTasks.find((task) => task.id === taskKey);
+    if (!stored) {
+      stored = {
+        id: taskKey,
+        ownerUserId: user.id,
+        companyId,
+        complianceRuleId: taskId,
+        createdAt: now,
+        updatedAt: now,
+      };
+      state.complianceTasks.push(stored);
+      state.counters.complianceTask = Math.max(toNumber(state.counters.complianceTask, 0), state.complianceTasks.length);
+    }
+    const previousStatus = String(stored.status || sourceTask.status || "pending").toLowerCase();
+    const previousRecord = stored.record && typeof stored.record === "object" ? stored.record : {};
+    const auditTrail = Array.isArray(previousRecord.auditTrail) ? previousRecord.auditTrail.slice(-24) : [];
+    const changed = previousStatus !== normalized.status
+      || String(stored.responsiblePerson || "") !== normalized.responsiblePerson
+      || String(stored.notes || "") !== normalized.notes;
+    if (changed) {
+      auditTrail.push({
+        at: now,
+        byUserId: user.id,
+        fromStatus: previousStatus,
+        toStatus: normalized.status,
+        responsiblePerson: normalized.responsiblePerson,
+        notes: normalized.notes,
+      });
+    }
+    Object.assign(stored, {
+      ...normalized,
+      complianceName: sourceTask.complianceName,
+      department: sourceTask.department,
+      frequency: sourceTask.frequency,
+      dueDate: normalized.dueDate || sourceTask.dueDate,
+      dueDateLabel: normalized.dueDateLabel || sourceTask.dueDateLabel,
+      nextReminderDate: normalized.dueDate ? addDays(normalized.dueDate, -normalized.reminderDaysBefore) : sourceTask.nextReminderDate,
+      record: {
+        ...previousRecord,
+        requiredDocuments: sourceTask.requiredDocuments || [],
+        reminderSchedule: sourceTask.reminderSchedule || [],
+        penaltyInformation: sourceTask.penaltyInformation || "",
+        statusDescription: sourceTask.statusDescription || "",
+        auditTrail,
+      },
+      updatedAt: now,
+    });
+    persist();
+    return clone({
+      ...sourceTask,
+      ...stored,
+      id: sourceTask.id,
+      persisted: true,
+    });
+  }
+
+  function recordComplianceReminderDelivery(user, taskId, input = {}) {
+    if (!user?.id) throw new Error("Authentication required");
+    const companyId = input.companyId || null;
+    const generatedTasks = generateComplianceSchedule(
+      getRawBusinessSettingsForUser(user, companyId)?.complianceProfile || {},
+      user,
+    );
+    const sourceTask = generatedTasks.find((task) => task.id === taskId);
+    if (!sourceTask) throw new Error("Compliance task not found");
+
+    const now = new Date().toISOString();
+    const taskKey = buildComplianceTaskKey(user, companyId, taskId);
+    let stored = state.complianceTasks.find((task) => task.id === taskKey);
+    if (!stored) {
+      stored = {
+        id: taskKey,
+        ownerUserId: user.id,
+        companyId,
+        complianceRuleId: taskId,
+        status: sourceTask.status || "pending",
+        responsiblePerson: sourceTask.responsiblePerson || "",
+        dueDate: sourceTask.dueDate || "",
+        dueDateLabel: sourceTask.dueDateLabel || "",
+        reminderEnabled: true,
+        reminderDaysBefore: 7,
+        notes: "",
+        complianceName: sourceTask.complianceName,
+        department: sourceTask.department,
+        frequency: sourceTask.frequency,
+        createdAt: now,
+        updatedAt: now,
+      };
+      state.complianceTasks.push(stored);
+      state.counters.complianceTask = Math.max(toNumber(state.counters.complianceTask, 0), state.complianceTasks.length);
+    }
+
+    const previousRecord = stored.record && typeof stored.record === "object" ? stored.record : {};
+    const reminderLog = Array.isArray(previousRecord.reminderLog) ? previousRecord.reminderLog.slice(-24) : [];
+    reminderLog.push({
+      at: now,
+      byUserId: user.id,
+      to: String(input.to || "").trim(),
+      status: String(input.status || "sent").trim().toLowerCase(),
+      message: String(input.message || "").trim().slice(0, 500),
+    });
+
+    stored.record = {
+      ...previousRecord,
+      requiredDocuments: sourceTask.requiredDocuments || previousRecord.requiredDocuments || [],
+      reminderSchedule: sourceTask.reminderSchedule || previousRecord.reminderSchedule || [],
+      penaltyInformation: sourceTask.penaltyInformation || previousRecord.penaltyInformation || "",
+      statusDescription: sourceTask.statusDescription || previousRecord.statusDescription || "",
+      reminderLog,
+    };
+    stored.lastReminderSentAt = now;
+    stored.lastReminderRecipient = String(input.to || "").trim();
+    stored.lastReminderStatus = String(input.status || "sent").trim().toLowerCase();
+    stored.updatedAt = now;
+    persist();
+
+    return clone({
+      ...sourceTask,
+      ...stored,
+      id: sourceTask.id,
+      persisted: true,
+    });
+  }
   function getBusinessComplianceDashboard(user, companyId = null) {
     if (!user?.id) throw new Error("Authentication required");
     const settings = getBusinessSettingsForUser(user, companyId) || {
@@ -1065,6 +1237,13 @@ export function createStore(seed = {}, options = {}) {
     const gatewayReady = Boolean(paymentSettings.keyId && paymentSettings.keySecretConfigured && paymentSettings.webhookSecretConfigured && paymentSettings.paymentLinkEnabled);
     const smtpReady = Boolean(emailSettings.smtpHost && emailSettings.smtpPort && emailSettings.smtpUser && emailSettings.fromEmail && emailSettings.smtpPassConfigured);
     const complianceReview = settings.complianceReview || assessComplianceProfile(settings.complianceProfile || {}, user);
+    const complianceTasks = mergeComplianceTasksWithOverrides(
+      user,
+      companyId,
+      generateComplianceSchedule(settings.complianceProfile || {}, user),
+    );
+    const complianceSummary = summarizeComplianceTasks(complianceTasks);
+    const reminderDigest = buildComplianceReminderDigest(complianceTasks);
     return clone({
       complianceProfile: settings.complianceProfile || {},
       complianceReview,
@@ -1099,7 +1278,137 @@ export function createStore(seed = {}, options = {}) {
         status: paymentSettings.status || "not_configured",
         paymentLinkEnabled: Boolean(paymentSettings.paymentLinkEnabled),
       },
+      complianceEngine: {
+        enabled: true,
+        source: "entity-aware-catalog",
+        rulesCount: complianceTasks.length,
+        summary: complianceSummary,
+        reminders: reminderDigest,
+        export: {
+          fileName: "eazinvoice-compliance-report.csv",
+          headers: ["Compliance", "Department", "Status", "Due Date", "Reminder Date", "Responsible", "Required Documents"],
+          rows: complianceTasks.map((task) => [
+            task.complianceName || task.id || "Compliance",
+            task.department || "Compliance",
+            task.status || "pending",
+            task.dueDate || "",
+            task.nextReminderDate || "",
+            task.responsiblePerson || "",
+            (task.requiredDocuments || []).join(", "),
+          ]),
+        },
+        tasks: complianceTasks,
+      },
+      complianceTasks,
     });
+  }
+
+  function isTeamInviteExpired(member) {
+    const expiresAt = new Date(member?.inviteExpiresAt || "").getTime();
+    return Number.isFinite(expiresAt) && expiresAt < Date.now();
+  }
+
+  function getTeamRolePermissions(role) {
+    const normalizedRole = String(role || "viewer").toLowerCase();
+    const fullAccess = {
+      read: true,
+      writeRecords: true,
+      compliance: true,
+      approvals: true,
+      apiAccess: true,
+      manageTeam: true,
+      manageSettings: true,
+    };
+    if (normalizedRole === "owner" || normalizedRole === "admin") return fullAccess;
+    if (normalizedRole === "accountant") {
+      return {
+        read: true,
+        writeRecords: true,
+        compliance: true,
+        approvals: true,
+        apiAccess: false,
+        manageTeam: false,
+        manageSettings: false,
+      };
+    }
+    return {
+      read: true,
+      writeRecords: false,
+      compliance: false,
+      approvals: false,
+      apiAccess: false,
+      manageTeam: false,
+      manageSettings: false,
+    };
+  }
+
+  function getBusinessWorkspaceAccess(user, ownerUserId = null) {
+    if (!user?.id) return null;
+    const targetOwnerUserId = ownerUserId || user.id;
+    if (user.role === "admin" || targetOwnerUserId === user.id) {
+      return {
+        ownerUserId: targetOwnerUserId,
+        role: user.role === "admin" && targetOwnerUserId !== user.id ? "admin" : "owner",
+        source: targetOwnerUserId === user.id ? "owned" : "admin",
+        permissions: getTeamRolePermissions("owner"),
+      };
+    }
+    const email = String(user.email || "").toLowerCase();
+    const member = state.teamMembers.find((entry) => (
+      entry.ownerUserId === targetOwnerUserId
+      && entry.status === "active"
+      && !isTeamInviteExpired(entry)
+      && (
+        entry.acceptedUserId === user.id
+        || String(entry.email || "").toLowerCase() === email
+      )
+    ));
+    if (!member) return null;
+    return {
+      ownerUserId: member.ownerUserId,
+      companyId: member.companyId || null,
+      memberId: member.id,
+      role: member.role || "viewer",
+      source: "team",
+      permissions: getTeamRolePermissions(member.role),
+    };
+  }
+
+  function listBusinessWorkspacesForUser(user) {
+    if (!user?.id) return [];
+    const workspaces = [{
+      ownerUserId: user.id,
+      companyId: null,
+      role: user.role === "admin" ? "admin" : "owner",
+      source: "owned",
+      label: user.name || user.email || "My workspace",
+      email: user.email || "",
+      permissions: getTeamRolePermissions("owner"),
+    }];
+    const email = String(user.email || "").toLowerCase();
+    state.teamMembers
+      .filter((member) => (
+        member.status === "active"
+        && !isTeamInviteExpired(member)
+        && (
+          member.acceptedUserId === user.id
+          || String(member.email || "").toLowerCase() === email
+        )
+      ))
+      .forEach((member) => {
+        const owner = state.users.find((entry) => entry.id === member.ownerUserId);
+        workspaces.push({
+          ownerUserId: member.ownerUserId,
+          companyId: member.companyId || null,
+          memberId: member.id,
+          role: member.role || "viewer",
+          source: "team",
+          label: owner?.name || owner?.email || "Business workspace",
+          email: owner?.email || "",
+          permissions: getTeamRolePermissions(member.role),
+        });
+      });
+    return clone(workspaces);
   }
 
   function listTeamMembersForUser(user) {
@@ -1110,6 +1419,10 @@ export function createStore(seed = {}, options = {}) {
       || member.acceptedUserId === user.id
       || String(member.email || "").toLowerCase() === String(user.email || "").toLowerCase()
     )));
+  }
+
+  function listTeamMembersForWorkspace(ownerUserId) {
+    return clone(state.teamMembers.filter((member) => member.ownerUserId === ownerUserId));
   }
 
   function createTeamMember(input = {}) {
@@ -1134,6 +1447,12 @@ export function createStore(seed = {}, options = {}) {
       inviteToken: input.inviteToken || `invite_${crypto.randomBytes(16).toString("hex")}`,
       inviteExpiresAt: input.inviteExpiresAt || new Date(Date.now() + 7 * 86400000).toISOString(),
       inviteDeliveryStatus: input.inviteDeliveryStatus || "queued",
+      auditTrail: [{
+        action: "invited",
+        at: new Date().toISOString(),
+        byUserId: input.invitedByUserId ?? input.ownerUserId ?? null,
+        role: ["owner", "admin", "accountant", "viewer"].includes(input.role) ? input.role : "viewer",
+      }],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -1151,6 +1470,14 @@ export function createStore(seed = {}, options = {}) {
     if (new Date(member.inviteExpiresAt).getTime() < Date.now()) throw new Error("Team invite has expired");
     member.status = "active";
     member.acceptedUserId = user.id;
+    member.acceptedAt = new Date().toISOString();
+    member.auditTrail = Array.isArray(member.auditTrail) ? member.auditTrail : [];
+    member.auditTrail.push({
+      action: "accepted",
+      at: member.acceptedAt,
+      byUserId: user.id,
+      role: member.role || "viewer",
+    });
     member.updatedAt = new Date().toISOString();
     persist();
     return clone(member);
@@ -1160,6 +1487,8 @@ export function createStore(seed = {}, options = {}) {
     const member = state.teamMembers.find((entry) => entry.id === memberId);
     if (!member) return null;
     if (user && user.role !== "admin" && member.ownerUserId !== user.id && member.invitedByUserId !== user.id) return null;
+    const previousRole = member.role;
+    const previousStatus = member.status;
     if (updates.name !== undefined) member.name = String(updates.name || member.name).trim();
     if (["owner", "admin", "accountant", "viewer"].includes(updates.role)) member.role = updates.role;
     if (["active", "invited", "removed"].includes(updates.status)) member.status = updates.status;
@@ -1167,6 +1496,28 @@ export function createStore(seed = {}, options = {}) {
     if (updates.inviteDeliveryStatus !== undefined) member.inviteDeliveryStatus = String(updates.inviteDeliveryStatus || "queued");
     if (updates.inviteDeliveryMessage !== undefined) member.inviteDeliveryMessage = String(updates.inviteDeliveryMessage || "");
     if (updates.inviteSentAt !== undefined) member.inviteSentAt = updates.inviteSentAt || null;
+    member.auditTrail = Array.isArray(member.auditTrail) ? member.auditTrail : [];
+    if (previousRole !== member.role) {
+      member.roleChangedAt = new Date().toISOString();
+      member.auditTrail.push({
+        action: "role_changed",
+        at: member.roleChangedAt,
+        byUserId: user?.id || null,
+        fromRole: previousRole,
+        toRole: member.role,
+      });
+    }
+    if (previousStatus !== member.status) {
+      const changedAt = new Date().toISOString();
+      if (member.status === "removed") member.revokedAt = changedAt;
+      member.auditTrail.push({
+        action: member.status === "removed" ? "revoked" : "status_changed",
+        at: changedAt,
+        byUserId: user?.id || null,
+        fromStatus: previousStatus,
+        toStatus: member.status,
+      });
+    }
     member.updatedAt = new Date().toISOString();
     persist();
     return clone(member);
@@ -1556,6 +1907,7 @@ export function createStore(seed = {}, options = {}) {
       approvalRequests: state.approvalRequests.length,
       apiKeys: state.apiKeys.length,
       businessSettings: state.businessSettings.length,
+      complianceTasks: state.complianceTasks.length,
     };
   }
 
@@ -1736,6 +2088,9 @@ export function createStore(seed = {}, options = {}) {
     countAiUsageForUser,
     createTeamMember,
     listTeamMembersForUser,
+    listTeamMembersForWorkspace,
+    listBusinessWorkspacesForUser,
+    getBusinessWorkspaceAccess,
     updateTeamMember,
     acceptTeamInvite,
     getBusinessSettingsForUser,
@@ -1743,6 +2098,8 @@ export function createStore(seed = {}, options = {}) {
     upsertBusinessSettings,
     validateBusinessEmailSettings,
     getBusinessComplianceDashboard,
+    updateComplianceTask,
+    recordComplianceReminderDelivery,
     createApprovalRequest,
     listApprovalRequestsForUser,
     decideApprovalRequest,

@@ -82,6 +82,8 @@ const detailReportYear = document.getElementById("detailReportYear");
 const detailFinancialYear = document.getElementById("detailFinancialYear");
 const detailStartDate = document.getElementById("detailStartDate");
 const detailEndDate = document.getElementById("detailEndDate");
+const detailComplianceStatus = document.getElementById("detailComplianceStatus");
+const detailComplianceType = document.getElementById("detailComplianceType");
 const reportDetailMetrics = document.getElementById("reportDetailMetrics");
 const reportDetailHead = document.getElementById("reportDetailHead");
 const reportDetailBody = document.getElementById("reportDetailBody");
@@ -116,7 +118,11 @@ const adminAiUsagePanel = document.getElementById("adminAiUsagePanel");
 const adminAiUsageList = document.getElementById("adminAiUsageList");
 const businessWorkspaceBadge = document.getElementById("businessWorkspaceBadge");
 const businessWorkspaceNotice = document.getElementById("businessWorkspaceNotice");
+const businessWorkspacePermissionPanel = document.getElementById("businessWorkspacePermissionPanel");
+const businessWorkspaceFlowChecklist = document.getElementById("businessWorkspaceFlowChecklist");
 const businessWorkspaceNavGroup = document.getElementById("businessWorkspaceNavGroup");
+const businessWorkspaceSwitcher = document.getElementById("businessWorkspaceSwitcher");
+const businessWorkspaceRoleBadge = document.getElementById("businessWorkspaceRoleBadge");
 const complianceOverallBadge = document.getElementById("complianceOverallBadge");
 const complianceHealthCards = document.getElementById("complianceHealthCards");
 const complianceReadinessList = document.getElementById("complianceReadinessList");
@@ -166,6 +172,8 @@ let dashboardApprovalRequests = [];
 let dashboardApiKeys = [];
 let dashboardBusinessSettings = { emailSettings: {}, paymentSettings: {}, complianceProfile: {} };
 let dashboardBusinessCompliance = null;
+let dashboardBusinessWorkspaces = [];
+let selectedBusinessWorkspaceOwnerId = window.localStorage?.getItem("eazinvoice_business_workspace_owner") || "";
 let currentReportExport = { title: "Detailed Report", headers: [], rows: [] };
 let razorpayCheckoutPromise = null;
 let pendingAiDraftCommand = null;
@@ -249,6 +257,159 @@ function isPaidSubscription(subscription) {
 
 function activePlanAllows(featureName) {
   return Boolean(activePlanSummary?.features?.[featureName]);
+}
+
+function activeBusinessWorkspace() {
+  if (!dashboardBusinessWorkspaces.length) {
+    return {
+      ownerUserId: currentUser?.id || "",
+      label: currentUser?.name || currentUser?.email || "My workspace",
+      role: currentUser?.role === "admin" ? "admin" : "owner",
+      source: "owned",
+      permissions: {
+        read: true,
+        writeRecords: true,
+        compliance: true,
+        approvals: true,
+        apiAccess: true,
+        manageTeam: true,
+        manageSettings: true,
+      },
+    };
+  }
+  return dashboardBusinessWorkspaces.find((workspace) => workspace.ownerUserId === selectedBusinessWorkspaceOwnerId)
+    || dashboardBusinessWorkspaces[0];
+}
+
+function selectedWorkspaceOptions(extra = {}) {
+  const workspace = activeBusinessWorkspace();
+  return {
+    ...extra,
+    workspaceOwnerUserId: workspace?.ownerUserId || currentUser?.id || "",
+  };
+}
+
+function workspaceCan(permission) {
+  return Boolean(activeBusinessWorkspace()?.permissions?.[permission]);
+}
+
+function canOpenBusinessWorkspace() {
+  return activePlanAllows("teamAccess") || dashboardBusinessWorkspaces.some((workspace) => workspace.source === "team");
+}
+
+const WORKSPACE_PERMISSION_COPY = [
+  { key: "read", label: "View workspace", description: "See workspace records and shared business context." },
+  { key: "writeRecords", label: "Create records", description: "Prepare invoices, PO/WO records, and shared drafts." },
+  { key: "compliance", label: "Compliance tasks", description: "Update GST, audit, and statutory follow-up tasks." },
+  { key: "approvals", label: "Approvals", description: "Create, approve, or reject approval requests." },
+  { key: "apiAccess", label: "API keys", description: "Generate and revoke integration keys." },
+  { key: "manageTeam", label: "Team members", description: "Invite, remove, and manage workspace users." },
+  { key: "manageSettings", label: "Business settings", description: "Change SMTP, gateway, and business configuration." },
+];
+
+function renderWorkspacePermissionPanel(enabled) {
+  if (!businessWorkspacePermissionPanel) return;
+  const workspace = activeBusinessWorkspace();
+  const role = workspace?.role || "owner";
+  if (!enabled) {
+    businessWorkspacePermissionPanel.innerHTML = `
+      <div class="workspace-permission-copy">
+        <strong>Business Workspace is locked</strong>
+        <span>Upgrade to Business or use the admin preview to test team roles, API access, approvals, and compliance workflows.</span>
+      </div>
+    `;
+    return;
+  }
+  const allowedCount = WORKSPACE_PERMISSION_COPY.filter((item) => workspace?.permissions?.[item.key]).length;
+  businessWorkspacePermissionPanel.innerHTML = `
+    <div class="workspace-permission-copy">
+      <strong>${escapeHtml(workspace?.label || "Selected workspace")}</strong>
+      <span>${escapeHtml(role)} role - ${allowedCount}/${WORKSPACE_PERMISSION_COPY.length} permissions enabled</span>
+    </div>
+    <div class="workspace-permission-grid">
+      ${WORKSPACE_PERMISSION_COPY.map((item) => {
+        const allowed = Boolean(workspace?.permissions?.[item.key]);
+        return `
+          <div class="workspace-permission-item" data-allowed="${allowed ? "true" : "false"}">
+            <strong>${escapeHtml(item.label)}</strong>
+            <span>${escapeHtml(allowed ? "Allowed" : "View only / locked")}</span>
+            <small>${escapeHtml(item.description)}</small>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderBusinessWorkspaceFlowChecklist(enabled) {
+  if (!businessWorkspaceFlowChecklist) return;
+  const workspace = activeBusinessWorkspace();
+  if (!enabled) {
+    businessWorkspaceFlowChecklist.innerHTML = `
+      <div class="workspace-flow-step" data-state="locked">
+        <strong>Business flow locked</strong>
+        <span>Upgrade to Business to invite users, manage approvals, connect APIs, and run compliance workflows.</span>
+      </div>
+    `;
+    return;
+  }
+
+  const activeKeys = dashboardApiKeys.filter((key) => key.status !== "revoked");
+  const smtpReady = Boolean(
+    dashboardBusinessSettings.emailSettings?.smtpHost
+    && dashboardBusinessSettings.emailSettings?.smtpUser
+    && dashboardBusinessSettings.emailSettings?.fromEmail,
+  );
+  const gatewayReady = ["test_mode", "live_ready"].includes(dashboardBusinessSettings.paymentSettings?.status);
+  const complianceReady = Boolean(dashboardBusinessCompliance?.readiness?.compliance);
+  const steps = [
+    {
+      label: "Workspace selected",
+      detail: workspace?.source === "team"
+        ? `Using ${workspace.label || "shared workspace"} as ${workspace.role || "team member"}`
+        : "Owner workspace is active",
+      state: "done",
+    },
+    {
+      label: "Team invite",
+      detail: workspaceCan("manageTeam")
+        ? dashboardTeamMembers.length
+          ? `${dashboardTeamMembers.length} member${dashboardTeamMembers.length === 1 ? "" : "s"} invited`
+          : "Invite an accountant, admin, or viewer"
+        : "This role can view team records only",
+      state: dashboardTeamMembers.length ? "done" : workspaceCan("manageTeam") ? "open" : "locked",
+    },
+    {
+      label: "Approvals",
+      detail: workspaceCan("approvals")
+        ? dashboardApprovalRequests.length
+          ? `${dashboardApprovalRequests.length} approval request${dashboardApprovalRequests.length === 1 ? "" : "s"} tracked`
+          : "Create an approval request when a record needs review"
+        : "Approval actions are locked for this role",
+      state: dashboardApprovalRequests.length ? "done" : workspaceCan("approvals") ? "open" : "locked",
+    },
+    {
+      label: "API access",
+      detail: workspaceCan("apiAccess")
+        ? activeKeys.length
+          ? `${activeKeys.length} active integration key${activeKeys.length === 1 ? "" : "s"}`
+          : "Generate a key for WordPress or external tools"
+        : "API keys are owner/admin only",
+      state: activeKeys.length ? "done" : workspaceCan("apiAccess") ? "open" : "locked",
+    },
+    {
+      label: "Business settings",
+      detail: `SMTP ${smtpReady ? "ready" : "pending"}, gateway ${gatewayReady ? "ready" : "pending"}, compliance ${complianceReady ? "ready" : "pending"}`,
+      state: smtpReady && gatewayReady && complianceReady ? "done" : workspaceCan("manageSettings") || workspaceCan("compliance") ? "open" : "locked",
+    },
+  ];
+
+  businessWorkspaceFlowChecklist.innerHTML = steps.map((step) => `
+    <div class="workspace-flow-step" data-state="${escapeHtml(step.state)}">
+      <strong>${escapeHtml(step.label)}</strong>
+      <span>${escapeHtml(step.detail)}</span>
+    </div>
+  `).join("");
 }
 
 function isUnlimitedLimit(value) {
@@ -987,11 +1148,69 @@ function buildCustomerAging(invoices) {
   return [...buckets.values()].sort((first, second) => second.amount - first.amount);
 }
 
+function complianceStatusLabel(status) {
+  return String(status || "pending").replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function complianceStatusTone(status) {
+  const normalized = String(status || "pending").toLowerCase();
+  if (normalized === "filed" || normalized === "not_applicable") return "blue";
+  if (normalized === "overdue" || normalized === "profile_missing") return "red";
+  if (normalized === "needs_document") return "gold";
+  return "amber";
+}
+
+function complianceTaskDate(task) {
+  return String(task?.dueDate || task?.updatedAt || task?.createdAt || "").slice(0, 10);
+}
+
+function filterComplianceTasks(tasks = []) {
+  const status = String(detailComplianceStatus?.value || "").toLowerCase();
+  const department = String(detailComplianceType?.value || "").toLowerCase();
+  const period = detailReportPeriod?.value || "all";
+  const today = new Date();
+  const sevenDaysAgo = new Date(today);
+  sevenDaysAgo.setDate(today.getDate() - 6);
+  const weekStart = sevenDaysAgo.toISOString().slice(0, 10);
+  const weekEnd = today.toISOString().slice(0, 10);
+  const fyRange = financialYearRange(detailFinancialYear?.value || currentFinancialYearLabel(today));
+  return tasks.filter((task) => {
+    const taskStatus = String(task.status || "pending").toLowerCase();
+    const taskDepartment = String(task.department || "").toLowerCase();
+    if (status && taskStatus !== status) return false;
+    if (department && taskDepartment !== department) return false;
+    if (period === "all") return true;
+    const dateValue = complianceTaskDate(task);
+    if (!dateValue) return true;
+    if (period === "weekly") return inDateRange(dateValue, weekStart, weekEnd);
+    if (period === "monthly") {
+      const selectedYear = detailReportYear?.value || String(today.getFullYear());
+      const selectedMonth = detailReportMonth?.value || String(today.getMonth() + 1).padStart(2, "0");
+      return dateValue.startsWith(`${selectedYear}-${selectedMonth}`);
+    }
+    if (period === "yearly") return dateValue.startsWith(detailReportYear?.value || String(today.getFullYear()));
+    if (period === "financial-year" && fyRange) return inDateRange(dateValue, fyRange.start, fyRange.end);
+    if (period === "custom") return inDateRange(dateValue, detailStartDate?.value || "", detailEndDate?.value || "");
+    return true;
+  });
+}
+
+function complianceStatusBuckets(tasks = []) {
+  const order = ["pending", "filed", "overdue", "needs_document", "profile_missing", "not_applicable"];
+  return order.map((status) => ({
+    label: complianceStatusLabel(status),
+    count: tasks.filter((task) => String(task.status || "pending").toLowerCase() === status).length,
+  })).filter((row) => row.count > 0);
+}
 function syncDetailFilterVisibility() {
   const period = detailReportPeriod?.value || "all";
+  const reportType = currentDashboardPage().startsWith("report-")
+    ? currentDashboardPage().replace("report-", "")
+    : "";
   detailFilterFields.forEach((field) => {
     const filter = field.getAttribute("data-report-filter");
     const visible = filter === "period"
+      || (reportType === "compliance" && filter === "compliance")
       || (period === "monthly" && (filter === "month" || filter === "year"))
       || (period === "yearly" && filter === "year")
       || (period === "financial-year" && filter === "financial-year")
@@ -1288,6 +1507,73 @@ function renderReportDetail(rawType = "revenue") {
   const profit = invoiceTotal - expenseTotal;
   renderReportDetailChart(type, invoices, purchaseOrders);
 
+  if (type === "compliance") {
+    const data = dashboardBusinessCompliance || {};
+    const tasks = filterComplianceTasks(data.complianceTasks || []);
+    const summary = data.complianceEngine?.summary || {
+      pending: tasks.filter((task) => String(task.status || "pending").toLowerCase() === "pending").length,
+      filed: tasks.filter((task) => String(task.status || "pending").toLowerCase() === "filed").length,
+      overdue: tasks.filter((task) => String(task.status || "pending").toLowerCase() === "overdue").length,
+    };
+    const review = data.complianceReview || {};
+    const reminders = data.complianceEngine?.reminders || {};
+    const nextReminder = reminders.nextReminder || null;
+    const missing = Array.isArray(review.missing) ? review.missing : [];
+    const gst = data.gst || {};
+    const readiness = data.readiness || {};
+    if (!activePlanAllows("teamAccess")) {
+      if (reportDetailMetrics) reportDetailMetrics.innerHTML = [
+        metricCard("Compliance Reports", "Business tier"),
+        metricCard("Current Plan", activePlanSummary?.label || "Free"),
+        metricCard("GST / Audit", "Locked"),
+        metricCard("Task Reminders", "Locked"),
+      ].join("");
+      renderReportTable(["Compliance Area", "Status", "How to unlock"], [
+        ["Statutory task tracker", "Locked", "Upgrade to Business to manage GST, income tax, TDS, MCA and audit tasks."],
+        ["Compliance reminders", "Locked", "Business tier enables responsible person, due date and reminder tracking."],
+        ["Compliance readiness", "Locked", "Business tier checks PAN, GSTIN, TAN, state and place of business gaps."],
+        ["GST payable summary", "Locked", "Business tier combines invoice output GST and PO/WO input GST."],
+      ]);
+      return;
+    }
+    if (reportDetailMetrics) reportDetailMetrics.innerHTML = [
+      metricCard("Pending Tasks", String(summary.pending || 0)),
+      metricCard("Filed Tasks", String(summary.filed || 0)),
+      metricCard("Overdue Tasks", String(summary.overdue || 0)),
+      metricCard("Profile Gaps", String(missing.length)),
+      metricCard("Due This Month", String(summary.dueThisMonth || 0)),
+      metricCard("Upcoming Reminders", String(reminders.counts?.upcoming ?? summary.upcomingReminders ?? 0)),
+      metricCard("Overdue Compliance", String(reminders.counts?.overdue || 0)),
+      metricCard("Next Reminder", nextReminder ? `${nextReminder.complianceName} (${nextReminder.nextReminderDate || nextReminder.dueDate || "date"})` : "None"),
+      metricCard("Net GST Payable", `INR ${money(gst.netGstPayable || 0)}`),
+      metricCard("Overall Readiness", readiness.overall ? "Ready" : "Review needed"),
+    ].join("");
+    const rows = tasks.map((task) => [
+      task.complianceName || task.id || "Compliance task",
+      task.department || "Compliance",
+      complianceStatusLabel(task.status),
+      task.dueDate || task.dueDateLabel || "Track manually",
+      task.responsiblePerson || "Not assigned",
+      task.reminderEnabled === false ? "Off" : `${task.nextReminderDate || "date"} (${task.reminderDaysBefore ?? 7} days before)`,
+      (task.requiredDocuments || []).join(", ") || "-",
+      task.notes || task.record?.auditTrail?.slice(-1)?.[0]?.toStatus || "-",
+    ]);
+    const profileRows = missing.map((field) => [
+      `Profile gap: ${field}`,
+      "Readiness",
+      "Needs update",
+      "Before filing",
+      "Owner",
+      "-",
+      "Missing profile field",
+      "Update Compliance Profile in Business Workspace.",
+    ]);
+    renderReportTable(
+      ["Compliance", "Type", "Status", "Due Date", "Responsible", "Reminder", "Documents", "Notes"],
+      rows.concat(profileRows),
+    );
+    return;
+  }
   if (type === "revenue") {
     if (reportDetailMetrics) reportDetailMetrics.innerHTML = [
       metricCard("Invoice Revenue", `INR ${money(invoiceTotal)}`),
@@ -2015,6 +2301,11 @@ function renderComplianceDashboard(enabled) {
   const financials = data.financials || {};
   const gst = data.gst || {};
   const review = data.complianceReview || {};
+  const engine = data.complianceEngine || {};
+  const engineSummary = engine.summary || {};
+  const tasks = Array.isArray(engine.tasks) ? engine.tasks : [];
+  const reminderDigest = engine.reminders || {};
+  const nextReminder = reminderDigest.next || null;
   const readyCount = ["compliance", "gst", "smtp", "gateway"].filter((key) => readiness[key]).length;
   if (complianceOverallBadge) {
     complianceOverallBadge.textContent = enabled
@@ -2030,6 +2321,7 @@ function renderComplianceDashboard(enabled) {
       ["Gateway", readiness.gateway ? "Ready" : "Not ready", data.gateway?.paymentLinkEnabled ? "Payment links enabled" : "Payment links not enabled"],
       ["Profit", `INR ${money(financials.profit || 0)}`, `Revenue INR ${money(financials.revenue || 0)} less expenses INR ${money(financials.expenses || 0)}`],
       ["Receivables", `INR ${money(financials.receivables || 0)}`, `Paid INR ${money(financials.paid || 0)}`],
+      ["Compliance reminders", String(reminderDigest.counts?.upcoming || 0), nextReminder ? `${nextReminder.complianceName} on ${nextReminder.nextReminderDate || nextReminder.dueDate || "date"}` : "No upcoming reminder in 30 days"],
     ].map(([title, value, hint]) => `
       <article class="quick-card">
         <strong>${escapeHtml(title)}</strong>
@@ -2046,7 +2338,37 @@ function renderComplianceDashboard(enabled) {
       <p>${escapeHtml(review.message || "Business compliance profile has not been checked yet.")}</p>
       ${missing.length ? `<p class="hint"><strong>Missing:</strong> ${escapeHtml(missing.join(", "))}</p>` : ""}
       ${issues.length ? `<p class="hint"><strong>Issues:</strong> ${escapeHtml(issues.join(", "))}</p>` : ""}
-      <p class="hint">Financial year starts in month ${escapeHtml(review.fiscalYearStartMonth || 4)}.</p>
+      <p class="hint">Entity: ${escapeHtml(review.entityLabel || review.entityType || "Business")} | Financial year starts in month ${escapeHtml(review.fiscalYearStartMonth || 4)}.</p>
+      <p class="hint">Generated tasks: ${escapeHtml(engineSummary.total || tasks.length || 0)} | Pending: ${escapeHtml(engineSummary.pending || 0)} | Filed: ${escapeHtml(engineSummary.filed || 0)} | Profile gaps: ${escapeHtml(engineSummary.profileMissing || 0)}</p>
+      <p class="hint">Reminders: ${escapeHtml(reminderDigest.counts?.upcoming || 0)} upcoming | ${escapeHtml(reminderDigest.counts?.overdue || 0)} overdue | ${escapeHtml(reminderDigest.counts?.dueThisMonth || 0)} due this month.</p>
+      ${tasks.length ? `
+        <div class="mini-list compliance-task-list">
+          ${tasks.map((task) => `
+            <form class="compliance-task-card" data-compliance-task-id="${escapeHtml(task.id)}">
+              <div>
+                <strong>${escapeHtml(task.complianceName)}</strong>
+                <span>${escapeHtml(task.department || "Compliance")} - ${escapeHtml(task.frequency || "review")} - Due ${escapeHtml(task.dueDate || task.dueDateLabel || "date to be tracked")}</span>
+              </div>
+              <div class="compact-fields">
+                <select name="status" aria-label="Compliance task status">
+                  ${["pending", "filed", "needs_document", "overdue", "not_applicable", "profile_missing"].map((status) => `
+                    <option value="${status}" ${String(task.status || "pending") === status ? "selected" : ""}>${status.replaceAll("_", " ")}</option>
+                  `).join("")}
+                </select>
+                <input name="dueDate" type="date" value="${escapeHtml(task.dueDate || "")}" aria-label="Compliance due date" />
+                <input name="reminderDaysBefore" type="number" min="0" max="90" value="${escapeHtml(task.reminderDaysBefore ?? 7)}" aria-label="Reminder days before due date" />
+                <input name="responsiblePerson" value="${escapeHtml(task.responsiblePerson || "")}" placeholder="Responsible person" />
+                <input name="notes" value="${escapeHtml(task.notes || "")}" placeholder="Notes" />
+                <span class="hint compact-hint">Docs: ${escapeHtml((task.requiredDocuments || []).join(", ") || "None")}</span>
+                <span class="hint compact-hint">Last reminder: ${escapeHtml(task.lastReminderSentAt ? `${task.lastReminderStatus || "sent"} on ${task.lastReminderSentAt.slice(0, 10)}` : "Not sent")}</span>
+                <label class="check-row compact"><input name="reminderEnabled" type="checkbox" ${task.reminderEnabled === false ? "" : "checked"} /> Reminder</label>
+                <button class="ghost" type="submit">Save</button>
+                <button class="ghost" type="button" data-compliance-reminder-id="${escapeHtml(task.id)}">Send reminder</button>
+              </div>
+            </form>
+          `).join("")}
+        </div>
+      ` : ""}
     `;
   }
   if (gstComplianceSummary) {
@@ -2060,22 +2382,70 @@ function renderComplianceDashboard(enabled) {
   }
 }
 
-function renderBusinessWorkspace() {
-  const enabled = activePlanAllows("teamAccess") && activePlanAllows("approvals") && activePlanAllows("apiAccess");
+function renderBusinessWorkspaceContext(enabled) {
+  const workspace = activeBusinessWorkspace();
+  const role = workspace?.role || "owner";
+  const roleLabel = `${role.charAt(0).toUpperCase()}${role.slice(1)}`;
+  if (businessWorkspaceSwitcher) {
+    businessWorkspaceSwitcher.innerHTML = dashboardBusinessWorkspaces.length
+      ? dashboardBusinessWorkspaces.map((item) => `
+        <option value="${escapeHtml(item.ownerUserId)}">${escapeHtml(item.label || item.email || "Business workspace")} (${escapeHtml(item.role || "owner")})</option>
+      `).join("")
+      : `<option value="${escapeHtml(currentUser?.id || "")}">${escapeHtml(currentUser?.name || "My workspace")} (owner)</option>`;
+    businessWorkspaceSwitcher.value = workspace?.ownerUserId || currentUser?.id || "";
+    businessWorkspaceSwitcher.disabled = dashboardBusinessWorkspaces.length <= 1;
+  }
+  if (businessWorkspaceRoleBadge) {
+    businessWorkspaceRoleBadge.textContent = roleLabel;
+    businessWorkspaceRoleBadge.className = `pill ${workspace?.source === "team" ? "blue" : "gold"}`;
+  }
   if (businessWorkspaceBadge) {
-    businessWorkspaceBadge.textContent = enabled ? "Business active" : "Business required";
+    businessWorkspaceBadge.textContent = enabled ? "Workspace active" : "Business required";
     businessWorkspaceBadge.className = `pill ${enabled ? "blue" : "gold"}`;
   }
-  if (businessWorkspaceNotice) {
-    businessWorkspaceNotice.textContent = enabled
-      ? "Business controls are enabled for this account. Admin preview can be used locally to test each tier safely."
-      : "Upgrade to Business, or use Admin plan preview locally, to test team access, approvals, and API keys.";
+}
+
+function setFormPermission(form, allowed, lockedMessage = "Your current workspace role can view this section, but cannot change it.") {
+  if (!form) return;
+  [...form.elements].forEach((element) => { element.disabled = !allowed; });
+  form.setAttribute("aria-disabled", String(!allowed));
+  form.title = allowed ? "" : lockedMessage;
+  const group = form.closest(".workspace-group");
+  if (group) {
+    group.dataset.permission = allowed ? "enabled" : "locked";
+    const status = group.querySelector("[data-workspace-lock-message]");
+    if (!allowed && !status) {
+      form.insertAdjacentHTML("beforebegin", `<div class="notice compact workspace-lock-message" data-workspace-lock-message>${escapeHtml(lockedMessage)}</div>`);
+    } else if (allowed && status) {
+      status.remove();
+    } else if (status) {
+      status.textContent = lockedMessage;
+    }
   }
-  [teamInviteForm, apiKeyForm, approvalRequestForm, businessEmailSettingsForm, businessPaymentSettingsForm, businessComplianceForm].forEach((form) => {
-    if (!form) return;
-    [...form.elements].forEach((element) => { element.disabled = !enabled; });
-  });
-  if (businessEmailTestButton) businessEmailTestButton.disabled = !enabled;
+}
+
+function renderBusinessWorkspace() {
+  const workspace = activeBusinessWorkspace();
+  const enabled = canOpenBusinessWorkspace();
+  renderBusinessWorkspaceContext(enabled);
+  renderWorkspacePermissionPanel(enabled);
+  renderBusinessWorkspaceFlowChecklist(enabled);
+  if (businessWorkspaceNotice) {
+    if (!enabled) {
+      businessWorkspaceNotice.textContent = "Upgrade to Business, or use Admin plan preview locally, to test team access, approvals, and API keys.";
+    } else if (workspace?.source === "team") {
+      businessWorkspaceNotice.textContent = `You are viewing ${workspace.label || "a Business workspace"} as ${workspace.role || "team member"}. Controls are limited by this role.`;
+    } else {
+      businessWorkspaceNotice.textContent = "Business controls are enabled for this account. Admin preview can be used locally to test each tier safely.";
+    }
+  }
+  setFormPermission(teamInviteForm, enabled && workspaceCan("manageTeam"));
+  setFormPermission(apiKeyForm, enabled && workspaceCan("apiAccess"));
+  setFormPermission(approvalRequestForm, enabled && workspaceCan("approvals"));
+  setFormPermission(businessEmailSettingsForm, enabled && workspaceCan("manageSettings"));
+  setFormPermission(businessPaymentSettingsForm, enabled && workspaceCan("manageSettings"));
+  setFormPermission(businessComplianceForm, enabled && workspaceCan("compliance"));
+  if (businessEmailTestButton) businessEmailTestButton.disabled = !(enabled && workspaceCan("manageSettings"));
   if (teamMemberCount) teamMemberCount.textContent = String(dashboardTeamMembers.length);
   if (approvalRequestCount) approvalRequestCount.textContent = String(dashboardApprovalRequests.length);
   if (apiKeyCount) apiKeyCount.textContent = String(dashboardApiKeys.filter((key) => key.status !== "revoked").length);
@@ -2113,14 +2483,22 @@ function renderBusinessWorkspace() {
   }
   if (businessComplianceForm && !businessComplianceForm.matches(":focus-within")) {
     businessComplianceForm.legalName.value = complianceProfile.legalName || "";
+    businessComplianceForm.entityType.value = complianceProfile.entityType || "individual";
+    businessComplianceForm.businessCategory.value = complianceProfile.businessCategory || "";
     businessComplianceForm.pan.value = complianceProfile.pan || "";
     businessComplianceForm.tan.value = complianceProfile.tan || "";
     businessComplianceForm.gstin.value = complianceProfile.gstin || "";
     businessComplianceForm.state.value = complianceProfile.state || "";
     businessComplianceForm.placeOfBusiness.value = complianceProfile.placeOfBusiness || "";
     businessComplianceForm.invoicePrefix.value = complianceProfile.invoicePrefix || "";
+    businessComplianceForm.annualTurnover.value = complianceProfile.annualTurnover || "";
+    businessComplianceForm.employeeCount.value = complianceProfile.employeeCount || "";
     businessComplianceForm.fiscalYearStartMonth.value = String(complianceProfile.fiscalYearStartMonth || 4);
     businessComplianceForm.gstRegistered.checked = Boolean(complianceProfile.gstRegistered);
+    businessComplianceForm.tanAvailable.checked = Boolean(complianceProfile.tanAvailable);
+    businessComplianceForm.importExport.checked = Boolean(complianceProfile.importExport);
+    businessComplianceForm.auditApplicable.checked = Boolean(complianceProfile.auditApplicable);
+    businessComplianceForm.responsiblePerson.value = complianceProfile.responsiblePerson || "";
     businessComplianceForm.address.value = complianceProfile.address || "";
   }
 
@@ -2131,8 +2509,9 @@ function renderBusinessWorkspace() {
           <div>
             <strong>${escapeHtml(member.name || member.email)}</strong>
             <div class="hint">${escapeHtml(member.email)} - ${escapeHtml(member.role || "viewer")} - ${escapeHtml(member.status || "invited")}</div>
+            ${member.status === "invited" && member.inviteToken && workspaceCan("manageTeam") ? `<div class="notice compact"><strong>Invite link:</strong> <code>${escapeHtml(`${window.location.origin}/apps/web/auth.html?invite=${member.inviteToken}`)}</code></div>` : ""}
           </div>
-          ${member.status !== "removed" ? `<button class="ghost danger small" type="button" data-remove-team="${escapeHtml(member.id)}">Remove</button>` : "<span class=\"pill gold\">Removed</span>"}
+          ${member.status !== "removed" && workspaceCan("manageTeam") ? `<button class="ghost danger small" type="button" data-remove-team="${escapeHtml(member.id)}">Remove</button>` : `<span class="pill gold">${member.status === "removed" ? "Removed" : "View only"}</span>`}
         </div>
       `).join("")
       : `<p>${enabled ? "No team members invited yet." : "Team access unlocks in Business."}</p>`;
@@ -2147,7 +2526,7 @@ function renderBusinessWorkspace() {
             <div class="hint"><code>${escapeHtml(key.tokenPreview || "hidden")}</code> - ${escapeHtml(key.status || "active")}</div>
             ${key.token ? `<div class="notice"><strong>Copy now:</strong> <code>${escapeHtml(key.token)}</code></div>` : ""}
           </div>
-          ${key.status === "active" ? `<button class="ghost danger small" type="button" data-revoke-key="${escapeHtml(key.id)}">Revoke</button>` : "<span class=\"pill gold\">Revoked</span>"}
+          ${key.status === "active" && workspaceCan("apiAccess") ? `<button class="ghost danger small" type="button" data-revoke-key="${escapeHtml(key.id)}">Revoke</button>` : `<span class="pill gold">${key.status === "active" ? "View only" : "Revoked"}</span>`}
         </div>
       `).join("")
       : `<p>${enabled ? "No API keys created yet." : "API access unlocks in Business."}</p>`;
@@ -2163,8 +2542,10 @@ function renderBusinessWorkspace() {
             ${request.notes ? `<div class="hint">${escapeHtml(request.notes)}</div>` : ""}
           </div>
           <div class="row-actions">
-            <button class="ghost small" type="button" data-approval-decision="${escapeHtml(request.id)}" data-status="approved">Approve</button>
-            <button class="ghost danger small" type="button" data-approval-decision="${escapeHtml(request.id)}" data-status="rejected">Reject</button>
+            ${workspaceCan("approvals") ? `
+              <button class="ghost small" type="button" data-approval-decision="${escapeHtml(request.id)}" data-status="approved">Approve</button>
+              <button class="ghost danger small" type="button" data-approval-decision="${escapeHtml(request.id)}" data-status="rejected">Reject</button>
+            ` : `<span class="pill gold">View only</span>`}
           </div>
         </div>
       `).join("")
@@ -2174,7 +2555,10 @@ function renderBusinessWorkspace() {
   document.querySelectorAll("[data-remove-team]").forEach((button) => {
     button.addEventListener("click", async () => {
       try {
-        const member = await apiClient.updateTeamMember(token, button.getAttribute("data-remove-team"), { status: "removed" });
+        const member = await apiClient.updateTeamMember(token, button.getAttribute("data-remove-team"), {
+          status: "removed",
+          ...selectedWorkspaceOptions(),
+        });
         dashboardTeamMembers = dashboardTeamMembers.map((item) => (item.id === member.id ? member : item));
         renderBusinessWorkspace();
       } catch (error) {
@@ -2186,7 +2570,7 @@ function renderBusinessWorkspace() {
   document.querySelectorAll("[data-revoke-key]").forEach((button) => {
     button.addEventListener("click", async () => {
       try {
-        const key = await apiClient.revokeApiKey(token, button.getAttribute("data-revoke-key"));
+        const key = await apiClient.revokeApiKey(token, button.getAttribute("data-revoke-key"), selectedWorkspaceOptions());
         dashboardApiKeys = dashboardApiKeys.map((item) => (item.id === key.id ? key : item));
         renderBusinessWorkspace();
       } catch (error) {
@@ -2200,6 +2584,7 @@ function renderBusinessWorkspace() {
       try {
         const request = await apiClient.decideApprovalRequest(token, button.getAttribute("data-approval-decision"), {
           status: button.getAttribute("data-status"),
+          ...selectedWorkspaceOptions(),
         });
         dashboardApprovalRequests = dashboardApprovalRequests.map((item) => (item.id === request.id ? request : item));
         renderBusinessWorkspace();
@@ -2211,7 +2596,16 @@ function renderBusinessWorkspace() {
 }
 
 async function loadBusinessWorkspace() {
-  if (!activePlanAllows("teamAccess") && !activePlanAllows("approvals") && !activePlanAllows("apiAccess")) {
+  dashboardBusinessWorkspaces = await apiClient.listBusinessWorkspaces(token).catch(() => []);
+  if (dashboardBusinessWorkspaces.length) {
+    const stillAvailable = dashboardBusinessWorkspaces.some((workspace) => workspace.ownerUserId === selectedBusinessWorkspaceOwnerId);
+    if (!selectedBusinessWorkspaceOwnerId || !stillAvailable) {
+      const teamWorkspace = dashboardBusinessWorkspaces.find((workspace) => workspace.source === "team");
+      selectedBusinessWorkspaceOwnerId = (teamWorkspace || dashboardBusinessWorkspaces[0]).ownerUserId;
+      window.localStorage?.setItem("eazinvoice_business_workspace_owner", selectedBusinessWorkspaceOwnerId);
+    }
+  }
+  if (!canOpenBusinessWorkspace()) {
     dashboardTeamMembers = [];
     dashboardApprovalRequests = [];
     dashboardApiKeys = [];
@@ -2220,12 +2614,13 @@ async function loadBusinessWorkspace() {
     renderBusinessWorkspace();
     return;
   }
+  const workspaceOptions = selectedWorkspaceOptions();
   const [members, approvals, apiKeys, settings, compliance] = await Promise.all([
-    apiClient.listTeamMembers(token).catch(() => []),
-    apiClient.listApprovalRequests(token).catch(() => []),
-    apiClient.listApiKeys(token).catch(() => []),
-    apiClient.getBusinessSettings(token).catch(() => ({ emailSettings: {}, paymentSettings: {}, complianceProfile: {} })),
-    apiClient.getBusinessComplianceDashboard(token).catch(() => null),
+    apiClient.listTeamMembers(token, workspaceOptions).catch(() => []),
+    apiClient.listApprovalRequests(token, workspaceOptions).catch(() => []),
+    apiClient.listApiKeys(token, workspaceOptions).catch(() => []),
+    apiClient.getBusinessSettings(token, workspaceOptions).catch(() => ({ emailSettings: {}, paymentSettings: {}, complianceProfile: {} })),
+    apiClient.getBusinessComplianceDashboard(token, workspaceOptions).catch(() => null),
   ]);
   dashboardTeamMembers = members;
   dashboardApprovalRequests = approvals;
@@ -2411,6 +2806,7 @@ teamInviteForm?.addEventListener("submit", async (event) => {
       name: formData.get("name"),
       email: formData.get("email"),
       role: formData.get("role"),
+      ...selectedWorkspaceOptions(),
     });
     dashboardTeamMembers = [member, ...dashboardTeamMembers.filter((item) => item.id !== member.id)];
     teamInviteForm.reset();
@@ -2434,6 +2830,7 @@ businessEmailSettingsForm?.addEventListener("submit", async (event) => {
   const formData = new FormData(businessEmailSettingsForm);
   try {
     dashboardBusinessSettings = await apiClient.updateBusinessSettings(token, {
+      ...selectedWorkspaceOptions(),
       emailSettings: {
         senderName: formData.get("senderName"),
         fromEmail: formData.get("fromEmail"),
@@ -2449,7 +2846,7 @@ businessEmailSettingsForm?.addEventListener("submit", async (event) => {
     });
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = "Business email settings saved. SMTP password is hidden after saving.";
     setInlineStatus(businessEmailStatus, "Business email settings saved. SMTP password is hidden after saving.", "success");
-    dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token).catch(() => dashboardBusinessCompliance);
+    dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token, selectedWorkspaceOptions()).catch(() => dashboardBusinessCompliance);
     renderBusinessWorkspace();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not save email settings.";
@@ -2467,6 +2864,7 @@ businessEmailTestButton?.addEventListener("click", async () => {
   const hasPassword = Boolean(String(formData.get("smtpPass") || "").trim());
   try {
     dashboardBusinessSettings = await apiClient.validateBusinessEmailSettings(token, {
+      ...selectedWorkspaceOptions(),
       sendTestEmail: hasPassword,
       testRecipient: formData.get("replyToEmail") || formData.get("fromEmail"),
       emailSettings: {
@@ -2495,7 +2893,7 @@ businessEmailTestButton?.addEventListener("click", async () => {
         : `SMTP settings need attention: ${status}`,
       status === "ready" ? "success" : "error",
     );
-    dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token).catch(() => dashboardBusinessCompliance);
+    dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token, selectedWorkspaceOptions()).catch(() => dashboardBusinessCompliance);
     renderBusinessWorkspace();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not validate SMTP settings.";
@@ -2509,6 +2907,7 @@ businessPaymentSettingsForm?.addEventListener("submit", async (event) => {
   const formData = new FormData(businessPaymentSettingsForm);
   try {
     dashboardBusinessSettings = await apiClient.updateBusinessSettings(token, {
+      ...selectedWorkspaceOptions(),
       paymentSettings: {
         keyId: formData.get("keyId"),
         keySecret: formData.get("keySecret"),
@@ -2518,7 +2917,7 @@ businessPaymentSettingsForm?.addEventListener("submit", async (event) => {
     });
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = "Business Razorpay settings saved. Secrets are hidden after saving.";
     setInlineStatus(businessPaymentStatus, "Business Razorpay settings saved. Secrets are hidden after saving.", "success");
-    dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token).catch(() => dashboardBusinessCompliance);
+    dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token, selectedWorkspaceOptions()).catch(() => dashboardBusinessCompliance);
     renderBusinessWorkspace();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not save payment gateway settings.";
@@ -2532,26 +2931,78 @@ businessComplianceForm?.addEventListener("submit", async (event) => {
   const formData = new FormData(businessComplianceForm);
   try {
     dashboardBusinessSettings = await apiClient.updateBusinessSettings(token, {
+      ...selectedWorkspaceOptions(),
       complianceProfile: {
         legalName: formData.get("legalName"),
+        entityType: formData.get("entityType"),
+        businessCategory: formData.get("businessCategory"),
         pan: formData.get("pan"),
         tan: formData.get("tan"),
         gstin: formData.get("gstin"),
         state: formData.get("state"),
         placeOfBusiness: formData.get("placeOfBusiness"),
         invoicePrefix: formData.get("invoicePrefix"),
+        annualTurnover: formData.get("annualTurnover"),
+        employeeCount: formData.get("employeeCount"),
         fiscalYearStartMonth: formData.get("fiscalYearStartMonth"),
         gstRegistered: formData.get("gstRegistered") === "on",
+        tanAvailable: formData.get("tanAvailable") === "on",
+        importExport: formData.get("importExport") === "on",
+        auditApplicable: formData.get("auditApplicable") === "on",
+        responsiblePerson: formData.get("responsiblePerson"),
         address: formData.get("address"),
       },
     });
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = "Compliance profile saved for reports, audit trails, and future GST exports.";
     setInlineStatus(businessComplianceStatus, "Compliance profile saved for reports, audit trails, and future GST exports.", "success");
-    dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token).catch(() => dashboardBusinessCompliance);
+    dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token, selectedWorkspaceOptions()).catch(() => dashboardBusinessCompliance);
     renderBusinessWorkspace();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not save compliance profile.";
     setInlineStatus(businessComplianceStatus, error.message || "Could not save compliance profile.", "error");
+  }
+});
+
+complianceReadinessList?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-compliance-reminder-id]");
+  if (!button) return;
+  const taskId = button.getAttribute("data-compliance-reminder-id");
+  button.disabled = true;
+  setInlineStatus(businessComplianceStatus, "Sending compliance reminder...", "");
+  try {
+    await apiClient.sendComplianceReminder(token, taskId, selectedWorkspaceOptions());
+    dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token, selectedWorkspaceOptions()).catch(() => dashboardBusinessCompliance);
+    renderBusinessWorkspace();
+    setInlineStatus(businessComplianceStatus, "Compliance reminder sent and logged on the task.", "success");
+  } catch (error) {
+    setInlineStatus(businessComplianceStatus, error.message || "Could not send compliance reminder.", "error");
+  } finally {
+    button.disabled = false;
+  }
+});
+
+complianceReadinessList?.addEventListener("submit", async (event) => {
+  const form = event.target.closest("[data-compliance-task-id]");
+  if (!form) return;
+  event.preventDefault();
+  const taskId = form.getAttribute("data-compliance-task-id");
+  const formData = new FormData(form);
+  setInlineStatus(businessComplianceStatus, "Saving compliance task...", "");
+  try {
+    await apiClient.updateComplianceTask(token, taskId, {
+      ...selectedWorkspaceOptions(),
+      status: formData.get("status"),
+      reminderDaysBefore: formData.get("reminderDaysBefore"),
+      dueDate: formData.get("dueDate"),
+      reminderEnabled: formData.get("reminderEnabled") === "on",
+      responsiblePerson: formData.get("responsiblePerson"),
+      notes: formData.get("notes"),
+    });
+    dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token, selectedWorkspaceOptions()).catch(() => dashboardBusinessCompliance);
+    renderBusinessWorkspace();
+    setInlineStatus(businessComplianceStatus, "Compliance task saved. The dashboard now remembers this status and reminder.", "success");
+  } catch (error) {
+    setInlineStatus(businessComplianceStatus, error.message || "Could not save compliance task.", "error");
   }
 });
 
@@ -2560,7 +3011,7 @@ apiKeyForm?.addEventListener("submit", async (event) => {
   setInlineStatus(apiKeyStatus, "Generating API key...", "");
   const formData = new FormData(apiKeyForm);
   try {
-    const key = await apiClient.createApiKey(token, { label: formData.get("label") });
+    const key = await apiClient.createApiKey(token, { label: formData.get("label"), ...selectedWorkspaceOptions() });
     dashboardApiKeys = [key, ...dashboardApiKeys];
     apiKeyForm.reset();
     setInlineStatus(apiKeyStatus, "API key generated. Copy the secret now; it will be hidden after refresh.", "success");
@@ -2577,6 +3028,7 @@ approvalRequestForm?.addEventListener("submit", async (event) => {
   const formData = new FormData(approvalRequestForm);
   try {
     const request = await apiClient.createApprovalRequest(token, {
+      ...selectedWorkspaceOptions(),
       documentType: formData.get("documentType"),
       documentNumber: formData.get("documentNumber"),
       notes: formData.get("notes"),
@@ -2682,7 +3134,7 @@ runRecurringDraftsBtn?.addEventListener("click", async () => {
   });
 });
 
-[detailReportPeriod, detailReportMonth, detailReportYear, detailFinancialYear, detailStartDate, detailEndDate].forEach((filter) => {
+[detailReportPeriod, detailReportMonth, detailReportYear, detailFinancialYear, detailStartDate, detailEndDate, detailComplianceStatus, detailComplianceType].forEach((filter) => {
   filter?.addEventListener("change", async () => {
     syncDetailFilterVisibility();
     await refreshDetailReportSummary();
@@ -2692,6 +3144,16 @@ runRecurringDraftsBtn?.addEventListener("click", async () => {
 
 reportExportCsv?.addEventListener("click", downloadCurrentReportCsv);
 reportExportPrint?.addEventListener("click", printCurrentReport);
+
+businessWorkspaceSwitcher?.addEventListener("change", async () => {
+  selectedBusinessWorkspaceOwnerId = businessWorkspaceSwitcher.value || currentUser?.id || "";
+  window.localStorage?.setItem("eazinvoice_business_workspace_owner", selectedBusinessWorkspaceOwnerId);
+  renderBusinessWorkspace();
+  await loadBusinessWorkspace().catch((error) => {
+    if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not load the selected workspace.";
+    renderBusinessWorkspace();
+  });
+});
 
 workspaceTargetLinks.forEach((link) => {
   link.addEventListener("click", (event) => {

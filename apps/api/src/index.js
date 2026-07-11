@@ -114,6 +114,23 @@ export function createApi(deps = {}) {
       }
     },
 
+    requireBusinessWorkspaceAccess(user, options = {}, permission = "read") {
+      if (!user?.id) throw new Error("Authentication required");
+      const ownerUserId = options.workspaceOwnerUserId || options.ownerUserId || user.id;
+      const access = store.getBusinessWorkspaceAccess(user, ownerUserId);
+      if (!access) throw new Error("Business workspace access denied");
+      const owner = store.getUserById(access.ownerUserId);
+      if (!owner) throw new Error("Business workspace owner not found");
+      this.requireFeature(owner, "teamAccess", access.source === "owned" || access.source === "admin" ? options : {});
+      if (!access.permissions?.[permission]) {
+        throw new Error("This team role cannot perform this Business workspace action");
+      }
+      return {
+        ...access,
+        owner,
+      };
+    },
+
     getUserPlanLimits(user, options = {}) {
       let limits = null;
       if (options.previewPlan) limits = getPlanDefinition(options.previewPlan).limits;
@@ -222,23 +239,29 @@ export function createApi(deps = {}) {
     },
 
     listTeamMembers(user, options = {}) {
-      this.requireFeature(user, "teamAccess", options);
-      return store.listTeamMembersForUser(user);
+      const access = this.requireBusinessWorkspaceAccess(user, options, "read");
+      return store.listTeamMembersForWorkspace(access.ownerUserId);
     },
 
     createTeamMember(user, input = {}, options = {}) {
-      if (!user?.id) throw new Error("Authentication required");
-      this.requireFeature(user, "teamAccess", options);
+      const access = this.requireBusinessWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+      }, "manageTeam");
       return store.createTeamMember({
         ...input,
-        ownerUserId: user.id,
+        ownerUserId: access.ownerUserId,
         invitedByUserId: user.id,
       });
     },
 
     updateTeamMember(user, memberId, updates = {}, options = {}) {
-      if (!user?.id) throw new Error("Authentication required");
-      this.requireFeature(user, "teamAccess", options);
+      const current = store.listTeamMembersForUser(user).find((member) => member.id === memberId);
+      const ownerUserId = updates.workspaceOwnerUserId || current?.ownerUserId || user?.id;
+      this.requireBusinessWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: ownerUserId,
+      }, "manageTeam");
       const member = store.updateTeamMember(memberId, updates, user);
       if (!member) throw new Error("Team member not found");
       return member;
@@ -251,86 +274,165 @@ export function createApi(deps = {}) {
       return member;
     },
 
+    listBusinessWorkspaces(user) {
+      if (!user?.id) throw new Error("Authentication required");
+      return store.listBusinessWorkspacesForUser(user);
+    },
+
     getBusinessSettings(user, options = {}) {
-      this.requireFeature(user, "teamAccess", options);
-      return store.getBusinessSettingsForUser(user, options.companyId || null) || {
+      const access = this.requireBusinessWorkspaceAccess(user, options, "read");
+      return store.getBusinessSettingsForUser(access.owner, options.companyId || access.companyId || null) || {
         id: "",
-        ownerUserId: user?.id || null,
-        companyId: options.companyId || null,
+        ownerUserId: access.ownerUserId,
+        companyId: options.companyId || access.companyId || null,
         emailSettings: {},
         paymentSettings: {},
         complianceProfile: {},
+        workspaceAccess: access,
       };
     },
 
     getBusinessEmailDeliverySettings(user, options = {}) {
-      if (!user?.id) throw new Error("Authentication required");
-      this.requireFeature(user, "teamAccess", options);
-      return store.getRawBusinessSettingsForUser(user, options.companyId || null)?.emailSettings || {};
+      const access = this.requireBusinessWorkspaceAccess(user, options, "read");
+      return store.getRawBusinessSettingsForUser(access.owner, options.companyId || access.companyId || null)?.emailSettings || {};
     },
 
     updateBusinessSettings(user, input = {}, options = {}) {
-      if (!user?.id) throw new Error("Authentication required");
-      this.requireFeature(user, "teamAccess", options);
-      return store.upsertBusinessSettings(user, input);
+      const access = this.requireBusinessWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+      }, "manageSettings");
+      return store.upsertBusinessSettings(access.owner, input);
     },
 
     validateBusinessEmailSettings(user, input = {}, options = {}) {
-      if (!user?.id) throw new Error("Authentication required");
-      this.requireFeature(user, "teamAccess", options);
-      return store.validateBusinessEmailSettings(user, input);
+      const access = this.requireBusinessWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+      }, "manageSettings");
+      return store.validateBusinessEmailSettings(access.owner, input);
     },
 
     getBusinessComplianceDashboard(user, options = {}) {
-      if (!user?.id) throw new Error("Authentication required");
-      this.requireFeature(user, "teamAccess", options);
-      return store.getBusinessComplianceDashboard(user, options.companyId || null);
+      const access = this.requireBusinessWorkspaceAccess(user, options, "read");
+      return store.getBusinessComplianceDashboard(access.owner, options.companyId || access.companyId || null);
     },
 
+    updateComplianceTask(user, taskId, input = {}, options = {}) {
+      const access = this.requireBusinessWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+      }, "compliance");
+      return store.updateComplianceTask(access.owner, taskId, input);
+    },
+
+    recordComplianceReminderDelivery(user, taskId, input = {}, options = {}) {
+      const access = this.requireBusinessWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+      }, "compliance");
+      return store.recordComplianceReminderDelivery(access.owner, taskId, input);
+    },
     listApprovalRequests(user, options = {}) {
-      this.requireFeature(user, "approvals", options);
-      return store.listApprovalRequestsForUser(user);
+      const targetOwnerUserId = options.workspaceOwnerUserId || user?.id;
+      if (targetOwnerUserId === user?.id) {
+        this.requireFeature(user, "approvals", options);
+        return store.listApprovalRequestsForUser(user);
+      }
+      const access = this.requireBusinessWorkspaceAccess(user, options, "read");
+      return store.listApprovalRequestsForUser(access.owner);
     },
 
     createApprovalRequest(user, input = {}, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
-      this.requireFeature(user, "approvals", options);
+      const targetOwnerUserId = input.workspaceOwnerUserId || options.workspaceOwnerUserId || user.id;
+      if (targetOwnerUserId === user.id) {
+        this.requireFeature(user, "approvals", options);
+        return store.createApprovalRequest({
+          ...input,
+          ownerUserId: user.id,
+          requestedByUserId: user.id,
+        });
+      }
+      const access = this.requireBusinessWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: targetOwnerUserId,
+      }, "approvals");
       return store.createApprovalRequest({
         ...input,
-        ownerUserId: user.id,
+        ownerUserId: access.ownerUserId,
         requestedByUserId: user.id,
       });
     },
 
     decideApprovalRequest(user, approvalId, input = {}, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
-      this.requireFeature(user, "approvals", options);
+      const targetOwnerUserId = input.workspaceOwnerUserId || options.workspaceOwnerUserId || user.id;
+      if (targetOwnerUserId === user.id) {
+        this.requireFeature(user, "approvals", options);
+        const request = store.decideApprovalRequest(approvalId, {
+          ...input,
+          approverUserId: user.id,
+        }, user);
+        if (!request) throw new Error("Approval request not found");
+        return request;
+      }
+      const access = this.requireBusinessWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: targetOwnerUserId,
+      }, "approvals");
       const request = store.decideApprovalRequest(approvalId, {
         ...input,
         approverUserId: user.id,
-      }, user);
+      }, access.owner);
       if (!request) throw new Error("Approval request not found");
       return request;
     },
 
     listApiKeys(user, options = {}) {
-      this.requireFeature(user, "apiAccess", options);
-      return store.listApiKeysForUser(user);
+      const targetOwnerUserId = options.workspaceOwnerUserId || user?.id;
+      if (targetOwnerUserId === user?.id) {
+        this.requireFeature(user, "apiAccess", options);
+        return store.listApiKeysForUser(user);
+      }
+      const access = this.requireBusinessWorkspaceAccess(user, options, "apiAccess");
+      return store.listApiKeysForUser(access.owner);
     },
 
     createApiKey(user, input = {}, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
-      this.requireFeature(user, "apiAccess", options);
+      const targetOwnerUserId = input.workspaceOwnerUserId || options.workspaceOwnerUserId || user.id;
+      if (targetOwnerUserId === user.id) {
+        this.requireFeature(user, "apiAccess", options);
+        return store.createApiKey({
+          ...input,
+          ownerUserId: user.id,
+        });
+      }
+      const access = this.requireBusinessWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: targetOwnerUserId,
+      }, "apiAccess");
       return store.createApiKey({
         ...input,
-        ownerUserId: user.id,
+        ownerUserId: access.ownerUserId,
       });
     },
 
     revokeApiKey(user, apiKeyId, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
-      this.requireFeature(user, "apiAccess", options);
-      const key = store.revokeApiKey(apiKeyId, user);
+      const targetOwnerUserId = options.workspaceOwnerUserId || user.id;
+      if (targetOwnerUserId === user.id) {
+        this.requireFeature(user, "apiAccess", options);
+        const key = store.revokeApiKey(apiKeyId, user);
+        if (!key) throw new Error("API key not found");
+        return key;
+      }
+      const access = this.requireBusinessWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: targetOwnerUserId,
+      }, "apiAccess");
+      const key = store.revokeApiKey(apiKeyId, access.owner);
       if (!key) throw new Error("API key not found");
       return key;
     },

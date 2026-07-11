@@ -228,6 +228,7 @@
           <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-po"><strong>PO / WO</strong><span>Purchase order and work order activity, value, drafts and created records.</span></a>
           <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-profit-loss"><strong>Profit and Loss</strong><span>Revenue minus expenses with monthly and yearly filters.</span></a>
           <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-gst"><strong>GST Compliance</strong><span>Output GST, input GST and estimated net GST payable.</span></a>
+          <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-compliance"><strong>Compliance</strong><span>Pending, filed and overdue statutory tasks with profile readiness gaps.</span></a>
           <a class="quick-card report-link-card" href="/apps/web/dashboard.html#report-paid"><strong>Paid Reports</strong><span>Balance sheet, growth graphs, customer aging and advanced analytics.</span></a>
         </div>
         <div class="report-command compact">
@@ -298,6 +299,28 @@
           </label>
           <label data-report-filter="custom">To
             <input id="detailEndDate" type="date" />
+          </label>
+          <label data-report-filter="compliance">Status
+            <select id="detailComplianceStatus">
+              <option value="">All statuses</option>
+              <option value="pending">Pending</option>
+              <option value="filed">Filed</option>
+              <option value="overdue">Overdue</option>
+              <option value="needs_document">Needs document</option>
+              <option value="profile_missing">Profile missing</option>
+              <option value="not_applicable">Not applicable</option>
+            </select>
+          </label>
+          <label data-report-filter="compliance">Compliance Type
+            <select id="detailComplianceType">
+              <option value="">All types</option>
+              <option value="GST">GST</option>
+              <option value="Income Tax">Income Tax</option>
+              <option value="TDS">TDS</option>
+              <option value="MCA">MCA</option>
+              <option value="Audit">Audit</option>
+              <option value="Professional Tax">Professional Tax</option>
+            </select>
           </label>
         </div>
         <div id="reportDetailMetrics" class="metric-grid"></div>
@@ -460,9 +483,18 @@
             <h2>Business Workspace</h2>
             <p class="hint">Each workspace tool is kept separate below, so it is clear that they are connected but not all mandatory at once.</p>
           </div>
-          <span id="businessWorkspaceBadge" class="pill gold">Business required</span>
+          <div class="workspace-context">
+            <label for="businessWorkspaceSwitcher">Active workspace</label>
+            <select id="businessWorkspaceSwitcher">
+              <option value="">My workspace</option>
+            </select>
+            <span id="businessWorkspaceRoleBadge" class="pill gold">Owner</span>
+            <span id="businessWorkspaceBadge" class="pill gold">Business required</span>
+          </div>
         </div>
         <div id="businessWorkspaceNotice" class="notice">Business features unlock team access, approval workflows, API access, and business-side integrations.</div>
+        <div id="businessWorkspacePermissionPanel" class="workspace-permission-panel" aria-live="polite"></div>
+        <div id="businessWorkspaceFlowChecklist" class="workspace-flow-checklist" aria-live="polite"></div>
         <div class="quick-grid">
           <article class="quick-card">
             <strong>Team Members</strong>
@@ -556,18 +588,54 @@
           <div class="workspace-group-body">
             <form id="businessComplianceForm" class="stacked-form grid two">
               <input name="legalName" placeholder="Legal name" />
+              <select name="entityType">
+                <option value="individual">Individual / freelancer</option>
+                <option value="sole_proprietorship">Sole proprietorship</option>
+                <option value="partnership_firm">Partnership firm</option>
+                <option value="llp">LLP</option>
+                <option value="private_limited_company">Private limited company</option>
+                <option value="opc">One person company</option>
+                <option value="trust">Trust</option>
+                <option value="society">Society</option>
+                <option value="ngo">NGO</option>
+                <option value="religious_organization">Religious organization</option>
+                <option value="service_company">Service company</option>
+                <option value="trading_company">Trading company</option>
+                <option value="manufacturing_company">Manufacturing company</option>
+                <option value="ecommerce_business">E-commerce business</option>
+                <option value="import_export_business">Import/export business</option>
+              </select>
+              <select name="businessCategory">
+                <option value="">Business category</option>
+                <option value="service">Service</option>
+                <option value="trading">Trading</option>
+                <option value="manufacturing">Manufacturing</option>
+                <option value="retail">Retail</option>
+                <option value="ecommerce">E-commerce</option>
+                <option value="education">Education</option>
+                <option value="nonprofit">Nonprofit</option>
+                <option value="religious">Religious</option>
+                <option value="professional">Professional</option>
+                <option value="import_export">Import/export</option>
+              </select>
               <input name="pan" placeholder="PAN" />
               <input name="tan" placeholder="TAN" />
               <input name="gstin" placeholder="GSTIN" />
               <input name="state" placeholder="State" />
               <input name="placeOfBusiness" placeholder="Place of business" />
               <input name="invoicePrefix" placeholder="Invoice prefix" />
+              <input name="annualTurnover" type="number" min="0" step="1" placeholder="Annual turnover" />
+              <input name="employeeCount" type="number" min="0" step="1" placeholder="Employee count" />
               <select name="fiscalYearStartMonth">
                 <option value="4">Financial year starts in April</option>
                 <option value="1">Financial year starts in January</option>
                 <option value="7">Financial year starts in July</option>
               </select>
               <label class="check-row"><input name="gstRegistered" type="checkbox" /> GST registered</label>
+              <label class="check-row"><input name="tanAvailable" type="checkbox" /> TAN available / required</label>
+              <label class="check-row"><input name="importExport" type="checkbox" /> Import/export activity</label>
+              <label class="check-row"><input name="auditApplicable" type="checkbox" /> Audit applicable</label>
+              <input name="responsiblePerson" placeholder="Responsible person" />
               <textarea name="address" placeholder="Registered address"></textarea>
               <button class="primary" type="submit">Save Compliance Profile</button>
               <div id="businessComplianceStatus" class="inline-status full" aria-live="polite"></div>

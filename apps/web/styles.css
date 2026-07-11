@@ -699,6 +699,144 @@ html { scroll-behavior: smooth; }
   box-shadow: 0 18px 40px rgba(28,22,48,.06);
 }
 .panel-head, .items-head, .actions, .preview-top, .preview-total { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.workspace-context {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.workspace-context label {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--muted);
+}
+.workspace-context select {
+  min-width: 220px;
+  max-width: 320px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 11px 12px;
+  background: rgba(255,255,255,.92);
+  font-weight: 800;
+}
+.workspace-permission-panel {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0 18px;
+}
+.workspace-permission-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(15,23,42,.10);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(255,255,255,.96), rgba(239,246,255,.92));
+}
+.workspace-permission-copy span {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: right;
+}
+.workspace-permission-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.workspace-permission-item {
+  min-height: 92px;
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid rgba(15,23,42,.10);
+  border-radius: 14px;
+  background: #fff;
+}
+.workspace-permission-item strong {
+  font-size: 14px;
+}
+.workspace-permission-item span {
+  width: fit-content;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #075985;
+  background: #e0f2fe;
+  font-size: 11px;
+  font-weight: 800;
+}
+.workspace-permission-item small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+.workspace-permission-item[data-allowed="false"] {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+.workspace-permission-item[data-allowed="false"] span {
+  color: #92400e;
+  background: #ffedd5;
+}
+.workspace-flow-checklist {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 18px;
+}
+.workspace-flow-step {
+  min-height: 92px;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #fff;
+}
+.workspace-flow-step strong {
+  font-size: 14px;
+}
+.workspace-flow-step span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.workspace-flow-step::before {
+  width: fit-content;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+.workspace-flow-step[data-state="done"] {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+.workspace-flow-step[data-state="done"]::before {
+  content: "Ready";
+  color: #166534;
+  background: #dcfce7;
+}
+.workspace-flow-step[data-state="open"] {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+.workspace-flow-step[data-state="open"]::before {
+  content: "Next";
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+.workspace-flow-step[data-state="locked"] {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+.workspace-flow-step[data-state="locked"]::before {
+  content: "Locked";
+  color: #92400e;
+  background: #ffedd5;
+}
 .actions { flex-wrap: wrap; }
 .grid.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .stack { display: grid; gap: 14px; }
@@ -902,6 +1040,21 @@ input, textarea, select {
   color: rgba(28,22,48,.66);
   font-size: 12px;
   margin-bottom: 8px;
+}
+.mini-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+.mini-list > div {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(255,255,255,.72);
+}
+.mini-list strong,
+.mini-list span {
+  display: block;
 }
 .metric-card strong {
   font-size: 24px;
@@ -2095,6 +2248,12 @@ input:focus, textarea:focus, select:focus { outline: 3px solid rgba(37,99,235,.1
   background: rgba(255,255,255,.82);
   overflow: hidden;
 }
+.workspace-group[data-permission="locked"] {
+  border-color: #fed7aa;
+}
+.workspace-lock-message {
+  margin-bottom: 12px;
+}
 .workspace-group summary {
   list-style: none;
 }
@@ -3127,6 +3286,14 @@ label,
     background: linear-gradient(180deg, rgba(37,99,235,.06), rgba(255,255,255,0) 260px), #f8fafc;
   }
 
+  .workspace-permission-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-flow-checklist {
+    grid-template-columns: 1fr;
+  }
+
   .topbar,
   .landing-header {
     padding: 10px 12px;
@@ -3156,6 +3323,29 @@ label,
 
   .panel-head {
     gap: 10px;
+  }
+
+  .workspace-context,
+  .workspace-context select {
+    width: 100%;
+    max-width: none;
+  }
+
+  .workspace-permission-copy {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .workspace-permission-copy span {
+    text-align: left;
+  }
+
+  .workspace-permission-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workspace-flow-checklist {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .panel-head .primary,
@@ -3252,5 +3442,50 @@ label,
 
   .live-chart-track {
     min-height: 96px;
+  }
+}
+/* Business compliance task controls */
+.compliance-task-list {
+  display: grid;
+  gap: 12px;
+}
+
+.compliance-task-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line, #dbe3f0);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.compliance-task-card .compact-fields {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.8fr) minmax(80px, 0.5fr) minmax(140px, 1fr) minmax(140px, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.compliance-task-card input,
+.compliance-task-card select {
+  min-height: 40px;
+  font-size: 0.88rem;
+}
+
+.check-row.compact {
+  min-height: 40px;
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .compliance-task-card .compact-fields {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .compliance-task-card .compact-fields {
+    grid-template-columns: 1fr;
   }
 }
