@@ -438,9 +438,9 @@ function renderBusinessWorkspaceStatusBoard(enabled) {
       tone: smtpConfigured ? "ready" : "attention",
     },
     {
-      label: "Team Invites",
-      value: dashboardTeamMembers.length ? `${dashboardTeamMembers.length} saved` : "No invites",
-      detail: latestInvite?.inviteDeliveryMessage || "Invite links work even before SMTP is configured.",
+      label: "Sub-user Access",
+      value: dashboardTeamMembers.length ? `${dashboardTeamMembers.length} saved` : "No sub-users",
+      detail: latestInvite?.inviteDeliveryMessage || "Sub-users get access by logging in with their verified email.",
       tone: latestInvite?.inviteDeliveryStatus === "failed" ? "danger" : latestInvite ? "ready" : "neutral",
     },
     {
@@ -2576,7 +2576,7 @@ function renderBusinessWorkspace() {
             <strong>${escapeHtml(member.name || member.email)}</strong>
             <div class="hint">${escapeHtml(member.email)} - ${escapeHtml(member.role || "viewer")} - ${escapeHtml(member.status || "invited")}</div>
             ${member.inviteDeliveryMessage ? `<div class="hint delivery-hint">${escapeHtml(member.inviteDeliveryMessage)}</div>` : ""}
-            ${member.status === "invited" && member.inviteToken && workspaceCan("manageTeam") ? `<div class="notice compact"><strong>Invite link:</strong> <code>${escapeHtml(`${window.location.origin}/apps/web/auth.html?invite=${member.inviteToken}`)}</code></div>` : ""}
+            ${member.status === "active" ? `<div class="notice compact">Access is tied to this email address. No invite link is required.</div>` : ""}
           </div>
           ${member.status !== "removed" && workspaceCan("manageTeam") ? `<button class="ghost danger small" type="button" data-remove-team="${escapeHtml(member.id)}">Remove</button>` : `<span class="pill gold">${member.status === "removed" ? "Removed" : "View only"}</span>`}
         </div>
@@ -2873,7 +2873,7 @@ attachFormValidityStatus(approvalRequestForm, approvalRequestStatus, "Please ent
 
 teamInviteForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  setInlineStatus(teamInviteStatus, "Inviting team member...", "");
+  setInlineStatus(teamInviteStatus, "Creating sub-user access...", "");
   const formData = new FormData(teamInviteForm);
   try {
     const member = await apiClient.createTeamMember(token, {
@@ -2885,7 +2885,7 @@ teamInviteForm?.addEventListener("submit", async (event) => {
     dashboardTeamMembers = [member, ...dashboardTeamMembers.filter((item) => item.id !== member.id)];
     teamInviteForm.reset();
     const deliveryStatus = member.inviteDeliveryStatus || "queued";
-    const deliveryMessage = member.inviteDeliveryMessage || "Team member invitation saved in the Business workspace.";
+    const deliveryMessage = member.inviteDeliveryMessage || "Sub-user access saved. The user can log in with the same verified email address.";
     setInlineStatus(
       teamInviteStatus,
       deliveryMessage,
@@ -2893,8 +2893,8 @@ teamInviteForm?.addEventListener("submit", async (event) => {
     );
     renderBusinessWorkspace();
   } catch (error) {
-    if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not invite team member.";
-    setInlineStatus(teamInviteStatus, error.message || "Could not invite team member.", "error");
+    if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not create sub-user access.";
+    setInlineStatus(teamInviteStatus, error.message || "Could not create sub-user access.", "error");
   }
 });
 

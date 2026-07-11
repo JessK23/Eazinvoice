@@ -224,9 +224,6 @@ export const apiClient = {
   updateTeamMember(token, memberId, body) {
     return request(`/business/team/${memberId}`, { method: "PATCH", token, body });
   },
-  acceptTeamInvite(token, inviteToken) {
-    return request("/business/team/accept", { method: "POST", token, body: { inviteToken } });
-  },
   getBusinessSettings(token, options = {}) {
     return request(`/business/settings${queryString(options)}`, { token });
   },

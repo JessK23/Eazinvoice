@@ -15,10 +15,6 @@ const signupOnlyFields = document.getElementById("signupOnlyFields");
 const companyRegistrantFields = document.getElementById("companyRegistrantFields");
 let mode = "signup";
 const initialTab = new URLSearchParams(window.location.search).get("tab");
-const inviteTokenFromUrl = new URLSearchParams(window.location.search).get("invite") || "";
-if (inviteTokenFromUrl) {
-  sessionStorage.setItem("eazinvoice_pending_invite", inviteTokenFromUrl);
-}
 const API_BASE = window.location.origin;
 const OTP_IDLE_LABEL = "Send Email OTP";
 const OTP_SENT_LABEL = "Sent Successfully";
@@ -48,43 +44,10 @@ async function apiRequest(path, body) {
   return payload;
 }
 
-async function authenticatedApiRequest(path, token, body) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(body),
-  });
-  const raw = await response.text().catch(() => "");
-  let payload = {};
-  try {
-    payload = raw ? JSON.parse(raw) : {};
-  } catch {
-    payload = {};
-  }
-  if (!response.ok) {
-    throw new Error(payload.error || `Request failed (${response.status}). Please try again or contact EazInvoice support.`);
-  }
-  return payload;
-}
-
 function saveToken(token) {
   localStorage.setItem("eazinvoice_token", token);
   sessionStorage.setItem("eazinvoice_token", token);
   document.cookie = `eazinvoice_token=${encodeURIComponent(token)}; path=/; SameSite=Lax`;
-}
-
-async function acceptPendingInvite(token) {
-  const inviteToken = sessionStorage.getItem("eazinvoice_pending_invite") || inviteTokenFromUrl;
-  if (!inviteToken) return null;
-  const member = await authenticatedApiRequest("/business/team/accept", token, { inviteToken });
-  sessionStorage.removeItem("eazinvoice_pending_invite");
-  if (member.ownerUserId) {
-    localStorage.setItem("eazinvoice_business_workspace_owner", member.ownerUserId);
-  }
-  return member;
 }
 
 function startGoogleOAuth(currentMode) {
@@ -303,20 +266,11 @@ form?.addEventListener("submit", async (event) => {
         registrantPhone: data.get("registrantPhone"),
     });
     saveToken(response.token);
-    let inviteAccepted = false;
-    try {
-      inviteAccepted = Boolean(await acceptPendingInvite(response.token));
-    } catch (inviteError) {
-      setStatus(`${mode === "signup" ? "Registration successful" : "Login successful"}, but the team invite could not be accepted: ${inviteError.message}`);
-      return;
-    }
-    setStatus(inviteAccepted
-      ? "Invite accepted. Taking you to the Business Workspace..."
-      : mode === "signup"
-        ? "Registration successful. Email verified. Taking you to your access page..."
-        : "Login successful. Taking you to your access page...");
+    setStatus(mode === "signup"
+      ? "Registration successful. Email verified. Taking you to your access page..."
+      : "Login successful. Taking you to your access page...");
     window.setTimeout(() => {
-      window.location.href = inviteAccepted ? "/apps/web/dashboard.html#business-workspace" : "/apps/web/access.html";
+      window.location.href = "/apps/web/access.html";
     }, 700);
   } catch (error) {
     setStatus(error.message);

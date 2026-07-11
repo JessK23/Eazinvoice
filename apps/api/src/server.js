@@ -65,6 +65,7 @@ function fillInviteTemplate(template, values = {}) {
     .replace(/\{\{\s*name\s*\}\}/gi, values.name || "there")
     .replace(/\{\{\s*businessName\s*\}\}/gi, values.businessName || "EazInvoice workspace")
     .replace(/\{\{\s*role\s*\}\}/gi, values.role || "viewer")
+    .replace(/\{\{\s*loginUrl\s*\}\}/gi, values.loginUrl || "")
     .replace(/\{\{\s*inviteLink\s*\}\}/gi, values.inviteLink || "");
 }
 
@@ -113,20 +114,20 @@ function buildComplianceReminderMessage(emailSettings = {}, task = {}, recipient
 }
 function buildTeamInviteMessage(emailSettings = {}, member = {}, user = {}, req = null) {
   const appUrl = getPublicAppUrl(req);
-  const inviteLink = `${appUrl}/apps/web/auth.html?tab=signup&invite=${encodeURIComponent(member.inviteToken || "")}`;
+  const loginUrl = `${appUrl}/apps/web/auth.html?tab=login`;
   const businessName = emailSettings.senderName || user.name || "EazInvoice";
   const text = fillInviteTemplate(
-    emailSettings.inviteTemplate || "Hi {{name}},\n\nYou have been invited to join {{businessName}} on EazInvoice as {{role}}.\n\nAccept the invitation here:\n{{inviteLink}}\n\nEazInvoice",
+    emailSettings.inviteTemplate || "Hi {{name}},\n\n{{businessName}} has created a secure EazInvoice sub-user access for this email address as {{role}}.\n\nPlease sign up or log in using this same email address. No invite link is required.\n\nLogin page:\n{{loginUrl}}\n\nEazInvoice",
     {
       name: member.name,
       businessName,
       role: member.role,
-      inviteLink,
+      loginUrl,
     },
   );
   return {
     to: member.email,
-    subject: emailSettings.inviteSubject || `Invitation to join ${businessName} on EazInvoice`,
+    subject: emailSettings.inviteSubject || `EazInvoice access created for ${businessName}`,
     text,
   };
 }
@@ -221,6 +222,14 @@ function sendJson(res, status, payload) {
     "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
   });
   res.end(JSON.stringify(payload));
+}
+
+function knownRequestErrorStatus(error) {
+  const message = String(error?.message || "");
+  if (/Authentication required/i.test(message)) return 401;
+  if (/access denied|team role cannot perform|Forbidden/i.test(message)) return 403;
+  if (/available on|requires|upgrade|paid|standard|pro|business|plan/i.test(message)) return 402;
+  return 500;
 }
 
 function readRawBody(req) {
@@ -1616,7 +1625,10 @@ export function createServer(options = {}) {
     }
 
     if (url.pathname === "/companies" && req.method === "GET") {
-      sendJson(res, 200, api.listCompanies(user));
+      sendJson(res, 200, api.listCompanies(user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+      }));
       return;
     }
 
@@ -1642,9 +1654,13 @@ export function createServer(options = {}) {
         }
       }
       if (!await sendPlanLimitIfBlocked(res, api, user, previewPlan, options, { companies: 1 })) return;
+      const workspace = api.resolveRecordsWorkspaceAccess(user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+      }, body.workspaceOwnerUserId ? "manageSettings" : "writeRecords");
       sendJson(res, 201, api.createCompany({
         ...body,
-        ownerUserId: user.id,
+        ownerUserId: workspace.ownerUserId,
         entityType,
         kycStatus: isOnboardingProfile ? "not_submitted" : "pending",
         reviewStatus: "pending",
@@ -1657,11 +1673,16 @@ export function createServer(options = {}) {
 
     if (url.pathname.startsWith("/companies/") && req.method === "PATCH") {
       const companyId = url.pathname.split("/")[2];
-      const existingCompany = api.listCompanies(user).find((company) => company.id === companyId);
+      const workspaceOwnerUserId = url.searchParams.get("workspaceOwnerUserId") || null;
+      const existingCompany = api.listCompanies(user, { previewPlan, workspaceOwnerUserId }).find((company) => company.id === companyId);
       if (!existingCompany) {
         sendJson(res, 404, { error: "Company not found" });
         return;
       }
+      api.resolveRecordsWorkspaceAccess(user, {
+        previewPlan,
+        workspaceOwnerUserId: workspaceOwnerUserId || existingCompany.ownerUserId,
+      }, "manageSettings");
       const body = await readBody(req);
       const updated = api.updateCompany(companyId, body);
       sendJson(res, 200, updated);
@@ -1669,14 +1690,20 @@ export function createServer(options = {}) {
     }
 
     if (url.pathname === "/customers" && req.method === "GET") {
-      sendJson(res, 200, api.listCustomers(user));
+      sendJson(res, 200, api.listCustomers(user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+      }));
       return;
     }
 
     if (url.pathname === "/customers" && req.method === "POST") {
       const body = await readBody(req);
       if (!await sendPlanLimitIfBlocked(res, api, user, previewPlan, options, { customers: 1 })) return;
-      sendJson(res, 201, api.createCustomer({ ...body, ownerUserId: user.id }));
+      sendJson(res, 201, api.createCustomer({
+        ...body,
+        ownerUserId: body.workspaceOwnerUserId || user.id,
+      }, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null }));
       return;
     }
 
@@ -1973,15 +2000,21 @@ export function createServer(options = {}) {
         }
         return;
       }
-      sendJson(res, 200, api.listReports(user));
+      sendJson(res, 200, api.listReports(user, {
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+      }));
       return;
     }
 
     if (url.pathname === "/reports" && req.method === "POST") {
       const body = await readBody(req);
+      const workspace = api.resolveRecordsWorkspaceAccess(user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+      }, "writeRecords");
       sendJson(res, 201, api.createReport({
         ...body,
-        ownerUserId: user.id,
+        ownerUserId: workspace.ownerUserId,
       }));
       return;
     }
@@ -2193,7 +2226,7 @@ export function createServer(options = {}) {
         const body = await readBody(req);
         let member = api.createTeamMember(user, body, { previewPlan });
         let deliveryStatus = member.inviteDeliveryStatus || "queued";
-        let deliveryMessage = smtpNotConfiguredMessage("send the invite email");
+        let deliveryMessage = smtpNotConfiguredMessage("send the sub-user access email");
         try {
           const deliverySettings = api.getBusinessEmailDeliverySettings(user, {
             previewPlan,
@@ -2203,7 +2236,7 @@ export function createServer(options = {}) {
           if (businessSmtpReady(deliverySettings)) {
             await sendSmtpMail(deliverySettings, buildTeamInviteMessage(deliverySettings, member, user, req));
             deliveryStatus = "sent";
-            deliveryMessage = `Invitation email sent to ${member.email}`;
+            deliveryMessage = `Sub-user access email sent to ${member.email}. They must log in with this same email address.`;
             member = api.updateTeamMember(user, member.id, {
               inviteDeliveryStatus: deliveryStatus,
               inviteDeliveryMessage: deliveryMessage,
@@ -2218,7 +2251,7 @@ export function createServer(options = {}) {
           }
         } catch (deliveryError) {
           deliveryStatus = "failed";
-          deliveryMessage = `Invite saved, but email delivery failed: ${deliveryError.message}`;
+          deliveryMessage = `Sub-user access saved, but email delivery failed: ${deliveryError.message}`;
           member = api.updateTeamMember(user, member.id, {
             inviteDeliveryStatus: deliveryStatus,
             inviteDeliveryMessage: deliveryMessage,
@@ -2251,14 +2284,9 @@ export function createServer(options = {}) {
     }
 
     if (url.pathname === "/business/team/accept" && req.method === "POST") {
-      try {
-        const body = await readBody(req);
-        const member = api.acceptTeamInvite(user, body.inviteToken, { previewPlan });
-        const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-team-accept");
-        sendJson(res, 200, { ...member, businessWorkspaceSync });
-      } catch (error) {
-        sendJson(res, /business/i.test(error.message) ? 402 : 404, { error: error.message });
-      }
+      sendJson(res, 410, {
+        error: "Invite links are disabled. Ask the Business owner to create sub-user access for your email, then log in with that email.",
+      });
       return;
     }
 
@@ -2370,7 +2398,10 @@ export function createServer(options = {}) {
     if (url.pathname === "/ai/command" && req.method === "POST") {
       try {
         const body = await readBody(req);
-        sendJson(res, 201, await api.runAiCommandAsync(user, body, { previewPlan }));
+        sendJson(res, 201, await api.runAiCommandAsync(user, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        }));
       } catch (error) {
         const status = /pro|business|ai/i.test(error.message) ? 402 : 400;
         sendJson(res, status, { error: error.message });
@@ -2418,26 +2449,36 @@ export function createServer(options = {}) {
     }
 
     if (url.pathname === "/invoices" && req.method === "GET") {
-      sendJson(res, 200, api.listInvoices(user));
+      sendJson(res, 200, api.listInvoices(user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+      }));
       return;
     }
 
     if (url.pathname === "/payments" && req.method === "GET") {
-      sendJson(res, 200, api.listPayments(user));
+      sendJson(res, 200, api.listPayments(user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+      }));
       return;
     }
 
     if (url.pathname === "/invoices" && req.method === "POST") {
       const body = sanitizeStandardInvoiceFeatures(api, user, previewPlan, await readBody(req));
-      const entitlement = await sendPlanLimitIfBlocked(res, api, user, previewPlan, options, {
+      const workspace = api.resolveRecordsWorkspaceAccess(user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+      }, "writeRecords");
+      const entitlement = await sendPlanLimitIfBlocked(res, api, workspace.owner, previewPlan, options, {
         invoicesPerMonth: 1,
       });
       if (!entitlement) return;
       try {
         const invoice = api.createInvoice({
           ...body,
-          ownerUserId: user.id,
-        }, { previewPlan, planLimits: entitlement.limits });
+          ownerUserId: workspace.ownerUserId,
+        }, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId });
         const reportSync = await syncInvoiceReportRows(invoice, "invoice-create");
         sendJson(res, 201, { ...invoice, reportSync });
       } catch (error) {
@@ -2449,8 +2490,13 @@ export function createServer(options = {}) {
     if (url.pathname === "/invoices/recurring/run" && req.method === "POST") {
       try {
         const body = await readBody(req).catch(() => ({}));
+        const workspace = api.resolveRecordsWorkspaceAccess(user, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        }, "writeRecords");
         const result = api.runRecurringInvoiceScheduler(user, {
           previewPlan,
+          workspaceOwnerUserId: workspace.ownerUserId,
           targetDate: body.targetDate,
           maxPerTemplate: body.maxPerTemplate,
         });
@@ -2471,7 +2517,10 @@ export function createServer(options = {}) {
 
     if (url.pathname.startsWith("/invoices/") && req.method === "GET") {
       const id = url.pathname.split("/")[2];
-      const invoice = api.getInvoice(id, user);
+      const invoice = api.getInvoice(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+      });
       if (!invoice) {
         sendJson(res, 404, { error: "Not found" });
         return;
@@ -2482,12 +2531,15 @@ export function createServer(options = {}) {
 
     if (url.pathname.startsWith("/invoices/") && url.pathname.endsWith("/payments") && req.method === "POST") {
       const id = url.pathname.split("/")[2];
-      const existing = api.getInvoice(id, user);
+      const body = await readBody(req);
+      const existing = api.getInvoice(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+      });
       if (!existing) {
         sendJson(res, 404, { error: "Not found" });
         return;
       }
-      const body = await readBody(req);
       const amount = Number(body.amount ?? existing.balanceAmount ?? existing.total);
       if (!Number.isFinite(amount) || amount <= 0) {
         sendJson(res, 400, { error: "Enter a valid received amount" });
@@ -2506,7 +2558,8 @@ export function createServer(options = {}) {
           reference: body.reference,
           notes: body.notes,
           paymentDate: body.paymentDate,
-        });
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        }, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null });
         const reportSync = await syncInvoicePaymentReportRows(recorded);
         sendJson(res, 201, { ...recorded, reportSync });
       } catch (error) {
@@ -2517,21 +2570,26 @@ export function createServer(options = {}) {
 
     if (url.pathname.startsWith("/invoices/") && url.pathname.endsWith("/payment-link") && req.method === "POST") {
       const id = url.pathname.split("/")[2];
-      const existing = api.getInvoice(id, user);
+      const body = await readBody(req).catch(() => ({}));
+      const existing = api.getInvoice(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+      });
       if (!existing) {
         sendJson(res, 404, { error: "Not found" });
         return;
       }
-      if (!hasPaidEntitlement(api, user, previewPlan)) {
+      const entitlementOwner = existing.ownerUserId ? api.getUserById(existing.ownerUserId) : user;
+      if (!hasPaidEntitlement(api, entitlementOwner, previewPlan)) {
         sendJson(res, 402, { error: getFeatureRequirement("razorpayCollections").message });
         return;
       }
-      const body = await readBody(req).catch(() => ({}));
       try {
         const invoice = api.createInvoicePaymentLink(id, {
           gateway: body.gateway || "razorpay",
           url: body.url,
-        }, { user, previewPlan });
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        }, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null });
         const reportSync = await syncInvoiceReportRows(invoice, "invoice-payment-link");
         sendJson(res, 201, { ...invoice, reportSync });
       } catch (error) {
@@ -2542,15 +2600,22 @@ export function createServer(options = {}) {
 
     if (url.pathname.startsWith("/invoices/") && req.method === "PATCH") {
       const id = url.pathname.split("/")[2];
-      const existing = api.getInvoice(id, user);
+      const body = sanitizeStandardInvoiceFeatures(api, user, previewPlan, await readBody(req));
+      const existing = api.getInvoice(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+      });
       if (!existing) {
         sendJson(res, 404, { error: "Not found" });
         return;
       }
-      const body = sanitizeStandardInvoiceFeatures(api, user, previewPlan, await readBody(req));
-      const entitlement = await resolveWriteEntitlement(api, user, previewPlan, options);
+      const workspace = api.resolveRecordsWorkspaceAccess(user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || existing.ownerUserId || null,
+      }, "writeRecords");
+      const entitlement = await resolveWriteEntitlement(api, workspace.owner, previewPlan, options);
       try {
-        const invoice = api.updateInvoice(id, body, { previewPlan, planLimits: entitlement.limits });
+        const invoice = api.updateInvoice(id, body, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId });
         const reportSync = await syncInvoiceReportRows(invoice, "invoice-update");
         sendJson(res, 200, { ...invoice, reportSync });
       } catch (error) {
@@ -2561,7 +2626,10 @@ export function createServer(options = {}) {
 
     if (url.pathname.startsWith("/invoices/") && req.method === "DELETE") {
       const id = url.pathname.split("/")[2];
-      const deleted = api.deleteInvoice(id, user);
+      const deleted = api.deleteInvoice(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+      });
       if (!deleted) {
         sendJson(res, 404, { error: "Not found" });
         return;
@@ -2572,18 +2640,25 @@ export function createServer(options = {}) {
     }
 
     if (url.pathname === "/purchase-orders" && req.method === "GET") {
-      sendJson(res, 200, api.listPurchaseOrders(user));
+      sendJson(res, 200, api.listPurchaseOrders(user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+      }));
       return;
     }
 
     if (url.pathname === "/purchase-orders" && req.method === "POST") {
       const body = await readBody(req);
-      const entitlement = await resolveWriteEntitlement(api, user, previewPlan, options);
+      const workspace = api.resolveRecordsWorkspaceAccess(user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+      }, "writeRecords");
+      const entitlement = await resolveWriteEntitlement(api, workspace.owner, previewPlan, options);
       try {
         const purchaseOrder = api.createPurchaseOrder({
           ...body,
-          ownerUserId: user.id,
-        }, { previewPlan, planLimits: entitlement.limits });
+          ownerUserId: workspace.ownerUserId,
+        }, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId });
         const reportSync = await syncPurchaseOrderReportRows(purchaseOrder, "purchase-order-create");
         sendJson(res, 201, { ...purchaseOrder, reportSync });
       } catch (error) {
@@ -2594,7 +2669,10 @@ export function createServer(options = {}) {
 
     if (url.pathname.startsWith("/purchase-orders/") && req.method === "GET") {
       const id = url.pathname.split("/")[2];
-      const purchaseOrder = api.getPurchaseOrder(id, user);
+      const purchaseOrder = api.getPurchaseOrder(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+      });
       if (!purchaseOrder) {
         sendJson(res, 404, { error: "Not found" });
         return;
@@ -2605,15 +2683,22 @@ export function createServer(options = {}) {
 
     if (url.pathname.startsWith("/purchase-orders/") && req.method === "PATCH") {
       const id = url.pathname.split("/")[2];
-      const existing = api.getPurchaseOrder(id, user);
+      const body = await readBody(req);
+      const existing = api.getPurchaseOrder(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+      });
       if (!existing) {
         sendJson(res, 404, { error: "Not found" });
         return;
       }
-      const body = await readBody(req);
-      const entitlement = await resolveWriteEntitlement(api, user, previewPlan, options);
+      const workspace = api.resolveRecordsWorkspaceAccess(user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || existing.ownerUserId || null,
+      }, "writeRecords");
+      const entitlement = await resolveWriteEntitlement(api, workspace.owner, previewPlan, options);
       try {
-        const purchaseOrder = api.updatePurchaseOrder(id, body, { previewPlan, planLimits: entitlement.limits });
+        const purchaseOrder = api.updatePurchaseOrder(id, body, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId });
         const reportSync = await syncPurchaseOrderReportRows(purchaseOrder, "purchase-order-update");
         sendJson(res, 200, { ...purchaseOrder, reportSync });
       } catch (error) {
@@ -2624,7 +2709,10 @@ export function createServer(options = {}) {
 
     if (url.pathname.startsWith("/purchase-orders/") && req.method === "DELETE") {
       const id = url.pathname.split("/")[2];
-      const deleted = api.deletePurchaseOrder(id, user);
+      const deleted = api.deletePurchaseOrder(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+      });
       if (!deleted) {
         sendJson(res, 404, { error: "Not found" });
         return;
@@ -2636,15 +2724,20 @@ export function createServer(options = {}) {
 
       sendJson(res, 404, { error: "Not found" });
     } catch (error) {
-      console.error("Unhandled request error:", {
-        method: req.method,
-        url: req.url,
-        message: error.message,
-        stack: error.stack,
-      });
+      const status = knownRequestErrorStatus(error);
+      if (status === 500) {
+        console.error("Unhandled request error:", {
+          method: req.method,
+          url: req.url,
+          message: error.message,
+          stack: error.stack,
+        });
+      }
       if (!res.headersSent) {
-        sendJson(res, 500, {
-          error: "EazInvoice could not complete this request. Please try again, and check Render logs if it repeats.",
+        sendJson(res, status, {
+          error: status === 500
+            ? "EazInvoice could not complete this request. Please try again, and check Render logs if it repeats."
+            : error.message,
         });
       } else {
         res.end();

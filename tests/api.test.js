@@ -2334,7 +2334,7 @@ test("business tier unlocks team approvals and API keys", () => {
     email: "accountant@example.com",
     role: "accountant",
   });
-  assert.equal(member.status, "invited");
+  assert.equal(member.status, "active");
   assert.equal(api.listTeamMembers(user).length, 1);
 
   const request = api.createApprovalRequest(user, {
@@ -2462,12 +2462,10 @@ test("business tier unlocks team approvals and API keys", () => {
   assert.equal(refreshedCompliance.complianceEngine.summary.total, complianceDashboard.complianceEngine.summary.total);
   assert.ok(refreshedCompliance.complianceEngine.summary.pending < complianceDashboard.complianceEngine.summary.pending);
 
+  assert.equal(member.status, "active");
+  assert.equal(member.inviteToken, null);
+  assert.equal(member.auditTrail.at(-1).action, "sub_user_created");
   const invitee = api.createUser({ name: "Accountant", email: "accountant@example.com" });
-  const accepted = api.acceptTeamInvite(invitee, member.inviteToken);
-  assert.equal(accepted.status, "active");
-  assert.equal(accepted.acceptedUserId, invitee.id);
-  assert.ok(accepted.acceptedAt);
-  assert.equal(accepted.auditTrail.at(-1).action, "accepted");
 
   const accountantWorkspaces = api.listBusinessWorkspaces(invitee);
   const ownerWorkspace = accountantWorkspaces.find((workspace) => workspace.ownerUserId === user.id);
@@ -2506,8 +2504,8 @@ test("business tier unlocks team approvals and API keys", () => {
     role: "viewer",
   });
   const viewer = api.createUser({ name: "Viewer", email: "viewer@example.com" });
-  const acceptedViewer = api.acceptTeamInvite(viewer, viewerMember.inviteToken);
-  assert.equal(acceptedViewer.role, "viewer");
+  assert.equal(viewerMember.status, "active");
+  assert.equal(viewerMember.inviteToken, null);
   const viewerWorkspace = api.listBusinessWorkspaces(viewer).find((workspace) => workspace.ownerUserId === user.id);
   assert.equal(viewerWorkspace.permissions.read, true);
   assert.equal(viewerWorkspace.permissions.writeRecords, false);
@@ -2829,7 +2827,8 @@ test("business workspace invite routes enforce owner accountant and viewer permi
     });
     assert.equal(accountantInvite.response.status, 201);
     assert.equal(accountantInvite.payload.role, "accountant");
-    assert.ok(accountantInvite.payload.inviteToken);
+    assert.equal(accountantInvite.payload.status, "active");
+    assert.equal(accountantInvite.payload.inviteToken, null);
     assert.equal(accountantInvite.payload.inviteDeliveryStatus, "not_configured");
     assert.match(accountantInvite.payload.inviteDeliveryMessage, /SMTP is not configured/i);
 
@@ -2837,10 +2836,10 @@ test("business workspace invite routes enforce owner accountant and viewer permi
     const accountantAccept = await request("/business/team/accept", {
       method: "POST",
       token: accountant.token,
-      body: { inviteToken: accountantInvite.payload.inviteToken },
+      body: { inviteToken: "deprecated" },
     });
-    assert.equal(accountantAccept.response.status, 200);
-    assert.equal(accountantAccept.payload.status, "active");
+    assert.equal(accountantAccept.response.status, 410);
+    assert.match(accountantAccept.payload.error, /Invite links are disabled/i);
 
     const accountantWorkspaces = await request("/business/workspaces", { token: accountant.token });
     assert.equal(accountantWorkspaces.response.status, 200);
@@ -2906,12 +2905,8 @@ test("business workspace invite routes enforce owner accountant and viewer permi
     assert.equal(viewerInvite.response.status, 201);
 
     const viewer = await signup("Viewer User", "workspace-viewer@example.com", "9000000003");
-    const viewerAccept = await request("/business/team/accept", {
-      method: "POST",
-      token: viewer.token,
-      body: { inviteToken: viewerInvite.payload.inviteToken },
-    });
-    assert.equal(viewerAccept.response.status, 200);
+    assert.equal(viewerInvite.payload.status, "active");
+    assert.equal(viewerInvite.payload.inviteToken, null);
 
     const viewerWorkspaces = await request("/business/workspaces", { token: viewer.token });
     const viewerWorkspace = viewerWorkspaces.payload.find((workspace) => workspace.ownerUserId === owner.user.id);
@@ -2937,6 +2932,95 @@ test("business workspace invite routes enforce owner accountant and viewer permi
     const viewerApiDenied = await request(`/business/api-keys?workspaceOwnerUserId=${owner.user.id}`, { token: viewer.token });
     assert.notEqual(viewerApiDenied.response.status, 200);
     assert.match(viewerApiDenied.payload.error, /team role cannot perform/i);
+
+    const accountantCustomer = await request("/customers", {
+      method: "POST",
+      token: accountant.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        name: "Shared Customer",
+        email: "shared-customer@example.com",
+      },
+    });
+    assert.equal(accountantCustomer.response.status, 201);
+    assert.equal(accountantCustomer.payload.ownerUserId, owner.user.id);
+
+    const accountantInvoice = await request("/invoices", {
+      method: "POST",
+      token: accountant.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        customerId: accountantCustomer.payload.id,
+        billToName: "Shared Customer",
+        invoiceDate: "2026-07-10",
+        dueDate: "2026-07-20",
+        currency: "INR",
+        taxRate: 18,
+        status: "created",
+        items: [{ description: "Business service", quantity: 1, rate: 1000, gstRate: 18 }],
+      },
+    });
+    assert.equal(accountantInvoice.response.status, 201);
+    assert.equal(accountantInvoice.payload.ownerUserId, owner.user.id);
+    assert.equal(accountantInvoice.payload.total, 1180);
+
+    const viewerInvoices = await request(`/invoices?workspaceOwnerUserId=${owner.user.id}`, { token: viewer.token });
+    assert.equal(viewerInvoices.response.status, 200);
+    assert.equal(viewerInvoices.payload.some((invoice) => invoice.id === accountantInvoice.payload.id), true);
+
+    const viewerInvoiceWriteDenied = await request(`/invoices/${accountantInvoice.payload.id}`, {
+      method: "PATCH",
+      token: viewer.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        paymentTerms: "Viewer should not edit",
+      },
+    });
+    assert.notEqual(viewerInvoiceWriteDenied.response.status, 200);
+    assert.match(viewerInvoiceWriteDenied.payload.error, /team role cannot perform/i);
+
+    const accountantPayment = await request(`/invoices/${accountantInvoice.payload.id}/payments`, {
+      method: "POST",
+      token: accountant.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        amount: 500,
+        mode: "UPI",
+        reference: "TEAM-PAY-1",
+      },
+    });
+    assert.equal(accountantPayment.response.status, 201);
+    assert.equal(accountantPayment.payload.invoice.paymentStatus, "part_paid");
+    assert.equal(accountantPayment.payload.invoice.ownerUserId, owner.user.id);
+
+    const accountantPo = await request("/purchase-orders", {
+      method: "POST",
+      token: accountant.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        billToName: "Shared Vendor",
+        poDate: "2026-07-10",
+        currency: "INR",
+        taxRate: 18,
+        status: "created",
+        documentType: "po",
+        items: [{ description: "Vendor service", quantity: 1, rate: 700, gstRate: 18 }],
+      },
+    });
+    assert.equal(accountantPo.response.status, 201);
+    assert.equal(accountantPo.payload.ownerUserId, owner.user.id);
+
+    const viewerPoDeleteDenied = await request(`/purchase-orders/${accountantPo.payload.id}?workspaceOwnerUserId=${owner.user.id}`, {
+      method: "DELETE",
+      token: viewer.token,
+    });
+    assert.notEqual(viewerPoDeleteDenied.response.status, 200);
+    assert.match(viewerPoDeleteDenied.payload.error, /team role cannot perform/i);
+
+    const unrelated = await signup("Other User", "workspace-other@example.com", "9000000004");
+    const unrelatedInvoices = await request(`/invoices?workspaceOwnerUserId=${owner.user.id}`, { token: unrelated.token });
+    assert.notEqual(unrelatedInvoices.response.status, 200);
+    assert.match(unrelatedInvoices.payload.error, /Business workspace access denied/i);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

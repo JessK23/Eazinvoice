@@ -1308,6 +1308,10 @@ export function createStore(seed = {}, options = {}) {
     return Number.isFinite(expiresAt) && expiresAt < Date.now();
   }
 
+  function isEmailLinkedTeamMember(member) {
+    return ["active", "invited"].includes(member?.status) && !isTeamInviteExpired(member);
+  }
+
   function getTeamRolePermissions(role) {
     const normalizedRole = String(role || "viewer").toLowerCase();
     const fullAccess = {
@@ -1356,8 +1360,7 @@ export function createStore(seed = {}, options = {}) {
     const email = String(user.email || "").toLowerCase();
     const member = state.teamMembers.find((entry) => (
       entry.ownerUserId === targetOwnerUserId
-      && entry.status === "active"
-      && !isTeamInviteExpired(entry)
+      && isEmailLinkedTeamMember(entry)
       && (
         entry.acceptedUserId === user.id
         || String(entry.email || "").toLowerCase() === email
@@ -1388,8 +1391,7 @@ export function createStore(seed = {}, options = {}) {
     const email = String(user.email || "").toLowerCase();
     state.teamMembers
       .filter((member) => (
-        member.status === "active"
-        && !isTeamInviteExpired(member)
+        isEmailLinkedTeamMember(member)
         && (
           member.acceptedUserId === user.id
           || String(member.email || "").toLowerCase() === email
@@ -1441,44 +1443,23 @@ export function createStore(seed = {}, options = {}) {
       name: String(input.name || email.split("@")[0]).trim(),
       email,
       role: ["owner", "admin", "accountant", "viewer"].includes(input.role) ? input.role : "viewer",
-      status: ["active", "invited"].includes(input.status) ? input.status : "invited",
+      status: ["active", "invited"].includes(input.status) ? input.status : "active",
       invitedByUserId: input.invitedByUserId ?? input.ownerUserId ?? null,
       acceptedUserId: input.acceptedUserId ?? null,
-      inviteToken: input.inviteToken || `invite_${crypto.randomBytes(16).toString("hex")}`,
-      inviteExpiresAt: input.inviteExpiresAt || new Date(Date.now() + 7 * 86400000).toISOString(),
+      inviteToken: input.inviteToken || null,
+      inviteExpiresAt: input.inviteExpiresAt || null,
       inviteDeliveryStatus: input.inviteDeliveryStatus || "queued",
       auditTrail: [{
-        action: "invited",
+        action: "sub_user_created",
         at: new Date().toISOString(),
         byUserId: input.invitedByUserId ?? input.ownerUserId ?? null,
         role: ["owner", "admin", "accountant", "viewer"].includes(input.role) ? input.role : "viewer",
+        accessMethod: "verified_email",
       }],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
     state.teamMembers.push(member);
-    persist();
-    return clone(member);
-  }
-
-  function acceptTeamInvite(user, inviteToken) {
-    if (!user?.id) throw new Error("Authentication required");
-    const tokenValue = String(inviteToken || "").trim();
-    const member = state.teamMembers.find((entry) => entry.inviteToken === tokenValue && entry.status === "invited");
-    if (!member) return null;
-    if (String(member.email || "").toLowerCase() !== String(user.email || "").toLowerCase()) return null;
-    if (new Date(member.inviteExpiresAt).getTime() < Date.now()) throw new Error("Team invite has expired");
-    member.status = "active";
-    member.acceptedUserId = user.id;
-    member.acceptedAt = new Date().toISOString();
-    member.auditTrail = Array.isArray(member.auditTrail) ? member.auditTrail : [];
-    member.auditTrail.push({
-      action: "accepted",
-      at: member.acceptedAt,
-      byUserId: user.id,
-      role: member.role || "viewer",
-    });
-    member.updatedAt = new Date().toISOString();
     persist();
     return clone(member);
   }
@@ -2092,7 +2073,6 @@ export function createStore(seed = {}, options = {}) {
     listBusinessWorkspacesForUser,
     getBusinessWorkspaceAccess,
     updateTeamMember,
-    acceptTeamInvite,
     getBusinessSettingsForUser,
     getRawBusinessSettingsForUser,
     upsertBusinessSettings,
