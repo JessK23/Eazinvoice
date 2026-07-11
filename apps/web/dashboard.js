@@ -118,6 +118,7 @@ const adminAiUsagePanel = document.getElementById("adminAiUsagePanel");
 const adminAiUsageList = document.getElementById("adminAiUsageList");
 const businessWorkspaceBadge = document.getElementById("businessWorkspaceBadge");
 const businessWorkspaceNotice = document.getElementById("businessWorkspaceNotice");
+const businessWorkspaceStatusBoard = document.getElementById("businessWorkspaceStatusBoard");
 const businessWorkspacePermissionPanel = document.getElementById("businessWorkspacePermissionPanel");
 const businessWorkspaceFlowChecklist = document.getElementById("businessWorkspaceFlowChecklist");
 const businessWorkspaceNavGroup = document.getElementById("businessWorkspaceNavGroup");
@@ -409,6 +410,70 @@ function renderBusinessWorkspaceFlowChecklist(enabled) {
       <strong>${escapeHtml(step.label)}</strong>
       <span>${escapeHtml(step.detail)}</span>
     </div>
+  `).join("");
+}
+
+function latestByDate(records = [], field = "updatedAt") {
+  return [...records].sort((a, b) => String(b?.[field] || "").localeCompare(String(a?.[field] || "")))[0] || null;
+}
+
+function renderBusinessWorkspaceStatusBoard(enabled) {
+  if (!businessWorkspaceStatusBoard) return;
+  const emailSettings = dashboardBusinessSettings.emailSettings || {};
+  const paymentSettings = dashboardBusinessSettings.paymentSettings || {};
+  const latestInvite = latestByDate(dashboardTeamMembers, "updatedAt");
+  const latestApproval = latestByDate(dashboardApprovalRequests, "updatedAt");
+  const activeKeys = dashboardApiKeys.filter((key) => key.status !== "revoked");
+  const reminderCounts = dashboardBusinessCompliance?.complianceEngine?.reminders?.counts || {};
+  const smtpConfigured = Boolean(emailSettings.smtpHost && emailSettings.smtpUser && emailSettings.fromEmail);
+  const smtpTestStatus = emailSettings.lastTestStatus || (smtpConfigured ? "ready" : "not_configured");
+  const gatewayStatus = paymentSettings.status || "not_configured";
+  const cards = [
+    {
+      label: "Email and SMTP",
+      value: smtpConfigured ? "Configured" : "Not configured",
+      detail: smtpConfigured
+        ? `Validation: ${smtpTestStatus}`
+        : "Needed for invite, approval, and reminder emails.",
+      tone: smtpConfigured ? "ready" : "attention",
+    },
+    {
+      label: "Team Invites",
+      value: dashboardTeamMembers.length ? `${dashboardTeamMembers.length} saved` : "No invites",
+      detail: latestInvite?.inviteDeliveryMessage || "Invite links work even before SMTP is configured.",
+      tone: latestInvite?.inviteDeliveryStatus === "failed" ? "danger" : latestInvite ? "ready" : "neutral",
+    },
+    {
+      label: "Approvals",
+      value: dashboardApprovalRequests.length ? `${dashboardApprovalRequests.length} tracked` : "No requests",
+      detail: latestApproval?.notificationMessage || "Approval email status appears after create, approve, or reject.",
+      tone: latestApproval?.notificationStatus === "failed" ? "danger" : latestApproval ? "ready" : "neutral",
+    },
+    {
+      label: "Compliance Reminders",
+      value: `${reminderCounts.upcoming || 0} upcoming`,
+      detail: `${reminderCounts.overdue || 0} overdue, ${reminderCounts.dueThisMonth || 0} due this month.`,
+      tone: reminderCounts.overdue ? "danger" : reminderCounts.upcoming ? "attention" : "neutral",
+    },
+    {
+      label: "Gateway",
+      value: gatewayStatus === "live_ready" ? "Live ready" : gatewayStatus === "test_mode" ? "Test mode" : "Not configured",
+      detail: paymentSettings.paymentLinkEnabled ? "Invoice payment links enabled." : "Payment links are off.",
+      tone: gatewayStatus === "live_ready" ? "ready" : gatewayStatus === "test_mode" ? "attention" : "neutral",
+    },
+    {
+      label: "API Access",
+      value: activeKeys.length ? `${activeKeys.length} active key${activeKeys.length === 1 ? "" : "s"}` : "No active keys",
+      detail: workspaceCan("apiAccess") ? "Owner/admin can generate or revoke keys." : "This role can view API status only.",
+      tone: activeKeys.length ? "ready" : workspaceCan("apiAccess") ? "attention" : "neutral",
+    },
+  ];
+  businessWorkspaceStatusBoard.innerHTML = cards.map((card) => `
+    <article class="workspace-status-card" data-tone="${enabled ? escapeHtml(card.tone) : "locked"}">
+      <span>${escapeHtml(card.label)}</span>
+      <strong>${escapeHtml(enabled ? card.value : "Business required")}</strong>
+      <small>${escapeHtml(enabled ? card.detail : "Upgrade to Business to use this workspace tool.")}</small>
+    </article>
   `).join("");
 }
 
@@ -2430,13 +2495,14 @@ function renderBusinessWorkspace() {
   renderBusinessWorkspaceContext(enabled);
   renderWorkspacePermissionPanel(enabled);
   renderBusinessWorkspaceFlowChecklist(enabled);
+  renderBusinessWorkspaceStatusBoard(enabled);
   if (businessWorkspaceNotice) {
     if (!enabled) {
       businessWorkspaceNotice.textContent = "Upgrade to Business, or use Admin plan preview locally, to test team access, approvals, and API keys.";
     } else if (workspace?.source === "team") {
-      businessWorkspaceNotice.textContent = `You are viewing ${workspace.label || "a Business workspace"} as ${workspace.role || "team member"}. Controls are limited by this role.`;
+      businessWorkspaceNotice.textContent = `You are viewing ${workspace.label || "a Business workspace"} as ${workspace.role || "team member"}. Open one section at a time; controls are limited by this role.`;
     } else {
-      businessWorkspaceNotice.textContent = "Business controls are enabled for this account. Admin preview can be used locally to test each tier safely.";
+      businessWorkspaceNotice.textContent = "Business controls are enabled. Open one section at a time: email, gateway, compliance, team, API, or approvals.";
     }
   }
   setFormPermission(teamInviteForm, enabled && workspaceCan("manageTeam"));
@@ -2509,6 +2575,7 @@ function renderBusinessWorkspace() {
           <div>
             <strong>${escapeHtml(member.name || member.email)}</strong>
             <div class="hint">${escapeHtml(member.email)} - ${escapeHtml(member.role || "viewer")} - ${escapeHtml(member.status || "invited")}</div>
+            ${member.inviteDeliveryMessage ? `<div class="hint delivery-hint">${escapeHtml(member.inviteDeliveryMessage)}</div>` : ""}
             ${member.status === "invited" && member.inviteToken && workspaceCan("manageTeam") ? `<div class="notice compact"><strong>Invite link:</strong> <code>${escapeHtml(`${window.location.origin}/apps/web/auth.html?invite=${member.inviteToken}`)}</code></div>` : ""}
           </div>
           ${member.status !== "removed" && workspaceCan("manageTeam") ? `<button class="ghost danger small" type="button" data-remove-team="${escapeHtml(member.id)}">Remove</button>` : `<span class="pill gold">${member.status === "removed" ? "Removed" : "View only"}</span>`}
@@ -2540,6 +2607,7 @@ function renderBusinessWorkspace() {
             <strong>${escapeHtml(request.documentNumber || request.documentType)}</strong>
             <div class="hint">${escapeHtml(String(request.documentType || "").replace(/_/g, " "))} - ${escapeHtml(request.status || "pending")}</div>
             ${request.notes ? `<div class="hint">${escapeHtml(request.notes)}</div>` : ""}
+            ${request.notificationMessage ? `<div class="hint delivery-hint">${escapeHtml(request.notificationMessage)}</div>` : ""}
           </div>
           <div class="row-actions">
             ${workspaceCan("approvals") ? `
@@ -2588,8 +2656,14 @@ function renderBusinessWorkspace() {
         });
         dashboardApprovalRequests = dashboardApprovalRequests.map((item) => (item.id === request.id ? request : item));
         renderBusinessWorkspace();
+        setInlineStatus(
+          approvalRequestStatus,
+          request.notificationMessage || `Approval request ${request.status}.`,
+          request.notificationStatus === "failed" ? "error" : "success",
+        );
       } catch (error) {
         if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not update approval request.";
+        setInlineStatus(approvalRequestStatus, error.message || "Could not update approval request.", "error");
       }
     });
   });
@@ -2970,10 +3044,10 @@ complianceReadinessList?.addEventListener("click", async (event) => {
   button.disabled = true;
   setInlineStatus(businessComplianceStatus, "Sending compliance reminder...", "");
   try {
-    await apiClient.sendComplianceReminder(token, taskId, selectedWorkspaceOptions());
+    const result = await apiClient.sendComplianceReminder(token, taskId, selectedWorkspaceOptions());
     dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token, selectedWorkspaceOptions()).catch(() => dashboardBusinessCompliance);
     renderBusinessWorkspace();
-    setInlineStatus(businessComplianceStatus, "Compliance reminder sent and logged on the task.", "success");
+    setInlineStatus(businessComplianceStatus, result.deliveryMessage || "Compliance reminder sent and logged on the task.", "success");
   } catch (error) {
     setInlineStatus(businessComplianceStatus, error.message || "Could not send compliance reminder.", "error");
   } finally {
@@ -3035,7 +3109,11 @@ approvalRequestForm?.addEventListener("submit", async (event) => {
     });
     dashboardApprovalRequests = [request, ...dashboardApprovalRequests];
     approvalRequestForm.reset();
-    setInlineStatus(approvalRequestStatus, "Approval request created.", "success");
+    setInlineStatus(
+      approvalRequestStatus,
+      request.notificationMessage || "Approval request created.",
+      request.notificationStatus === "failed" ? "error" : "success",
+    );
     renderBusinessWorkspace();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not create approval request.";

@@ -493,6 +493,7 @@
           </div>
         </div>
         <div id="businessWorkspaceNotice" class="notice">Business features unlock team access, approval workflows, API access, and business-side integrations.</div>
+        <div id="businessWorkspaceStatusBoard" class="workspace-status-board" aria-live="polite"></div>
         <div id="businessWorkspacePermissionPanel" class="workspace-permission-panel" aria-live="polite"></div>
         <div id="businessWorkspaceFlowChecklist" class="workspace-flow-checklist" aria-live="polite"></div>
         <div class="quick-grid">
@@ -533,7 +534,7 @@
           <summary class="workspace-group-summary">
             <div>
               <h3>Business Email Settings</h3>
-              <p class="hint">Use this only if you want external invites, approvals, and business communication to go through your mailbox.</p>
+              <p class="hint">Configure once when invites, approvals, and compliance reminders should be sent from your business mailbox.</p>
             </div>
             <span id="smtpConfiguredBadge" class="pill gold">SMTP not set</span>
           </summary>
@@ -550,7 +551,7 @@
               <input name="inviteSubject" placeholder="Invite email subject" />
               <textarea name="inviteTemplate" placeholder="Invite template. Use {{name}} and {{businessName}}"></textarea>
               <button class="primary" type="submit">Save Email Settings</button>
-              <button id="businessEmailTestButton" class="ghost" type="button">Validate SMTP Settings</button>
+              <button id="businessEmailTestButton" class="ghost" type="button">Validate SMTP and Send Test Email</button>
               <div id="businessEmailStatus" class="inline-status full" aria-live="polite"></div>
             </form>
           </div>
@@ -560,7 +561,7 @@
           <summary class="workspace-group-summary">
             <div>
               <h3>Business Razorpay Gateway</h3>
-              <p class="hint">Connect business-side payment collection without mixing it up with EazInvoice subscription billing.</p>
+              <p class="hint">Connect the business Razorpay account for invoice payment links. This is separate from EazInvoice subscription billing.</p>
             </div>
             <span id="businessGatewayBadge" class="pill gold">Not configured</span>
           </summary>
@@ -581,7 +582,7 @@
           <summary class="workspace-group-summary">
             <div>
               <h3>Compliance Profile</h3>
-              <p class="hint">Keep the company’s financial-year and compliance data separate from invites, API keys, and gateway settings.</p>
+              <p class="hint">Keep the company's financial-year and compliance data separate from invites, API keys, and gateway settings.</p>
             </div>
             <span class="pill blue">GST / audit</span>
           </summary>
@@ -648,7 +649,7 @@
             <summary class="workspace-group-summary">
               <div>
                 <h3>Invite Team Member</h3>
-                <p class="hint">Invite external users here without making SMTP, compliance, API, and approvals feel like one mandatory block.</p>
+                <p class="hint">Invite a team member. If SMTP is not ready, EazInvoice saves the invite and shows a manual invite link.</p>
               </div>
               <span class="pill blue">Roles</span>
             </summary>
@@ -672,7 +673,7 @@
             <summary class="workspace-group-summary">
               <div>
                 <h3>API Access</h3>
-                <p class="hint">Generate keys for WordPress sites, internal tools, and future integrations.</p>
+                <p class="hint">Generate keys for WordPress sites, internal tools, and future integrations. Copy the secret immediately after creation.</p>
               </div>
               <span class="pill gold">Integration</span>
             </summary>
@@ -691,7 +692,7 @@
           <summary class="workspace-group-summary">
             <div>
               <h3>Approval Requests</h3>
-              <p class="hint">Create review requests only when a document needs approval, without mixing it with the rest of the setup.</p>
+              <p class="hint">Create review requests only when a document needs approval. Email notification status appears after each action.</p>
             </div>
             <span class="pill blue">Queue</span>
           </summary>

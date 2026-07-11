@@ -2830,6 +2830,8 @@ test("business workspace invite routes enforce owner accountant and viewer permi
     assert.equal(accountantInvite.response.status, 201);
     assert.equal(accountantInvite.payload.role, "accountant");
     assert.ok(accountantInvite.payload.inviteToken);
+    assert.equal(accountantInvite.payload.inviteDeliveryStatus, "not_configured");
+    assert.match(accountantInvite.payload.inviteDeliveryMessage, /SMTP is not configured/i);
 
     const accountant = await signup("Accountant User", "workspace-accountant@example.com", "9000000002");
     const accountantAccept = await request("/business/team/accept", {
@@ -2860,6 +2862,30 @@ test("business workspace invite routes enforce owner accountant and viewer permi
     });
     assert.equal(accountantApproval.response.status, 201);
     assert.equal(accountantApproval.payload.status, "pending");
+    assert.equal(accountantApproval.payload.notificationStatus, "not_configured");
+    assert.match(accountantApproval.payload.notificationMessage, /approval notification/i);
+
+    const ownerDecision = await request(`/business/approvals/${accountantApproval.payload.id}`, {
+      method: "PATCH",
+      token: owner.token,
+      body: {
+        status: "approved",
+        decisionNotes: "Approved by owner.",
+      },
+    });
+    assert.equal(ownerDecision.response.status, 200);
+    assert.equal(ownerDecision.payload.status, "approved");
+    assert.equal(ownerDecision.payload.notificationStatus, "not_configured");
+    assert.match(ownerDecision.payload.notificationMessage, /approval notification/i);
+
+    const reminderWithoutSmtp = await request("/business/compliance-tasks/income_tax_return/reminder", {
+      method: "POST",
+      token: owner.token,
+      body: {},
+    });
+    assert.equal(reminderWithoutSmtp.response.status, 400);
+    assert.equal(reminderWithoutSmtp.payload.deliveryStatus, "not_configured");
+    assert.match(reminderWithoutSmtp.payload.deliveryMessage, /compliance reminders/i);
 
     const accountantSettingsDenied = await request("/business/settings", {
       method: "PATCH",

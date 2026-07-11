@@ -68,6 +68,20 @@ function fillInviteTemplate(template, values = {}) {
     .replace(/\{\{\s*inviteLink\s*\}\}/gi, values.inviteLink || "");
 }
 
+function businessSmtpReady(settings = {}) {
+  return Boolean(
+    settings.smtpHost
+    && settings.smtpPort
+    && settings.smtpUser
+    && settings.smtpPass
+    && settings.fromEmail
+  );
+}
+
+function smtpNotConfiguredMessage(action = "send this email") {
+  return `Business SMTP is not configured, so EazInvoice saved the record but could not ${action}. Configure SMTP in Business Workspace to enable external email delivery.`;
+}
+
 function buildComplianceReminderMessage(emailSettings = {}, task = {}, recipient = "") {
   const businessName = emailSettings.senderName || "EazInvoice workspace";
   const complianceName = task.complianceName || task.id || "Compliance task";
@@ -115,6 +129,76 @@ function buildTeamInviteMessage(emailSettings = {}, member = {}, user = {}, req 
     subject: emailSettings.inviteSubject || `Invitation to join ${businessName} on EazInvoice`,
     text,
   };
+}
+
+function buildApprovalNotificationMessage(emailSettings = {}, approval = {}, action = "created", actor = {}) {
+  const businessName = emailSettings.senderName || actor.name || "EazInvoice workspace";
+  const statusText = action === "decision"
+    ? `marked as ${approval.status || "updated"}`
+    : "created";
+  const lines = [
+    "Hi,",
+    "",
+    `An approval request has been ${statusText} in ${businessName}.`,
+    "",
+    `Document: ${approval.documentNumber || "Draft document"}`,
+    `Type: ${String(approval.documentType || "invoice").replace(/_/g, " ")}`,
+    `Status: ${approval.status || "pending"}`,
+    approval.notes ? `Request notes: ${approval.notes}` : "",
+    approval.decisionNotes ? `Decision notes: ${approval.decisionNotes}` : "",
+    "",
+    "Please review it in your EazInvoice Business Workspace.",
+    "",
+    "EazInvoice",
+  ];
+  return {
+    subject: action === "decision"
+      ? `Approval ${approval.status || "updated"}: ${approval.documentNumber || "Draft document"}`
+      : `Approval requested: ${approval.documentNumber || "Draft document"}`,
+    text: lines.filter((line) => line !== "").join("\n"),
+  };
+}
+
+async function sendBusinessApprovalNotification(api, user, approval, body = {}, options = {}, action = "created") {
+  const deliverySettings = api.getBusinessEmailDeliverySettings(user, {
+    previewPlan: options.previewPlan,
+    workspaceOwnerUserId: body.workspaceOwnerUserId || approval.ownerUserId || null,
+    companyId: body.companyId || approval.companyId || null,
+  });
+  if (!businessSmtpReady(deliverySettings)) {
+    return {
+      notificationStatus: "not_configured",
+      notificationMessage: smtpNotConfiguredMessage("send approval notification emails"),
+    };
+  }
+  const owner = approval.ownerUserId ? api.getUserById(approval.ownerUserId) : null;
+  const requester = approval.requestedByUserId ? api.getUserById(approval.requestedByUserId) : null;
+  const fallbackRecipient = action === "decision"
+    ? requester?.email
+    : owner?.email;
+  const recipient = String(
+    body.notificationRecipient
+    || fallbackRecipient
+    || deliverySettings.replyToEmail
+    || deliverySettings.fromEmail
+    || user.email
+    || "",
+  ).trim();
+  try {
+    await sendSmtpMail(deliverySettings, {
+      to: recipient,
+      ...buildApprovalNotificationMessage(deliverySettings, approval, action, user),
+    });
+    return {
+      notificationStatus: "sent",
+      notificationMessage: `Approval notification sent to ${recipient}`,
+    };
+  } catch (error) {
+    return {
+      notificationStatus: "failed",
+      notificationMessage: `Approval saved, but notification email failed: ${error.message}`,
+    };
+  }
 }
 
 function securityHeaders(extra = {}) {
@@ -2045,13 +2129,12 @@ export function createServer(options = {}) {
           || user.email
           || "",
         ).trim();
-        const emailReady = deliverySettings.smtpHost
-          && deliverySettings.smtpPort
-          && deliverySettings.smtpUser
-          && deliverySettings.smtpPass
-          && deliverySettings.fromEmail;
-        if (!emailReady) {
-          sendJson(res, 400, { error: "Configure and validate Business SMTP settings before sending compliance reminders." });
+        if (!businessSmtpReady(deliverySettings)) {
+          sendJson(res, 400, {
+            error: "Configure and validate Business SMTP settings before sending compliance reminders.",
+            deliveryStatus: "not_configured",
+            deliveryMessage: smtpNotConfiguredMessage("send compliance reminders"),
+          });
           return;
         }
         try {
@@ -2110,19 +2193,14 @@ export function createServer(options = {}) {
         const body = await readBody(req);
         let member = api.createTeamMember(user, body, { previewPlan });
         let deliveryStatus = member.inviteDeliveryStatus || "queued";
-        let deliveryMessage = "Invite saved. Configure SMTP to send the external email.";
+        let deliveryMessage = smtpNotConfiguredMessage("send the invite email");
         try {
           const deliverySettings = api.getBusinessEmailDeliverySettings(user, {
             previewPlan,
             workspaceOwnerUserId: body.workspaceOwnerUserId || null,
             companyId: body.companyId || null,
           });
-          const emailReady = deliverySettings.smtpHost
-            && deliverySettings.smtpPort
-            && deliverySettings.smtpUser
-            && deliverySettings.smtpPass
-            && deliverySettings.fromEmail;
-          if (emailReady) {
+          if (businessSmtpReady(deliverySettings)) {
             await sendSmtpMail(deliverySettings, buildTeamInviteMessage(deliverySettings, member, user, req));
             deliveryStatus = "sent";
             deliveryMessage = `Invitation email sent to ${member.email}`;
@@ -2130,6 +2208,12 @@ export function createServer(options = {}) {
               inviteDeliveryStatus: deliveryStatus,
               inviteDeliveryMessage: deliveryMessage,
               inviteSentAt: new Date().toISOString(),
+            }, { previewPlan });
+          } else {
+            deliveryStatus = "not_configured";
+            member = api.updateTeamMember(user, member.id, {
+              inviteDeliveryStatus: deliveryStatus,
+              inviteDeliveryMessage: deliveryMessage,
             }, { previewPlan });
           }
         } catch (deliveryError) {
@@ -2194,8 +2278,9 @@ export function createServer(options = {}) {
       try {
         const body = await readBody(req);
         const approval = api.createApprovalRequest(user, body, { previewPlan });
+        const notification = await sendBusinessApprovalNotification(api, user, approval, body, { previewPlan }, "created");
         const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-approval-create");
-        sendJson(res, 201, { ...approval, businessWorkspaceSync });
+        sendJson(res, 201, { ...approval, ...notification, businessWorkspaceSync });
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
       }
@@ -2207,8 +2292,9 @@ export function createServer(options = {}) {
         const id = url.pathname.split("/")[3];
         const body = await readBody(req);
         const approval = api.decideApprovalRequest(user, id, body, { previewPlan });
+        const notification = await sendBusinessApprovalNotification(api, user, approval, body, { previewPlan }, "decision");
         const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-approval-decision");
-        sendJson(res, 200, { ...approval, businessWorkspaceSync });
+        sendJson(res, 200, { ...approval, ...notification, businessWorkspaceSync });
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 404, { error: error.message });
       }
