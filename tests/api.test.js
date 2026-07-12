@@ -2820,6 +2820,22 @@ test("business workspace invite routes enforce owner accountant and viewer permi
       status: "active",
     });
 
+    const ownerAsSubUser = await request("/business/team", {
+      method: "POST",
+      token: owner.token,
+      body: { name: "Workspace Owner", email: "workspace-owner@example.com", role: "accountant" },
+    });
+    assert.equal(ownerAsSubUser.response.status, 400);
+    assert.match(ownerAsSubUser.payload.error, /workspace owner\/admin email/i);
+
+    api.createUser({ name: "Workspace Admin", email: "workspace-admin@example.com", role: "admin" });
+    const adminAsSubUser = await request("/business/team", {
+      method: "POST",
+      token: owner.token,
+      body: { name: "Workspace Admin", email: "workspace-admin@example.com", role: "viewer" },
+    });
+    assert.equal(adminAsSubUser.response.status, 400);
+    assert.match(adminAsSubUser.payload.error, /Admin email addresses cannot be added/i);
     const accountantInvite = await request("/business/team", {
       method: "POST",
       token: owner.token,
@@ -2831,6 +2847,14 @@ test("business workspace invite routes enforce owner accountant and viewer permi
     assert.equal(accountantInvite.payload.inviteToken, null);
     assert.equal(accountantInvite.payload.inviteDeliveryStatus, "not_configured");
     assert.match(accountantInvite.payload.inviteDeliveryMessage, /SMTP is not configured/i);
+
+    const duplicateAccountant = await request("/business/team", {
+      method: "POST",
+      token: owner.token,
+      body: { name: "Accountant Again", email: "workspace-accountant@example.com", role: "viewer" },
+    });
+    assert.equal(duplicateAccountant.response.status, 400);
+    assert.match(duplicateAccountant.payload.error, /already has workspace access/i);
 
     const accountant = await signup("Accountant User", "workspace-accountant@example.com", "9000000002");
     const accountantAccept = await request("/business/team/accept", {
@@ -3094,4 +3118,3 @@ test("static server exposes only the browser api client from api source", async 
     await new Promise((resolve) => server.close(resolve));
   }
 });
-

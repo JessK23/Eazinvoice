@@ -312,8 +312,27 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
       }, "manageTeam");
+      const email = String(input.email || "").trim().toLowerCase();
+      const ownerEmail = String(access.owner?.email || "").trim().toLowerCase();
+      const actorEmail = String(user.email || "").trim().toLowerCase();
+      if (!email) throw new Error("Enter a valid team member email address.");
+      if (email === ownerEmail || email === actorEmail) {
+        throw new Error("You cannot add the workspace owner/admin email as a sub-user. Please use a different email address for Accountant or Viewer access.");
+      }
+      const existingUser = store.listUsers().find((entry) => String(entry.email || "").trim().toLowerCase() === email);
+      if (existingUser?.role === "admin") {
+        throw new Error("Admin email addresses cannot be added as Accountant or Viewer sub-users.");
+      }
+      const existingMember = store.listTeamMembersForWorkspace(access.ownerUserId).find((member) => (
+        String(member.email || "").trim().toLowerCase() === email
+        && member.status !== "removed"
+      ));
+      if (existingMember) {
+        throw new Error("This email already has workspace access. Remove or update the existing sub-user instead.");
+      }
       return store.createTeamMember({
         ...input,
+        email,
         ownerUserId: access.ownerUserId,
         invitedByUserId: user.id,
       });
