@@ -317,6 +317,89 @@ test("manual payments update invoice payment status", () => {
   assert.equal(paid.invoice.balanceAmount, 0);
 });
 
+test("purchase/work order payments update payable status", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Vendor Pay User", email: "vendor-pay@example.com" });
+  api.createSubscription({
+    userId: user.id,
+    subscriberName: user.name,
+    subscriberType: "individual",
+    plan: "business",
+    amount: 11988,
+    billingCycle: "yearly",
+    status: "active",
+  });
+  const vendor = api.createVendor({
+    ownerUserId: user.id,
+    name: "Supply Partner",
+    email: "vendor@example.com",
+  });
+  const purchaseOrder = api.createPurchaseOrder({
+    ownerUserId: user.id,
+    vendorId: vendor.id,
+    customerId: vendor.id,
+    billToName: vendor.name,
+    status: "created",
+    taxRate: 18,
+    items: [{ description: "Materials", quantity: 1, rate: 1000, gstRate: 18 }],
+  });
+
+  assert.equal(purchaseOrder.vendorId, vendor.id);
+  assert.equal(purchaseOrder.paymentStatus, "unpaid");
+  assert.equal(purchaseOrder.balanceAmount, 1180);
+  assert.equal(api.getBusinessComplianceDashboard(user).financials.payables, 1180);
+
+  const partial = api.recordPurchaseOrderPayment(purchaseOrder.id, {
+    amount: 500,
+    mode: "Bank Transfer",
+    reference: "PO-PAY-1",
+  });
+  assert.equal(partial.purchaseOrder.paymentStatus, "part_paid");
+  assert.equal(partial.purchaseOrder.paidAmount, 500);
+  assert.equal(partial.purchaseOrder.balanceAmount, 680);
+  assert.equal(api.getBusinessComplianceDashboard(user).financials.payables, 680);
+
+  const paid = api.recordPurchaseOrderPayment(purchaseOrder.id, {
+    amount: 680,
+    mode: "UPI",
+    reference: "PO-PAY-2",
+  });
+  assert.equal(paid.purchaseOrder.paymentStatus, "paid");
+  assert.equal(paid.purchaseOrder.balanceAmount, 0);
+  assert.equal(api.listPayments(user).filter((payment) => payment.purchaseOrderId === purchaseOrder.id).length, 2);
+  assert.equal(api.getBusinessComplianceDashboard(user).financials.payables, 0);
+});
+
+test("draft and deleted purchase/work orders cannot receive payments", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Guarded PO User", email: "guarded-po@example.com" });
+  const draft = api.createPurchaseOrder({
+    ownerUserId: user.id,
+    status: "draft",
+    taxRate: 0,
+    items: [{ description: "Draft purchase", quantity: 1, rate: 1000 }],
+  });
+
+  assert.throws(
+    () => api.recordPurchaseOrderPayment(draft.id, { amount: 100 }),
+    /Create this PO\/WO before recording payment/,
+  );
+
+  const purchaseOrder = api.createPurchaseOrder({
+    ownerUserId: user.id,
+    status: "created",
+    taxRate: 0,
+    items: [{ description: "Created purchase", quantity: 1, rate: 500 }],
+  });
+  const deleted = api.deletePurchaseOrder(purchaseOrder.id, user);
+  assert.equal(deleted.status, "deleted");
+  assert.equal(deleted.paymentStatus, "deleted");
+  assert.throws(
+    () => api.recordPurchaseOrderPayment(purchaseOrder.id, { amount: 100 }),
+    /Deleted PO\/WO records cannot receive payment updates/,
+  );
+});
+
 test("draft and deleted invoices cannot receive payments", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const user = api.createUser({ name: "Guarded User", email: "guarded@example.com" });

@@ -145,6 +145,9 @@ export const apiClient = {
   updatePurchaseOrder(token, poId, body) {
     return request(`/purchase-orders/${poId}`, { method: "PATCH", token, body });
   },
+  recordPurchaseOrderPayment(token, poId, body) {
+    return request(`/purchase-orders/${poId}/payments`, { method: "POST", token, body });
+  },
   deletePurchaseOrder(token, poId) {
     return request(`/purchase-orders/${poId}`, { method: "DELETE", token });
   },

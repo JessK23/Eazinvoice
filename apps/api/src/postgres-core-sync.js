@@ -277,8 +277,8 @@ async function syncPurchaseOrders(client, purchaseOrders, options = {}) {
     await client.query(
       `insert into eazinvoice_purchase_orders
         (id, owner_user_id, company_id, vendor_id, document_type, po_number, po_date, due_date, currency, status,
-         subtotal, discount, tax_amount, total, record, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7::date, $8::date, $9, $10, $11, $12, $13, $14, $15::jsonb, coalesce($16::timestamptz, now()), now())
+         payment_status, subtotal, discount, tax_amount, total, paid_amount, balance_amount, record, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7::date, $8::date, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::jsonb, coalesce($19::timestamptz, now()), now())
        on conflict (id) do update set
         owner_user_id = excluded.owner_user_id,
         company_id = excluded.company_id,
@@ -289,10 +289,13 @@ async function syncPurchaseOrders(client, purchaseOrders, options = {}) {
         due_date = excluded.due_date,
         currency = excluded.currency,
         status = excluded.status,
+        payment_status = excluded.payment_status,
         subtotal = excluded.subtotal,
         discount = excluded.discount,
         tax_amount = excluded.tax_amount,
         total = excluded.total,
+        paid_amount = excluded.paid_amount,
+        balance_amount = excluded.balance_amount,
         record = excluded.record,
         updated_at = now()`,
       [
@@ -306,10 +309,13 @@ async function syncPurchaseOrders(client, purchaseOrders, options = {}) {
         dateOnly(purchaseOrder.dueDate),
         text(purchaseOrder.currency, "INR"),
         text(purchaseOrder.status, "draft"),
+        text(purchaseOrder.paymentStatus, purchaseOrder.status === "draft" ? "draft" : "unpaid"),
         num(purchaseOrder.subtotal),
         num(purchaseOrder.discount),
         num(purchaseOrder.taxAmount, purchaseOrder.gst, purchaseOrder.tax),
         num(purchaseOrder.total),
+        num(purchaseOrder.paidAmount),
+        num(purchaseOrder.balanceAmount, num(purchaseOrder.total) - num(purchaseOrder.paidAmount)),
         json(purchaseOrder),
         timestamp(purchaseOrder.createdAt),
       ],

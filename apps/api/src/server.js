@@ -2802,6 +2802,45 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname.startsWith("/purchase-orders/") && url.pathname.endsWith("/payments") && req.method === "POST") {
+      const id = url.pathname.split("/")[2];
+      const body = await readBody(req);
+      const existing = api.getPurchaseOrder(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+      });
+      if (!existing) {
+        sendJson(res, 404, { error: "Not found" });
+        return;
+      }
+      const amount = Number(body.amount ?? existing.balanceAmount ?? existing.total);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        sendJson(res, 400, { error: "Enter a valid paid amount" });
+        return;
+      }
+      const balance = Number(existing.balanceAmount ?? existing.total ?? 0);
+      if (balance > 0 && amount > balance + 0.01) {
+        sendJson(res, 400, { error: "Payment amount cannot be more than the pending PO/WO balance" });
+        return;
+      }
+      try {
+        const recorded = api.recordPurchaseOrderPayment(id, {
+          amount,
+          currency: body.currency || existing.currency,
+          mode: body.mode || "manual",
+          reference: body.reference,
+          notes: body.notes,
+          paymentDate: body.paymentDate,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        }, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null });
+        const reportSync = await syncPurchaseOrderReportRows(recorded?.purchaseOrder, "purchase-order-payment");
+        sendJson(res, 201, { ...recorded, reportSync });
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
     if (url.pathname.startsWith("/purchase-orders/") && req.method === "PATCH") {
       const id = url.pathname.split("/")[2];
       const body = await readBody(req);

@@ -665,6 +665,7 @@ export function createStore(seed = {}, options = {}) {
       poCode,
       poNumber: input.poNumber?.trim() ?? `${poCode}-${poSequence}`,
       status,
+      vendorId: input.vendorId ?? input.customerId ?? null,
       customerId: input.customerId ?? null,
       poDate: input.poDate ?? new Date().toISOString().slice(0, 10),
       dueDate: input.dueDate ?? "",
@@ -684,6 +685,7 @@ export function createStore(seed = {}, options = {}) {
       ...totals,
       createdAt: new Date().toISOString(),
     };
+    refreshPurchaseOrderPaymentStatus(purchaseOrder);
     state.purchaseOrders.push(purchaseOrder);
     persist();
     return clone(purchaseOrder);
@@ -1362,9 +1364,10 @@ export function createStore(seed = {}, options = {}) {
     const inputGst = purchaseOrders.reduce((sum, po) => sum + toNumber(po.taxAmount, 0), 0);
     const revenue = invoices.reduce((sum, invoice) => sum + toNumber(invoice.total, 0), 0);
     const expenses = purchaseOrders.reduce((sum, po) => sum + toNumber(po.total, 0), 0);
+    const expensesPaid = purchaseOrders.reduce((sum, po) => sum + toNumber(po.paidAmount, 0), 0);
     const paid = invoices.reduce((sum, invoice) => sum + toNumber(invoice.paidAmount, 0), 0);
     const receivables = invoices.reduce((sum, invoice) => sum + toNumber(invoice.balanceAmount, Math.max(0, toNumber(invoice.total, 0) - toNumber(invoice.paidAmount, 0))), 0);
-    const payables = expenses;
+    const payables = purchaseOrders.reduce((sum, po) => sum + toNumber(po.balanceAmount, Math.max(0, toNumber(po.total, 0) - toNumber(po.paidAmount, 0))), 0);
     const paymentSettings = settings.paymentSettings || {};
     const emailSettings = settings.emailSettings || {};
     const gatewayReady = Boolean(paymentSettings.keyId && paymentSettings.keySecretConfigured && paymentSettings.webhookSecretConfigured && paymentSettings.paymentLinkEnabled);
@@ -1390,6 +1393,7 @@ export function createStore(seed = {}, options = {}) {
       financials: {
         revenue,
         expenses,
+        expensesPaid,
         profit: revenue - expenses,
         paid,
         receivables,
@@ -1851,6 +1855,21 @@ export function createStore(seed = {}, options = {}) {
     return invoice;
   }
 
+  function refreshPurchaseOrderPaymentStatus(purchaseOrder) {
+    const paidAmount = state.payments
+      .filter((payment) => payment.purchaseOrderId === purchaseOrder.id && payment.status === "captured")
+      .reduce((sum, payment) => sum + toNumber(payment.amount), 0);
+    purchaseOrder.paidAmount = Math.min(toNumber(purchaseOrder.total), paidAmount);
+    purchaseOrder.balanceAmount = Math.max(0, toNumber(purchaseOrder.total) - purchaseOrder.paidAmount);
+    if (purchaseOrder.status === "draft") purchaseOrder.paymentStatus = "draft";
+    else if (purchaseOrder.status === "deleted") purchaseOrder.paymentStatus = "deleted";
+    else if (purchaseOrder.total > 0 && purchaseOrder.balanceAmount <= 0) purchaseOrder.paymentStatus = "paid";
+    else if (purchaseOrder.paidAmount > 0) purchaseOrder.paymentStatus = "part_paid";
+    else if (purchaseOrder.dueDate && new Date(purchaseOrder.dueDate) < new Date()) purchaseOrder.paymentStatus = "overdue";
+    else purchaseOrder.paymentStatus = "unpaid";
+    return purchaseOrder;
+  }
+
   function recordInvoicePayment(invoiceId, input = {}) {
     const invoice = state.invoices.find((entry) => entry.id === invoiceId);
     if (!invoice) return null;
@@ -1881,6 +1900,41 @@ export function createStore(seed = {}, options = {}) {
     refreshInvoicePaymentStatus(invoice);
     persist();
     return clone({ invoice, payment });
+  }
+
+  function recordPurchaseOrderPayment(purchaseOrderId, input = {}) {
+    const purchaseOrder = state.purchaseOrders.find((entry) => entry.id === purchaseOrderId);
+    if (!purchaseOrder) return null;
+    const status = String(purchaseOrder.status || "").toLowerCase();
+    if (status === "draft") throw new Error("Create this PO/WO before recording payment.");
+    if (status === "deleted") throw new Error("Deleted PO/WO records cannot receive payment updates.");
+    const amount = toNumber(input.amount);
+    if (amount <= 0) throw new Error("Enter a valid paid amount.");
+    refreshPurchaseOrderPaymentStatus(purchaseOrder);
+    const balance = toNumber(purchaseOrder.balanceAmount, purchaseOrder.total);
+    if (balance > 0 && amount > balance + 0.01) {
+      throw new Error("Payment amount cannot be more than the pending PO/WO balance.");
+    }
+    const payment = {
+      id: nextId("pay", ++state.counters.payment),
+      ownerUserId: purchaseOrder.ownerUserId,
+      purchaseOrderId,
+      amount,
+      currency: input.currency?.trim() || purchaseOrder.currency || "INR",
+      mode: input.mode?.trim() || "manual",
+      reference: input.reference?.trim() || "",
+      notes: input.notes?.trim() || "",
+      status: input.status?.trim() || "captured",
+      gateway: input.gateway?.trim() || "",
+      gatewayPaymentId: input.gatewayPaymentId?.trim() || "",
+      gatewayOrderId: input.gatewayOrderId?.trim() || "",
+      paymentDate: input.paymentDate?.trim() || new Date().toISOString().slice(0, 10),
+      createdAt: new Date().toISOString(),
+    };
+    state.payments.push(payment);
+    refreshPurchaseOrderPaymentStatus(purchaseOrder);
+    persist();
+    return clone({ purchaseOrder, payment });
   }
 
   function createInvoicePaymentLink(invoiceId, input = {}) {
@@ -1924,7 +1978,8 @@ export function createStore(seed = {}, options = {}) {
   function listPaymentsForUser(user) {
     if (!user || user.role === "admin") return clone(state.payments);
     const invoiceIds = new Set(listInvoicesForUser(user).map((invoice) => invoice.id));
-    return clone(state.payments.filter((payment) => invoiceIds.has(payment.invoiceId)));
+    const purchaseOrderIds = new Set(listPurchaseOrdersForUser(user).map((purchaseOrder) => purchaseOrder.id));
+    return clone(state.payments.filter((payment) => invoiceIds.has(payment.invoiceId) || purchaseOrderIds.has(payment.purchaseOrderId)));
   }
 
   function listPurchaseOrdersForUser(user) {
@@ -2103,6 +2158,7 @@ export function createStore(seed = {}, options = {}) {
     [
       "status",
       "documentType",
+      "vendorId",
       "customerId",
       "poNumber",
       "poDate",
@@ -2147,6 +2203,7 @@ export function createStore(seed = {}, options = {}) {
       }
       Object.assign(purchaseOrder, calculateInvoiceTotals(purchaseOrder.items, toNumber(purchaseOrder.taxRate), purchaseOrder));
     }
+    refreshPurchaseOrderPaymentStatus(purchaseOrder);
 
     persist();
     return clone(purchaseOrder);
@@ -2170,6 +2227,7 @@ export function createStore(seed = {}, options = {}) {
     const companiesOwned = new Set(state.companies.filter((company) => company.ownerUserId === user?.id).map((company) => company.id));
     if (user && user.role !== "admin" && purchaseOrder.ownerUserId !== user.id && !companiesOwned.has(purchaseOrder.companyId)) return null;
     purchaseOrder.status = "deleted";
+    purchaseOrder.paymentStatus = "deleted";
     purchaseOrder.deletedAt = new Date().toISOString();
     persist();
     return clone(purchaseOrder);
@@ -2248,6 +2306,7 @@ export function createStore(seed = {}, options = {}) {
     deleteInvoice,
     deletePurchaseOrder,
     recordInvoicePayment,
+    recordPurchaseOrderPayment,
     createInvoicePaymentLink,
     recordGatewayPayment,
     listPaymentsForUser,

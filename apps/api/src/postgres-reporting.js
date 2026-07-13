@@ -181,7 +181,12 @@ async function getPurchaseOrderStats(client, user, companyIds, period) {
       count(*)::int AS total_purchase_orders,
       count(*) FILTER (WHERE lower(coalesce(p.status, '')) = 'draft')::int AS draft_purchase_orders,
       count(*) FILTER (WHERE ${activeCreatedStatus("p")})::int AS created_purchase_orders,
-      coalesce(sum(p.total) FILTER (WHERE ${activeCreatedStatus("p")}), 0)::numeric AS expenses
+      coalesce(sum(p.total) FILTER (WHERE ${activeCreatedStatus("p")}), 0)::numeric AS expenses,
+      coalesce(sum(p.paid_amount) FILTER (WHERE ${activeCreatedStatus("p")}), 0)::numeric AS expenses_paid,
+      coalesce(sum(p.balance_amount) FILTER (
+        WHERE ${activeCreatedStatus("p")}
+          AND lower(coalesce(p.payment_status, 'unpaid')) <> 'paid'
+      ), 0)::numeric AS payables
      FROM eazinvoice_purchase_orders p
      ${toWhereClause(where)}`,
     params,
@@ -192,6 +197,8 @@ async function getPurchaseOrderStats(client, user, companyIds, period) {
     draftPurchaseOrders: numberValue(row.draft_purchase_orders),
     createdPurchaseOrders: numberValue(row.created_purchase_orders),
     expenses: numberValue(row.expenses),
+    expensesPaid: numberValue(row.expenses_paid),
+    payables: numberValue(row.payables),
   };
 }
 
@@ -296,8 +303,8 @@ async function getReportPurchaseOrders(client, user, companyIds, period) {
   pushInvoiceVisibility(where, params, user, companyIds, "p");
   pushDateFilters(where, params, "coalesce(p.po_date, p.created_at::date)", period);
   const result = await client.query(
-    `SELECT p.id, p.vendor_id, p.document_type, p.po_number, p.po_date, p.due_date, p.currency, p.status,
-      p.subtotal, p.discount, p.tax_amount, p.total,
+    `SELECT p.id, p.vendor_id, p.document_type, p.po_number, p.po_date, p.due_date, p.currency, p.status, p.payment_status,
+      p.subtotal, p.discount, p.tax_amount, p.total, p.paid_amount, p.balance_amount,
       coalesce(p.record->>'vendorName', p.record->>'billToName', p.record->>'supplierName', 'Vendor') AS bill_to_name
      FROM eazinvoice_purchase_orders p
      ${toWhereClause(where)}
@@ -313,10 +320,13 @@ async function getReportPurchaseOrders(client, user, companyIds, period) {
     dueDate: row.due_date,
     currency: row.currency || "INR",
     status: row.status,
+    paymentStatus: row.payment_status,
     subtotal: numberValue(row.subtotal),
     discount: numberValue(row.discount),
     taxAmount: numberValue(row.tax_amount),
     total: numberValue(row.total),
+    paidAmount: numberValue(row.paid_amount),
+    balanceAmount: numberValue(row.balance_amount),
     billToName: row.bill_to_name || "Vendor",
   }));
 }
@@ -354,7 +364,9 @@ async function getMonthlyTrend(client, user, companyIds, period) {
   });
   const poRows = await client.query(
     `SELECT to_char(date_trunc('month', coalesce(p.po_date, p.created_at::date)), 'YYYY-MM') AS month_key,
-      coalesce(sum(total), 0)::numeric AS expenses
+      coalesce(sum(total), 0)::numeric AS expenses,
+      coalesce(sum(paid_amount), 0)::numeric AS expenses_paid,
+      coalesce(sum(balance_amount) FILTER (WHERE lower(coalesce(payment_status, 'unpaid')) <> 'paid'), 0)::numeric AS payables
      FROM eazinvoice_purchase_orders p
      ${toWhereClause(poWhere)}
      GROUP BY month_key`,
@@ -363,13 +375,19 @@ async function getMonthlyTrend(client, user, companyIds, period) {
 
   const incomeByMonth = new Map(invoiceRows.rows.map((row) => [row.month_key, numberValue(row.income)]));
   const expenseByMonth = new Map(poRows.rows.map((row) => [row.month_key, numberValue(row.expenses)]));
+  const expensePaidByMonth = new Map(poRows.rows.map((row) => [row.month_key, numberValue(row.expenses_paid)]));
+  const payableByMonth = new Map(poRows.rows.map((row) => [row.month_key, numberValue(row.payables)]));
   return monthKeys.map((month) => {
     const income = incomeByMonth.get(month) || 0;
     const expenses = expenseByMonth.get(month) || 0;
+    const expensesPaid = expensePaidByMonth.get(month) || 0;
+    const payables = payableByMonth.get(month) || 0;
     return {
       month,
       income,
       expenses,
+      expensesPaid,
+      payables,
       profit: income - expenses,
     };
   });

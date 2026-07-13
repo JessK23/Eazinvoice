@@ -59,6 +59,7 @@ const paymentForm = document.getElementById("paymentForm");
 const paymentModalClose = document.getElementById("paymentModalClose");
 const paymentModalCancel = document.getElementById("paymentModalCancel");
 const paymentModalStatus = document.getElementById("paymentModalStatus");
+const paymentModalTitle = document.getElementById("paymentModalTitle");
 const paymentModalInvoiceMeta = document.getElementById("paymentModalInvoiceMeta");
 const paymentModalSummary = document.getElementById("paymentModalSummary");
 const paymentHistoryList = document.getElementById("paymentHistoryList");
@@ -1199,6 +1200,56 @@ function groupRecordsByName(records, nameSelector, valueSelector) {
   return [...groups.values()].sort((first, second) => second.value - first.value);
 }
 
+function purchaseOrderPaidAmount(po) {
+  return Math.max(0, Number(po?.paidAmount || 0));
+}
+
+function purchaseOrderPayableAmount(po) {
+  const total = Math.max(0, Number(po?.total || 0));
+  const paid = purchaseOrderPaidAmount(po);
+  if (Number.isFinite(Number(po?.balanceAmount))) {
+    return Math.max(0, Number(po.balanceAmount || 0));
+  }
+  return Math.max(0, total - paid);
+}
+
+function purchaseOrderPaymentStatus(po) {
+  const explicit = String(po?.paymentStatus || "").toLowerCase().replace(/\s+/g, "_");
+  if (explicit && explicit !== "created") return explicit;
+  const payable = purchaseOrderPayableAmount(po);
+  const paid = purchaseOrderPaidAmount(po);
+  if (payable <= 0 && paid > 0) return "paid";
+  if (paid > 0) return "part_paid";
+  return "unpaid";
+}
+
+function purchaseOrderPaymentLabel(po) {
+  return purchaseOrderPaymentStatus(po).replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function vendorPayableRows(purchaseOrders = []) {
+  const groups = new Map();
+  purchaseOrders.forEach((po) => {
+    const vendor = po.billToName || po.vendorName || po.supplierName || "Vendor";
+    const key = vendor.trim().toLowerCase();
+    const current = groups.get(key) || {
+      vendor,
+      records: 0,
+      total: 0,
+      paid: 0,
+      payable: 0,
+      tax: 0,
+    };
+    current.records += 1;
+    current.total += Number(po.total || 0);
+    current.paid += purchaseOrderPaidAmount(po);
+    current.payable += purchaseOrderPayableAmount(po);
+    current.tax += Number(po.taxAmount || 0);
+    groups.set(key, current);
+  });
+  return [...groups.values()].sort((first, second) => second.payable - first.payable || second.total - first.total);
+}
+
 function daysPastDue(invoice) {
   const dueDate = parseDate(invoice.dueDate);
   if (!dueDate) return 0;
@@ -1338,6 +1389,8 @@ function buildMonthlyBuckets(invoices = [], purchaseOrders = [], minimumKeys = [
     paid: 0,
     receivable: 0,
     expenses: 0,
+    expensesPaid: 0,
+    payables: 0,
     profit: 0,
     invoiceCount: 0,
     poCount: 0,
@@ -1355,6 +1408,8 @@ function buildMonthlyBuckets(invoices = [], purchaseOrders = [], minimumKeys = [
     const bucket = bucketMap.get(monthKeyForRecord(po, "po"));
     if (!bucket) return;
     bucket.expenses += Number(po.total || 0);
+    bucket.expensesPaid += purchaseOrderPaidAmount(po);
+    bucket.payables += purchaseOrderPayableAmount(po);
     bucket.poCount += 1;
   });
   buckets.forEach((bucket) => {
@@ -1395,7 +1450,7 @@ function renderReportDetailChart(type, invoices, purchaseOrders) {
     revenue: { title: "Revenue by Month", badge: "Revenue", key: "revenue", tone: "revenue" },
     invoices: { title: "Invoices by Month", badge: "Count", key: "invoiceCount", tone: "count", format: "count" },
     expenses: { title: "Expenses by Month", badge: "Expense", key: "expenses", tone: "expense" },
-    po: { title: "PO / WO by Month", badge: "Count", key: "poCount", tone: "count", format: "count" },
+    po: { title: "PO / WO Payables by Month", badge: "Payable", key: "payables", tone: "expense" },
     "profit-loss": { title: "Profit by Month", badge: "Net", key: "profit", tone: "profit" },
     gst: { title: "Net GST by Month", badge: "GST", key: "gst", tone: "profit" },
     paid: { title: "Paid Revenue by Month", badge: "Paid", key: "paid", tone: "profit" },
@@ -1444,6 +1499,8 @@ function renderMainReportCharts() {
       paid: 0,
       receivable: 0,
       expenses: Number(row.expenses || 0),
+      expensesPaid: Number(row.expensesPaid || 0),
+      payables: Number(row.payables || 0),
       profit: Number(row.profit || 0),
       invoiceCount: 0,
       poCount: 0,
@@ -1586,6 +1643,8 @@ function renderReportDetail(rawType = "revenue") {
   const paidTotal = invoices.reduce((sum, invoice) => sum + Number(invoice.paidAmount || 0), 0);
   const unpaidTotal = invoices.reduce((sum, invoice) => sum + Number(invoice.balanceAmount ?? invoice.total ?? 0), 0);
   const expenseTotal = purchaseOrders.reduce((sum, po) => sum + Number(po.total || 0), 0);
+  const expensePaidTotal = purchaseOrders.reduce((sum, po) => sum + purchaseOrderPaidAmount(po), 0);
+  const payableTotal = purchaseOrders.reduce((sum, po) => sum + purchaseOrderPayableAmount(po), 0);
   const profit = invoiceTotal - expenseTotal;
   renderReportDetailChart(type, invoices, purchaseOrders);
 
@@ -1696,20 +1755,42 @@ function renderReportDetail(rawType = "revenue") {
   }
 
   if (type === "expenses" || type === "po") {
+    const vendorRows = vendorPayableRows(purchaseOrders);
+    const partiallyPaid = purchaseOrders.filter((po) => purchaseOrderPaymentStatus(po) === "part_paid").length;
+    const fullyPaid = purchaseOrders.filter((po) => purchaseOrderPaymentStatus(po) === "paid").length;
     if (reportDetailMetrics) reportDetailMetrics.innerHTML = [
       metricCard(type === "po" ? "PO / WO Created" : "Expense Records", String(purchaseOrders.length)),
       metricCard("Expense Value", `INR ${money(expenseTotal)}`),
-      metricCard("Purchase Orders", String(purchaseOrders.filter((po) => String(po.documentType || "po") === "po").length)),
-      metricCard("Work Orders", String(purchaseOrders.filter((po) => String(po.documentType || "po") === "wo").length)),
+      metricCard("Paid to Vendors", `INR ${money(expensePaidTotal)}`),
+      metricCard("Payable Balance", `INR ${money(payableTotal)}`),
+      metricCard("Fully Paid", String(fullyPaid)),
+      metricCard("Part Paid", String(partiallyPaid)),
     ].join("");
-    renderReportTable(["Document", "Type", "Vendor", "Date", "Value", "Status"], purchaseOrders.map((po) => [
+    const recordRows = purchaseOrders.map((po) => [
       po.poNumber || "-",
       String(po.documentType || "po").toUpperCase(),
       po.billToName || "Vendor",
       po.poDate || "-",
       `${po.currency || "INR"} ${money(po.total || 0)}`,
+      `${po.currency || "INR"} ${money(purchaseOrderPaidAmount(po))}`,
+      `${po.currency || "INR"} ${money(purchaseOrderPayableAmount(po))}`,
+      purchaseOrderPaymentLabel(po),
       String(po.status || "created"),
-    ]));
+    ]);
+    const summaryRows = vendorRows.length
+      ? vendorRows.map((row) => [
+        "Vendor Summary",
+        `${row.records} record${row.records === 1 ? "" : "s"}`,
+        row.vendor,
+        "-",
+        `INR ${money(row.total)}`,
+        `INR ${money(row.paid)}`,
+        `INR ${money(row.payable)}`,
+        row.payable > 0 ? "Payable" : "Clear",
+        `GST INR ${money(row.tax)}`,
+      ])
+      : [];
+    renderReportTable(["Document", "Type", "Vendor", "Date", "Total", "Paid", "Payable", "Payment Status", "Record Status"], recordRows.concat(summaryRows));
     return;
   }
 
@@ -1718,6 +1799,8 @@ function renderReportDetail(rawType = "revenue") {
       metricCard("Revenue", `INR ${money(invoiceTotal)}`),
       metricCard("Expenses", `INR ${money(expenseTotal)}`),
       metricCard("Gross Profit", `INR ${money(profit)}`),
+      metricCard("Receivables", `INR ${money(unpaidTotal)}`),
+      metricCard("Payables", `INR ${money(payableTotal)}`),
       metricCard("Margin", invoiceTotal > 0 ? `${((profit / invoiceTotal) * 100).toFixed(2)}%` : "0.00%"),
     ].join("");
     renderReportTable(["Particulars", "Calculation", "Amount"], [
@@ -1726,6 +1809,9 @@ function renderReportDetail(rawType = "revenue") {
       ["Profit / Loss", "Revenue - Expenses", `INR ${money(profit)}`],
       ["Cash Collected", "Paid invoice amount", `INR ${money(paidTotal)}`],
       ["Receivables", "Invoice balance amount", `INR ${money(unpaidTotal)}`],
+      ["Vendor Payments Made", "Paid PO/WO amount", `INR ${money(expensePaidTotal)}`],
+      ["Payables", "PO/WO balance amount", `INR ${money(payableTotal)}`],
+      ["Cash Position View", "Cash collected - vendor payments made", `INR ${money(paidTotal - expensePaidTotal)}`],
     ]);
     return;
   }
@@ -1740,6 +1826,7 @@ function renderReportDetail(rawType = "revenue") {
       metricCard("Input GST", `INR ${money(gstInput)}`),
       metricCard("Net GST Payable", `INR ${money(netGst)}`),
       metricCard("GST Records", String(invoices.length + purchaseOrders.length)),
+      metricCard("Vendor Payables", `INR ${money(payableTotal)}`),
     ].join("");
     renderReportTable(["GST Report", "Source", "Records", "Taxable / Total", "GST Amount"], [
       ["Output GST", "Created Tax Invoices", String(invoices.length), `INR ${money(invoiceTotal)}`, `INR ${money(gstOutput)}`],
@@ -1751,6 +1838,7 @@ function renderReportDetail(rawType = "revenue") {
   }
 
   const receivables = unpaidTotal;
+  const payables = payableTotal;
   const customerTotals = groupRecordsByName(
     invoices,
     (invoice) => invoice.billToName || "Customer",
@@ -1786,13 +1874,15 @@ function renderReportDetail(rawType = "revenue") {
     metricCard("Net Profit", `INR ${money(profit)}`),
     metricCard("GST Position", `INR ${money(netGst)}`),
     metricCard("Receivables", `INR ${money(receivables)}`),
+    metricCard("Payables", `INR ${money(payables)}`),
     metricCard("Top Customer", topCustomer ? `${topCustomer.name} - INR ${money(topCustomer.value)}` : "No invoices"),
   ].join("");
   renderReportTable(["Advanced Report", "Current Insight", "Value"], [
-    ["Balance Sheet Snapshot", "Receivables minus purchase commitments", `INR ${money(receivables - expenseTotal)}`],
+    ["Balance Sheet Snapshot", "Receivables minus vendor payables", `INR ${money(receivables - payables)}`],
     ["GST Summary", `Output INR ${money(gstOutput)} less input INR ${money(gstInput)}`, `INR ${money(netGst)}`],
     ["Customer Aging", customerAging[0] ? `${customerAging[0].customer} - ${customerAging[0].bucket}` : "No outstanding balances", customerAging[0] ? `INR ${money(customerAging[0].amount)}` : "INR 0.00"],
     ["Vendor Spend", topVendor ? topVendor.name : "No PO/WO records", topVendor ? `INR ${money(topVendor.value)}` : "INR 0.00"],
+    ["Vendor Payables", vendorPayableRows(purchaseOrders)[0]?.vendor || "No payable balances", `INR ${money(payables)}`],
     ["Growth Analytics", "Filtered revenue and profit chart above", `Margin ${invoiceTotal > 0 ? ((profit / invoiceTotal) * 100).toFixed(2) : "0.00"}%`],
     ["Profit and Loss", `Revenue INR ${money(invoiceTotal)} less expenses INR ${money(expenseTotal)}`, `INR ${money(profit)}`],
   ]);
@@ -2109,11 +2199,15 @@ function vendorSpendByName(purchaseOrders) {
     const existing = spendMap.get(key) || {
       name,
       total: 0,
+      paid: 0,
+      payable: 0,
       count: 0,
       address: po.billToAddress || "",
       vendorCode: po.vendorCode || "PO/WO",
     };
     existing.total += status === "draft" ? 0 : Number(po.total || 0);
+    existing.paid += status === "draft" ? 0 : Number(po.paidAmount || 0);
+    existing.payable += status === "draft" ? 0 : Number(po.balanceAmount ?? po.total ?? 0);
     existing.count += 1;
     if (!existing.address && po.billToAddress) existing.address = po.billToAddress;
     spendMap.set(key, existing);
@@ -2139,7 +2233,7 @@ function renderVendors(vendors = dashboardVendors, purchaseOrders = dashboardPur
           <p>${escapeHtml(vendor.phone || "Phone not saved")} - ${escapeHtml(vendor.email || "Email not saved")}</p>
           <p class="hint">${escapeHtml(vendor.billingAddress || "Address not saved")}</p>
           <p class="hint">GST: ${escapeHtml(vendor.gstNumber || "Not added")} | PAN: ${escapeHtml(vendor.panNumber || "Not added")}</p>
-          <p class="hint">PO/WO spend: INR ${money(spendMap.get(String(vendor.businessName || vendor.name || "").trim().toLowerCase())?.total || 0)}</p>
+          <p class="hint">PO/WO spend: INR ${money(spendMap.get(String(vendor.businessName || vendor.name || "").trim().toLowerCase())?.total || 0)} | Paid: INR ${money(spendMap.get(String(vendor.businessName || vendor.name || "").trim().toLowerCase())?.paid || 0)} | Payable: INR ${money(spendMap.get(String(vendor.businessName || vendor.name || "").trim().toLowerCase())?.payable || 0)}</p>
         </div>
         <div class="row-actions">
           <button class="ghost small" type="button" data-edit-vendor="${escapeHtml(vendor.id)}">Edit</button>
@@ -2157,7 +2251,7 @@ function renderVendors(vendors = dashboardVendors, purchaseOrders = dashboardPur
           </div>
           <h3>${escapeHtml(vendor.name)}</h3>
           <p>${escapeHtml(vendor.address || "Vendor address not saved")}</p>
-          <p class="hint">PO/WO records: ${vendor.count} | Total expense value: INR ${money(vendor.total)}</p>
+          <p class="hint">PO/WO records: ${vendor.count} | Total: INR ${money(vendor.total)} | Payable: INR ${money(vendor.payable)}</p>
         </div>
         <div class="row-actions">
           <a class="ghost small" href="/apps/web/invoice.html?type=po">Create PO/WO</a>
@@ -2243,23 +2337,33 @@ function paymentsForInvoice(invoiceId) {
     .sort((a, b) => String(b.paymentDate || b.createdAt || "").localeCompare(String(a.paymentDate || a.createdAt || "")));
 }
 
-function renderPaymentModalDetails(invoice) {
-  if (!invoice) return;
-  const balance = Number(invoice.balanceAmount ?? invoice.total ?? 0);
-  const paid = Number(invoice.paidAmount || 0);
-  const currency = invoice.currency || "INR";
+function paymentsForPurchaseOrder(purchaseOrderId) {
+  return dashboardPayments
+    .filter((payment) => payment.purchaseOrderId === purchaseOrderId && String(payment.status || "captured").toLowerCase() === "captured")
+    .sort((a, b) => String(b.paymentDate || b.createdAt || "").localeCompare(String(a.paymentDate || a.createdAt || "")));
+}
+
+function renderPaymentModalDetails(record, context = "invoice") {
+  if (!record) return;
+  const isPurchaseOrder = context === "purchaseOrder";
+  const balance = Number(record.balanceAmount ?? record.total ?? 0);
+  const paid = Number(record.paidAmount || 0);
+  const currency = record.currency || "INR";
+  const number = isPurchaseOrder ? record.poNumber : record.invoiceNumber;
+  const party = record.billToName || (isPurchaseOrder ? "Vendor" : "Customer");
+  if (paymentModalTitle) paymentModalTitle.textContent = isPurchaseOrder ? "Add PO/WO Payment" : "Add Invoice Payment";
   if (paymentModalInvoiceMeta) {
-    paymentModalInvoiceMeta.textContent = `${invoice.invoiceNumber || "Invoice"} - ${invoice.billToName || "Customer"} - Balance ${currency} ${money(balance)}`;
+    paymentModalInvoiceMeta.textContent = `${number || (isPurchaseOrder ? "PO/WO" : "Invoice")} - ${party} - Balance ${currency} ${money(balance)}`;
   }
   if (paymentModalSummary) {
     paymentModalSummary.innerHTML = `
-      <div><span>Total Amount</span><strong>${escapeHtml(currency)} ${money(invoice.total || 0)}</strong></div>
+      <div><span>Total Amount</span><strong>${escapeHtml(currency)} ${money(record.total || 0)}</strong></div>
       <div><span>Paid So Far</span><strong>${escapeHtml(currency)} ${money(paid)}</strong></div>
       <div><span>Pending Balance</span><strong>${escapeHtml(currency)} ${money(balance)}</strong></div>
     `;
   }
   if (paymentHistoryList) {
-    const payments = paymentsForInvoice(invoice.id);
+    const payments = isPurchaseOrder ? paymentsForPurchaseOrder(record.id) : paymentsForInvoice(record.id);
     paymentHistoryList.innerHTML = payments.length
       ? `
         <h3>Payment History</h3>
@@ -2272,13 +2376,14 @@ function renderPaymentModalDetails(invoice) {
       `
       : '<div class="notice compact">No payments recorded yet. Add the first payment below.</div>';
   }
-  if (paymentSubmitButton) paymentSubmitButton.textContent = balance > 0 ? "Add Payment" : "Invoice Paid";
+  if (paymentSubmitButton) paymentSubmitButton.textContent = balance > 0 ? "Add Payment" : isPurchaseOrder ? "PO/WO Paid" : "Invoice Paid";
 }
 
-function openPaymentModal(invoice) {
+function openPaymentModal(record, context = "invoice") {
   if (!paymentModal || !paymentForm || !paymentInvoiceId || !paymentAmountInput || !paymentDateInput) return;
-  const balance = Number(invoice.balanceAmount ?? invoice.total ?? 0);
-  paymentInvoiceId.value = invoice.id;
+  const balance = Number(record.balanceAmount ?? record.total ?? 0);
+  paymentInvoiceId.value = record.id;
+  paymentForm.dataset.context = context;
   paymentAmountInput.value = balance > 0 ? String(balance) : "";
   paymentAmountInput.max = balance > 0 ? String(balance) : "";
   paymentAmountInput.disabled = balance <= 0;
@@ -2286,7 +2391,7 @@ function openPaymentModal(invoice) {
   if (paymentModeInput) paymentModeInput.value = "UPI";
   if (paymentReferenceInput) paymentReferenceInput.value = "";
   if (paymentNotesInput) paymentNotesInput.value = "";
-  renderPaymentModalDetails(invoice);
+  renderPaymentModalDetails(record, context);
   setPaymentModalStatus("");
   paymentModal.hidden = false;
   paymentAmountInput.focus();
@@ -2295,6 +2400,7 @@ function openPaymentModal(invoice) {
 function closePaymentModal() {
   if (paymentModal) paymentModal.hidden = true;
   paymentForm?.reset();
+  if (paymentForm) paymentForm.dataset.context = "invoice";
   setPaymentModalStatus("");
 }
 
@@ -2487,16 +2593,21 @@ function renderPoWorkspace(purchaseOrders) {
     const docType = String(po.documentType || "po").toLowerCase() === "wo" ? "WO" : "PO";
     const poId = String(po.id || "");
     const currency = po.currency || "INR";
+    const balance = Number(po.balanceAmount ?? po.total ?? 0);
+    const paymentStatus = String(po.paymentStatus || (isDraft ? "draft" : balance <= 0 ? "paid" : "unpaid")).toLowerCase();
+    const paymentTone = paymentStatus === "paid" ? "green" : paymentStatus === "part_paid" ? "gold" : paymentStatus === "overdue" ? "red" : tone;
     return `
       <div class="invoice-card">
         <div>
           <strong>${escapeHtml(po.poNumber || `${docType} draft`)}</strong>
-          <div class="hint">${escapeHtml(po.billToName || "Vendor")} - ${escapeHtml(po.poDate || "No date")} - ${escapeHtml(currency)} ${money(po.total || 0)}</div>
+          <div class="hint">${escapeHtml(po.billToName || "Vendor")} - ${escapeHtml(po.poDate || "No date")} - ${escapeHtml(currency)} ${money(po.total || 0)} - Balance ${escapeHtml(currency)} ${money(balance)}</div>
         </div>
         <div class="row-actions">
           <a class="ghost small" href="/apps/web/invoice.html?type=po&po=${encodeURIComponent(poId)}">${isDraft ? "Edit Draft" : "Open / Edit"}</a>
+          ${!isDraft && paymentStatus !== "paid" ? `<button class="ghost small" type="button" data-record-po-payment="${escapeHtml(poId)}">Record Payment</button>` : ""}
           <button class="ghost small danger" type="button" data-delete-po="${escapeHtml(poId)}">Delete</button>
           <span class="pill ${tone}">${escapeHtml(String(po.status || "created").toUpperCase())}</span>
+          <span class="pill ${paymentTone}">${escapeHtml(paymentStatus.replace("_", " ").toUpperCase())}</span>
         </div>
       </div>
     `;
@@ -2524,6 +2635,13 @@ function renderPoWorkspace(purchaseOrders) {
       } catch (error) {
         setPaymentModalStatus(error.message || "Could not delete PO/WO.", "error");
       }
+    });
+  });
+  document.querySelectorAll("[data-record-po-payment]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const poId = button.getAttribute("data-record-po-payment");
+      const purchaseOrder = dashboardPurchaseOrders.find((entry) => entry.id === poId);
+      if (purchaseOrder) openPaymentModal(purchaseOrder, "purchaseOrder");
     });
   });
 }
@@ -3297,46 +3415,58 @@ paymentModal?.addEventListener("click", (event) => {
 
 paymentForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const invoiceId = paymentInvoiceId?.value || "";
+  const paymentContext = paymentForm.dataset.context || "invoice";
+  const recordId = paymentInvoiceId?.value || "";
   const amount = Number(paymentAmountInput?.value || 0);
-  const currentInvoice = dashboardInvoices.find((invoice) => invoice.id === invoiceId);
-  const balance = Number(currentInvoice?.balanceAmount ?? currentInvoice?.total ?? 0);
-  if (!invoiceId || !Number.isFinite(amount) || amount <= 0) {
+  const currentRecord = paymentContext === "purchaseOrder"
+    ? dashboardPurchaseOrders.find((purchaseOrder) => purchaseOrder.id === recordId)
+    : dashboardInvoices.find((invoice) => invoice.id === recordId);
+  const balance = Number(currentRecord?.balanceAmount ?? currentRecord?.total ?? 0);
+  if (!recordId || !Number.isFinite(amount) || amount <= 0) {
     setPaymentModalStatus("Enter a valid payment amount.", "error");
     return;
   }
   if (balance > 0 && amount > balance + 0.01) {
-    setPaymentModalStatus(`Payment cannot be more than the pending balance of ${currentInvoice?.currency || "INR"} ${money(balance)}.`, "error");
+    setPaymentModalStatus(`Payment cannot be more than the pending balance of ${currentRecord?.currency || "INR"} ${money(balance)}.`, "error");
     return;
   }
   try {
     setPaymentModalStatus("Adding payment...", "");
-    const result = await apiClient.recordInvoicePayment(token, invoiceId, {
+    const result = paymentContext === "purchaseOrder"
+      ? await apiClient.recordPurchaseOrderPayment(token, recordId, {
+        amount,
+        mode: paymentModeInput?.value || "manual",
+        reference: paymentReferenceInput?.value || "",
+        notes: paymentNotesInput?.value || "",
+        paymentDate: paymentDateInput?.value || new Date().toISOString().slice(0, 10),
+      })
+      : await apiClient.recordInvoicePayment(token, recordId, {
       amount,
       mode: paymentModeInput?.value || "manual",
       reference: paymentReferenceInput?.value || "",
       notes: paymentNotesInput?.value || "",
       paymentDate: paymentDateInput?.value || new Date().toISOString().slice(0, 10),
     });
-    const updatedInvoice = result.invoice || result;
-    replaceInvoice(updatedInvoice);
+    const updatedRecord = paymentContext === "purchaseOrder" ? result.purchaseOrder || result : result.invoice || result;
+    if (paymentContext === "purchaseOrder") replacePurchaseOrder(updatedRecord);
+    else replaceInvoice(updatedRecord);
     if (result.payment) {
       const existingPaymentIndex = dashboardPayments.findIndex((payment) => payment.id === result.payment.id);
       if (existingPaymentIndex >= 0) dashboardPayments[existingPaymentIndex] = result.payment;
       else dashboardPayments.push(result.payment);
     }
     rerenderDashboardData();
-    renderPaymentModalDetails(updatedInvoice);
-    const updatedBalance = Number(updatedInvoice.balanceAmount ?? 0);
+    renderPaymentModalDetails(updatedRecord, paymentContext);
+    const updatedBalance = Number(updatedRecord.balanceAmount ?? 0);
     if (updatedBalance > 0) {
       paymentAmountInput.value = String(updatedBalance);
       paymentAmountInput.max = String(updatedBalance);
       if (paymentReferenceInput) paymentReferenceInput.value = "";
       if (paymentNotesInput) paymentNotesInput.value = "";
-      setPaymentModalStatus(`Payment added. Pending balance is ${updatedInvoice.currency || "INR"} ${money(updatedBalance)}. Add another payment when received.`, "success");
+      setPaymentModalStatus(`Payment added. Pending balance is ${updatedRecord.currency || "INR"} ${money(updatedBalance)}. Add another payment when ready.`, "success");
       paymentAmountInput.focus();
     } else {
-      setPaymentModalStatus("Payment added. Invoice is now PAID and reports are refreshed.", "success");
+      setPaymentModalStatus(paymentContext === "purchaseOrder" ? "Payment added. PO/WO is now PAID and reports are refreshed." : "Payment added. Invoice is now PAID and reports are refreshed.", "success");
       setTimeout(closePaymentModal, 900);
     }
   } catch (error) {

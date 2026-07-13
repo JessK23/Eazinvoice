@@ -1132,6 +1132,16 @@ export function createApi(deps = {}) {
       if (!visible) return null;
       return store.updatePurchaseOrder(id, updates, this.getUserPlanLimits(workspace.owner, options));
     },
+    recordPurchaseOrderPayment(id, input = {}, options = {}) {
+      const current = store.getPurchaseOrder(id);
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || (current?.ownerUserId ? store.getUserById(current.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || current?.ownerUserId,
+      }, "writeRecords");
+      const visible = store.getPurchaseOrder(id, workspace.owner);
+      if (!visible) return null;
+      return store.recordPurchaseOrderPayment(id, input);
+    },
     deletePurchaseOrder(id, user, options = {}) {
       const current = store.getPurchaseOrder(id);
       const workspace = this.resolveRecordsWorkspaceAccess(user, {
