@@ -153,6 +153,7 @@ export function createStore(seed = {}, options = {}) {
     users: [],
     companies: [],
     customers: [],
+    vendors: [],
     invoices: [],
     purchaseOrders: [],
     payments: [],
@@ -170,6 +171,7 @@ export function createStore(seed = {}, options = {}) {
       user: 0,
       company: 0,
       customer: 0,
+      vendor: 0,
       invoice: 0,
       purchaseOrder: 0,
       payment: 0,
@@ -192,6 +194,7 @@ export function createStore(seed = {}, options = {}) {
     user: 0,
     company: 0,
     customer: 0,
+    vendor: 0,
     invoice: 0,
     purchaseOrder: 0,
     payment: 0,
@@ -215,6 +218,7 @@ export function createStore(seed = {}, options = {}) {
       users: state.users,
       companies: state.companies,
       customers: state.customers,
+      vendors: state.vendors,
       invoices: state.invoices,
       purchaseOrders: state.purchaseOrders,
       payments: state.payments,
@@ -403,6 +407,135 @@ export function createStore(seed = {}, options = {}) {
 
   function listCustomers() {
     return clone(state.customers);
+  }
+
+  function getCustomer(id) {
+    return clone(state.customers.find((entry) => entry.id === id) || null);
+  }
+
+  function updateCustomer(id, updates = {}) {
+    const customer = state.customers.find((entry) => entry.id === id);
+    if (!customer) return null;
+    [
+      "customerType",
+      "name",
+      "businessName",
+      "gstNumber",
+      "panNumber",
+      "email",
+      "phone",
+      "billingAddress",
+      "shippingAddress",
+      "notes",
+    ].forEach((field) => {
+      if (updates[field] !== undefined) customer[field] = String(updates[field] || "").trim();
+    });
+    if (updates.address !== undefined && updates.billingAddress === undefined) {
+      customer.billingAddress = String(updates.address || "").trim();
+    }
+    if (updates.companyId !== undefined) customer.companyId = updates.companyId || null;
+    customer.updatedAt = new Date().toISOString();
+    persist();
+    return clone(customer);
+  }
+
+  function deleteCustomer(id) {
+    const customer = state.customers.find((entry) => entry.id === id);
+    if (!customer) return null;
+    customer.status = "deleted";
+    customer.deletedAt = new Date().toISOString();
+    customer.updatedAt = customer.deletedAt;
+    persist();
+    return clone(customer);
+  }
+
+  function reactivateCustomer(id) {
+    const customer = state.customers.find((entry) => entry.id === id);
+    if (!customer) return null;
+    customer.status = "active";
+    customer.deletedAt = "";
+    customer.updatedAt = new Date().toISOString();
+    persist();
+    return clone(customer);
+  }
+
+  function createVendor(input) {
+    const vendorSequence = state.counters.vendor + 1;
+    const vendor = {
+      id: nextId("ven", ++state.counters.vendor),
+      vendorCode: input.vendorCode?.trim() || `VEN-${String(vendorSequence).padStart(4, "0")}`,
+      ownerUserId: input.ownerUserId ?? null,
+      vendorType: input.vendorType?.trim() || input.category?.trim() || "business",
+      name: input.name?.trim() || input.vendorName?.trim() || input.businessName?.trim() || "",
+      businessName: input.businessName?.trim() || "",
+      gstNumber: input.gstNumber?.trim() ?? input.gstin?.trim() ?? "",
+      panNumber: input.panNumber?.trim() ?? input.pan?.trim() ?? "",
+      email: input.email?.trim() ?? "",
+      phone: input.phone?.trim() ?? input.mobile?.trim() ?? "",
+      billingAddress: input.billingAddress?.trim() ?? input.address?.trim() ?? "",
+      shippingAddress: input.shippingAddress?.trim() ?? "",
+      notes: input.notes?.trim() ?? "",
+      companyId: input.companyId ?? null,
+      status: input.status?.trim() || "active",
+      createdAt: new Date().toISOString(),
+    };
+    state.vendors.push(vendor);
+    persist();
+    return clone(vendor);
+  }
+
+  function listVendors() {
+    return clone(state.vendors);
+  }
+
+  function getVendor(id) {
+    return clone(state.vendors.find((entry) => entry.id === id) || null);
+  }
+
+  function updateVendor(id, updates = {}) {
+    const vendor = state.vendors.find((entry) => entry.id === id);
+    if (!vendor) return null;
+    [
+      "vendorType",
+      "name",
+      "businessName",
+      "gstNumber",
+      "panNumber",
+      "email",
+      "phone",
+      "billingAddress",
+      "shippingAddress",
+      "notes",
+    ].forEach((field) => {
+      if (updates[field] !== undefined) vendor[field] = String(updates[field] || "").trim();
+    });
+    if (updates.address !== undefined && updates.billingAddress === undefined) {
+      vendor.billingAddress = String(updates.address || "").trim();
+    }
+    if (updates.companyId !== undefined) vendor.companyId = updates.companyId || null;
+    vendor.updatedAt = new Date().toISOString();
+    persist();
+    return clone(vendor);
+  }
+
+  function deleteVendor(id) {
+    const vendor = state.vendors.find((entry) => entry.id === id);
+    if (!vendor) return null;
+    vendor.status = "deleted";
+    vendor.deletedAt = new Date().toISOString();
+    vendor.updatedAt = vendor.deletedAt;
+    persist();
+    return clone(vendor);
+  }
+
+  function reactivateVendor(id) {
+    const vendor = state.vendors.find((entry) => entry.id === id);
+    if (!vendor) return null;
+    vendor.status = "active";
+    vendor.deletedAt = "";
+    vendor.updatedAt = new Date().toISOString();
+    persist();
+    return clone(vendor);
   }
 
   function calculateInvoiceTotals(items, taxRate, adjustments = {}) {
@@ -1876,6 +2009,7 @@ export function createStore(seed = {}, options = {}) {
       users: state.users.length,
       companies: state.companies.length,
       customers: state.customers.length,
+      vendors: state.vendors.length,
       invoices: state.invoices.length,
       purchaseOrders: state.purchaseOrders.length,
       payments: state.payments.length,
@@ -2053,6 +2187,16 @@ export function createStore(seed = {}, options = {}) {
     updateCompany,
     createCustomer,
     listCustomers,
+    getCustomer,
+    updateCustomer,
+    deleteCustomer,
+    reactivateCustomer,
+    createVendor,
+    listVendors,
+    getVendor,
+    updateVendor,
+    deleteVendor,
+    reactivateVendor,
     createInvoice,
     createPurchaseOrder,
     runRecurringInvoiceScheduler,

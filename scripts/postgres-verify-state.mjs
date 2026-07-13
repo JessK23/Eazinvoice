@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { loadLocalEnv } from "./postgres-env.mjs";
 import { closePostgresPool, maskDatabaseUrl } from "../apps/api/src/postgres.js";
-import { loadStateFromPostgres, saveStateToPostgres, STATE_COLLECTIONS } from "../apps/api/src/postgres-state.js";
+import { loadStateFromPostgres, normalizeStateDocument, saveStateToPostgres, STATE_COLLECTIONS } from "../apps/api/src/postgres-state.js";
 import { describePersistence, loadPersistedState } from "../apps/api/src/persistence.js";
 
 function countState(state) {
@@ -11,9 +11,10 @@ function countState(state) {
 }
 
 function pickComparableState(state) {
+  const normalized = normalizeStateDocument(state || {});
   return {
-    ...Object.fromEntries(STATE_COLLECTIONS.map((collection) => [collection, state[collection] || []])),
-    counters: state.counters || {},
+    ...Object.fromEntries(STATE_COLLECTIONS.map((collection) => [collection, normalized[collection] || []])),
+    counters: normalized.counters || {},
   };
 }
 

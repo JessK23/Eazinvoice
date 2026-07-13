@@ -242,6 +242,126 @@ export function createApi(deps = {}) {
       return store.listCustomers().filter((customer) => customer.ownerUserId === workspace.ownerUserId || companyIds.has(customer.companyId));
     },
 
+    getCustomer(id, user, options = {}) {
+      const current = store.getCustomer(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: options.workspaceOwnerUserId || current.ownerUserId,
+      }, "read");
+      const companyIds = new Set(store.listCompanies().filter((company) => company.ownerUserId === workspace.ownerUserId).map((company) => company.id));
+      if (current.ownerUserId !== workspace.ownerUserId && !companyIds.has(current.companyId)) return null;
+      return current;
+    },
+
+    updateCustomer(id, updates = {}, options = {}) {
+      const current = store.getCustomer(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || (current.ownerUserId ? store.getUserById(current.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: updates.workspaceOwnerUserId || options.workspaceOwnerUserId || current.ownerUserId,
+      }, "writeRecords");
+      const visible = this.getCustomer(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId });
+      if (!visible) return null;
+      return store.updateCustomer(id, {
+        ...updates,
+        ownerUserId: workspace.ownerUserId,
+      });
+    },
+
+    deleteCustomer(id, user, options = {}) {
+      const current = store.getCustomer(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: options.workspaceOwnerUserId || current.ownerUserId,
+      }, "writeRecords");
+      const visible = this.getCustomer(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId });
+      if (!visible) return null;
+      return store.deleteCustomer(id);
+    },
+
+    reactivateCustomer(id, user, options = {}) {
+      const current = store.getCustomer(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: options.workspaceOwnerUserId || current.ownerUserId,
+      }, "writeRecords");
+      const visible = this.getCustomer(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId });
+      if (!visible) return null;
+      return store.reactivateCustomer(id);
+    },
+
+    createVendor(input, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || { id: input.ownerUserId }, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || input.ownerUserId,
+      }, "writeRecords");
+      return store.createVendor({
+        ...input,
+        ownerUserId: workspace.ownerUserId,
+      });
+    },
+
+    listVendors(user, options = {}) {
+      if (!options.workspaceOwnerUserId && (!user || user.role === "admin")) return store.listVendors();
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      const companyIds = new Set(store.listCompanies().filter((company) => company.ownerUserId === workspace.ownerUserId).map((company) => company.id));
+      return store.listVendors().filter((vendor) => vendor.ownerUserId === workspace.ownerUserId || companyIds.has(vendor.companyId));
+    },
+
+    getVendor(id, user, options = {}) {
+      const current = store.getVendor(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: options.workspaceOwnerUserId || current.ownerUserId,
+      }, "read");
+      const companyIds = new Set(store.listCompanies().filter((company) => company.ownerUserId === workspace.ownerUserId).map((company) => company.id));
+      if (current.ownerUserId !== workspace.ownerUserId && !companyIds.has(current.companyId)) return null;
+      return current;
+    },
+
+    updateVendor(id, updates = {}, options = {}) {
+      const current = store.getVendor(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || (current.ownerUserId ? store.getUserById(current.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: updates.workspaceOwnerUserId || options.workspaceOwnerUserId || current.ownerUserId,
+      }, "writeRecords");
+      const visible = this.getVendor(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId });
+      if (!visible) return null;
+      return store.updateVendor(id, {
+        ...updates,
+        ownerUserId: workspace.ownerUserId,
+      });
+    },
+
+    deleteVendor(id, user, options = {}) {
+      const current = store.getVendor(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: options.workspaceOwnerUserId || current.ownerUserId,
+      }, "writeRecords");
+      const visible = this.getVendor(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId });
+      if (!visible) return null;
+      return store.deleteVendor(id);
+    },
+
+    reactivateVendor(id, user, options = {}) {
+      const current = store.getVendor(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: options.workspaceOwnerUserId || current.ownerUserId,
+      }, "writeRecords");
+      const visible = this.getVendor(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId });
+      if (!visible) return null;
+      return store.reactivateVendor(id);
+    },
+
     createInvoice(input, options = {}) {
       const actor = options.user || (input.actorUserId ? store.getUserById(input.actorUserId) : null) || (input.ownerUserId ? store.getUserById(input.ownerUserId) : null);
       const workspace = this.resolveRecordsWorkspaceAccess(actor, {

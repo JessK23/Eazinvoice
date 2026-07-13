@@ -74,6 +74,8 @@ const dashboardPageLinks = document.querySelectorAll("[data-page-link]");
 const businessProfilesList = document.getElementById("businessProfilesList");
 const customersList = document.getElementById("customersList");
 const vendorsList = document.getElementById("vendorsList");
+const vendorForm = document.getElementById("vendorForm");
+const vendorFormStatus = document.getElementById("vendorFormStatus");
 const reportDetailBadge = document.getElementById("reportDetailBadge");
 const reportDetailTitle = document.getElementById("reportDetailTitle");
 const detailReportPeriod = document.getElementById("detailReportPeriod");
@@ -150,6 +152,7 @@ const approvalRequestForm = document.getElementById("approvalRequestForm");
 const approvalRequestStatus = document.getElementById("approvalRequestStatus");
 const approvalRequestsList = document.getElementById("approvalRequestsList");
 const workspaceTargetLinks = document.querySelectorAll("[data-workspace-target]");
+const workspaceSectionSelect = document.getElementById("workspaceSectionSelect");
 const workspaceGroups = document.querySelectorAll(".workspace-group");
 
 let planCatalog = [
@@ -165,6 +168,7 @@ let dashboardInvoices = [];
 let dashboardCompanies = [];
 let dashboardPurchaseOrders = [];
 let dashboardCustomers = [];
+let dashboardVendors = [];
 let dashboardPayments = [];
 let dashboardReportSummary = null;
 let detailReportSummary = null;
@@ -240,11 +244,24 @@ function showDashboardPage(page = currentDashboardPage()) {
   if (page === "reports") renderMainReportCharts();
 }
 
+function syncWorkspaceSectionControls(groupId) {
+  if (workspaceSectionSelect && groupId && workspaceSectionSelect.value !== groupId) {
+    workspaceSectionSelect.value = groupId;
+  }
+  workspaceTargetLinks.forEach((link) => {
+    const isActive = link.getAttribute("data-workspace-target") === groupId;
+    link.classList.toggle("active", isActive);
+    if (isActive) link.setAttribute("aria-current", "true");
+    else link.removeAttribute("aria-current");
+  });
+}
+
 function openWorkspaceGroup(groupId, scrollIntoView = false) {
   if (!groupId) return;
   workspaceGroups.forEach((group) => {
     group.open = group.id === groupId;
   });
+  syncWorkspaceSectionControls(groupId);
   const target = document.getElementById(groupId);
   if (scrollIntoView && target) {
     target.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -2004,56 +2021,207 @@ function renderCustomers(customers) {
     ? customers.map((customer) => `
       <article class="management-card">
         <div>
-          <span class="pill blue">${escapeHtml(customer.customerCode || "Customer")}</span>
+          <div class="badge-row">
+            <span class="pill blue">${escapeHtml(customer.customerCode || "Customer")}</span>
+            <span class="pill ${String(customer.status || "active").toLowerCase() === "deleted" ? "red" : "green"}">${escapeHtml(String(customer.status || "active").toUpperCase())}</span>
+          </div>
           <h3>${escapeHtml(customer.businessName || customer.name || "Customer")}</h3>
           <p>${escapeHtml(customer.phone || "Phone not saved")} - ${escapeHtml(customer.email || "Email not saved")}</p>
           <p class="hint">${escapeHtml(customer.billingAddress || "Address not saved")}</p>
           <p class="hint">GST: ${escapeHtml(customer.gstNumber || "Not added")} | PAN: ${escapeHtml(customer.panNumber || "Not added")} | Due: INR ${money(customerDueAmount(customer))}</p>
         </div>
         <div class="row-actions">
-          <button class="ghost small" type="button" disabled>Edit</button>
-          <button class="ghost small danger" type="button" disabled>Delete</button>
+          <button class="ghost small" type="button" data-edit-customer="${escapeHtml(customer.id)}">Edit</button>
+          ${String(customer.status || "active").toLowerCase() === "deleted"
+            ? `<button class="ghost small" type="button" data-reactivate-customer="${escapeHtml(customer.id)}">Reactivate</button>`
+            : `<button class="ghost small danger" type="button" data-delete-customer="${escapeHtml(customer.id)}">Delete</button>`}
         </div>
       </article>
     `).join("")
     : '<div class="notice">No customers yet. Add a customer while creating an invoice.</div>';
+
+  document.querySelectorAll("[data-edit-customer]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const customerId = button.getAttribute("data-edit-customer");
+      const customer = dashboardCustomers.find((entry) => entry.id === customerId);
+      if (!customer) return;
+      const name = window.prompt("Customer name", customer.name || customer.businessName || "");
+      if (name === null) return;
+      const phone = window.prompt("Contact number", customer.phone || "");
+      if (phone === null) return;
+      const email = window.prompt("Email", customer.email || "");
+      if (email === null) return;
+      const billingAddress = window.prompt("Billing address", customer.billingAddress || "");
+      if (billingAddress === null) return;
+      try {
+        const updated = await apiClient.updateCustomer(token, customerId, {
+          ...selectedWorkspaceOptions(),
+          name,
+          phone,
+          email,
+          billingAddress,
+        });
+        dashboardCustomers = dashboardCustomers.map((entry) => (entry.id === updated.id ? updated : entry));
+        renderCustomers(dashboardCustomers);
+      } catch (error) {
+        window.alert(error.message || "Could not update customer.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-delete-customer]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const customerId = button.getAttribute("data-delete-customer");
+      if (!customerId || !window.confirm("Delete this customer from the active list? Existing invoices will remain linked historically.")) return;
+      try {
+        const deleted = await apiClient.deleteCustomer(token, customerId, selectedWorkspaceOptions());
+        dashboardCustomers = dashboardCustomers.map((entry) => (entry.id === deleted.id ? deleted : entry));
+        renderCustomers(dashboardCustomers);
+      } catch (error) {
+        window.alert(error.message || "Could not delete customer.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-reactivate-customer]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const customerId = button.getAttribute("data-reactivate-customer");
+      if (!customerId) return;
+      try {
+        const restored = await apiClient.reactivateCustomer(token, customerId, selectedWorkspaceOptions());
+        dashboardCustomers = dashboardCustomers.map((entry) => (entry.id === restored.id ? restored : entry));
+        renderCustomers(dashboardCustomers);
+      } catch (error) {
+        window.alert(error.message || "Could not reactivate customer.");
+      }
+    });
+  });
 }
 
-function renderVendors(purchaseOrders) {
-  if (!vendorsList) return;
-  const vendorMap = new Map();
+function vendorSpendByName(purchaseOrders) {
+  const spendMap = new Map();
   purchaseOrders.forEach((po) => {
     const status = String(po.status || "created").toLowerCase();
     if (status === "deleted") return;
-    const key = po.customerId || po.billToName || po.vendorCode || po.id;
-    const existing = vendorMap.get(key) || {
-      vendorCode: po.vendorCode || "Vendor",
-      name: po.billToName || "Vendor",
-      address: po.billToAddress || "",
+    const name = String(po.billToName || po.vendorName || "").trim();
+    if (!name) return;
+    const key = name.toLowerCase();
+    const existing = spendMap.get(key) || {
+      name,
       total: 0,
       count: 0,
+      address: po.billToAddress || "",
+      vendorCode: po.vendorCode || "PO/WO",
     };
     existing.total += status === "draft" ? 0 : Number(po.total || 0);
     existing.count += 1;
-    vendorMap.set(key, existing);
+    if (!existing.address && po.billToAddress) existing.address = po.billToAddress;
+    spendMap.set(key, existing);
   });
-  const vendors = [...vendorMap.values()];
-  vendorsList.innerHTML = vendors.length
-    ? vendors.map((vendor) => `
+  return spendMap;
+}
+
+function renderVendors(vendors = dashboardVendors, purchaseOrders = dashboardPurchaseOrders) {
+  if (!vendorsList) return;
+  const spendMap = vendorSpendByName(purchaseOrders);
+  const masterVendors = Array.isArray(vendors) ? vendors : [];
+  const masterKeys = new Set(masterVendors.map((vendor) => String(vendor.businessName || vendor.name || "").trim().toLowerCase()).filter(Boolean));
+  const derivedOnly = [...spendMap.values()].filter((vendor) => !masterKeys.has(String(vendor.name || "").trim().toLowerCase()));
+  vendorsList.innerHTML = masterVendors.length || derivedOnly.length
+    ? masterVendors.map((vendor) => `
       <article class="management-card">
         <div>
-          <span class="pill blue">${escapeHtml(vendor.vendorCode)}</span>
+          <div class="badge-row">
+            <span class="pill blue">${escapeHtml(vendor.vendorCode || "Vendor")}</span>
+            <span class="pill ${String(vendor.status || "active").toLowerCase() === "deleted" ? "red" : "green"}">${escapeHtml(String(vendor.status || "active").toUpperCase())}</span>
+          </div>
+          <h3>${escapeHtml(vendor.businessName || vendor.name || "Vendor")}</h3>
+          <p>${escapeHtml(vendor.phone || "Phone not saved")} - ${escapeHtml(vendor.email || "Email not saved")}</p>
+          <p class="hint">${escapeHtml(vendor.billingAddress || "Address not saved")}</p>
+          <p class="hint">GST: ${escapeHtml(vendor.gstNumber || "Not added")} | PAN: ${escapeHtml(vendor.panNumber || "Not added")}</p>
+          <p class="hint">PO/WO spend: INR ${money(spendMap.get(String(vendor.businessName || vendor.name || "").trim().toLowerCase())?.total || 0)}</p>
+        </div>
+        <div class="row-actions">
+          <button class="ghost small" type="button" data-edit-vendor="${escapeHtml(vendor.id)}">Edit</button>
+          ${String(vendor.status || "active").toLowerCase() === "deleted"
+            ? `<button class="ghost small" type="button" data-reactivate-vendor="${escapeHtml(vendor.id)}">Reactivate</button>`
+            : `<button class="ghost small danger" type="button" data-delete-vendor="${escapeHtml(vendor.id)}">Delete</button>`}
+        </div>
+      </article>
+    `).join("") + derivedOnly.map((vendor) => `
+      <article class="management-card">
+        <div>
+          <div class="badge-row">
+            <span class="pill gold">${escapeHtml(vendor.vendorCode)}</span>
+            <span class="pill blue">PO/WO Derived</span>
+          </div>
           <h3>${escapeHtml(vendor.name)}</h3>
           <p>${escapeHtml(vendor.address || "Vendor address not saved")}</p>
           <p class="hint">PO/WO records: ${vendor.count} | Total expense value: INR ${money(vendor.total)}</p>
         </div>
         <div class="row-actions">
-          <button class="ghost small" type="button" disabled>Edit</button>
-          <button class="ghost small danger" type="button" disabled>Delete</button>
+          <a class="ghost small" href="/apps/web/invoice.html?type=po">Create PO/WO</a>
         </div>
       </article>
     `).join("")
     : '<div class="notice">No vendors yet. Create a PO or WO to add vendor details.</div>';
+
+  document.querySelectorAll("[data-edit-vendor]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const vendorId = button.getAttribute("data-edit-vendor");
+      const vendor = dashboardVendors.find((entry) => entry.id === vendorId);
+      if (!vendor) return;
+      const name = window.prompt("Vendor name", vendor.name || vendor.businessName || "");
+      if (name === null) return;
+      const phone = window.prompt("Contact number", vendor.phone || "");
+      if (phone === null) return;
+      const email = window.prompt("Email", vendor.email || "");
+      if (email === null) return;
+      const billingAddress = window.prompt("Billing address", vendor.billingAddress || "");
+      if (billingAddress === null) return;
+      try {
+        const updated = await apiClient.updateVendor(token, vendorId, {
+          ...selectedWorkspaceOptions(),
+          name,
+          phone,
+          email,
+          billingAddress,
+        });
+        dashboardVendors = dashboardVendors.map((entry) => (entry.id === updated.id ? updated : entry));
+        renderVendors(dashboardVendors, dashboardPurchaseOrders);
+      } catch (error) {
+        window.alert(error.message || "Could not update vendor.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-delete-vendor]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const vendorId = button.getAttribute("data-delete-vendor");
+      if (!vendorId || !window.confirm("Delete this vendor from the active list? Existing PO/WO records will remain linked historically.")) return;
+      try {
+        const deleted = await apiClient.deleteVendor(token, vendorId, selectedWorkspaceOptions());
+        dashboardVendors = dashboardVendors.map((entry) => (entry.id === deleted.id ? deleted : entry));
+        renderVendors(dashboardVendors, dashboardPurchaseOrders);
+      } catch (error) {
+        window.alert(error.message || "Could not delete vendor.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-reactivate-vendor]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const vendorId = button.getAttribute("data-reactivate-vendor");
+      if (!vendorId) return;
+      try {
+        const restored = await apiClient.reactivateVendor(token, vendorId, selectedWorkspaceOptions());
+        dashboardVendors = dashboardVendors.map((entry) => (entry.id === restored.id ? restored : entry));
+        renderVendors(dashboardVendors, dashboardPurchaseOrders);
+      } catch (error) {
+        window.alert(error.message || "Could not reactivate vendor.");
+      }
+    });
+  });
 }
 
 function setPaymentModalStatus(message, tone = "") {
@@ -2153,7 +2321,7 @@ function rerenderDashboardData() {
   renderRecentActivity(dashboardInvoices, dashboardCompanies);
   renderBusinessProfiles(dashboardCompanies);
   renderCustomers(dashboardCustomers);
-  renderVendors(dashboardPurchaseOrders);
+  renderVendors(dashboardVendors, dashboardPurchaseOrders);
   if (currentDashboardPage().startsWith("report-")) renderReportDetail(currentDashboardPage().replace("report-", ""));
 }
 
@@ -3248,23 +3416,66 @@ workspaceTargetLinks.forEach((link) => {
   });
 });
 
+workspaceSectionSelect?.addEventListener("change", () => {
+  const targetId = workspaceSectionSelect.value;
+  if (!targetId) return;
+  if (window.location.hash !== "#business-workspace") {
+    window.location.hash = "#business-workspace";
+    window.setTimeout(() => openWorkspaceGroup(targetId, true), 40);
+    return;
+  }
+  showDashboardPage("business-workspace");
+  openWorkspaceGroup(targetId, true);
+});
+
 workspaceGroups.forEach((group) => {
   group.addEventListener("toggle", () => {
     if (!group.open) return;
     workspaceGroups.forEach((otherGroup) => {
       if (otherGroup !== group) otherGroup.open = false;
     });
+    syncWorkspaceSectionControls(group.id);
   });
+});
+
+vendorForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const formData = new FormData(vendorForm);
+  const vendorName = String(formData.get("name") || "").trim();
+  if (!vendorName) {
+    setInlineStatus(vendorFormStatus, "Enter the vendor or supplier name before saving.", "error");
+    return;
+  }
+  setInlineStatus(vendorFormStatus, "Saving vendor...", "");
+  try {
+    const vendor = await apiClient.createVendor(token, {
+      ...selectedWorkspaceOptions(),
+      vendorType: formData.get("vendorType"),
+      name: vendorName,
+      phone: formData.get("phone"),
+      email: formData.get("email"),
+      gstNumber: formData.get("gstNumber"),
+      panNumber: formData.get("panNumber"),
+      billingAddress: formData.get("billingAddress"),
+    });
+    dashboardVendors = [vendor, ...dashboardVendors.filter((item) => item.id !== vendor.id)];
+    vendorForm.reset();
+    renderVendors(dashboardVendors, dashboardPurchaseOrders);
+    setInlineStatus(vendorFormStatus, `${vendor.vendorCode || "Vendor"} saved. You can edit, delete, or reactivate this record from the vendor list.`, "success");
+  } catch (error) {
+    setInlineStatus(vendorFormStatus, error.message || "Could not save vendor.", "error");
+  }
 });
 
 window.addEventListener("hashchange", () => showDashboardPage());
 
 async function initializeDashboard() {
   try {
-    const [summary, companies, customers, reports, invoices, purchaseOrders, payments, subscriptions] = await Promise.all([
+    const [summary, companies, customers, vendors, reports, invoices, purchaseOrders, payments, subscriptions] = await Promise.all([
       apiClient.getPlan(token).catch(() => ({ plan: "free", usage: { companies: 0, customers: 0, invoicesPerMonth: 0 }, limits: { companies: 1, customers: 100, invoicesPerMonth: 10 } })),
       apiClient.listCompanies(token).catch(() => []),
       apiClient.listCustomers(token).catch(() => []),
+      apiClient.listVendors(token).catch(() => []),
       apiClient.listReports(token).catch(() => []),
       apiClient.listInvoices(token),
       apiClient.listPurchaseOrders(token).catch(() => []),
@@ -3289,6 +3500,7 @@ async function initializeDashboard() {
   dashboardInvoices = invoices;
   dashboardCompanies = companies;
   dashboardCustomers = customers;
+  dashboardVendors = vendors;
   dashboardPurchaseOrders = purchaseOrders;
   dashboardPayments = payments;
   populateReportFilters(dashboardInvoices, dashboardPurchaseOrders);
@@ -3300,7 +3512,7 @@ async function initializeDashboard() {
   renderRecentActivity(dashboardInvoices, dashboardCompanies);
   renderBusinessProfiles(dashboardCompanies);
   renderCustomers(dashboardCustomers);
-  renderVendors(dashboardPurchaseOrders);
+  renderVendors(dashboardVendors, dashboardPurchaseOrders);
   renderProfile(currentUser, activeOrg);
   if (activeOrg) {
     if (orgName) orgName.textContent = activeOrg.entityType === "freelancer" || activeOrg.entityType === "consultant" ? activeOrg.name : activeOrg.legalName || activeOrg.name;

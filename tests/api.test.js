@@ -2969,6 +2969,97 @@ test("business workspace invite routes enforce owner accountant and viewer permi
     assert.equal(accountantCustomer.response.status, 201);
     assert.equal(accountantCustomer.payload.ownerUserId, owner.user.id);
 
+    const accountantCustomerUpdate = await request(`/customers/${accountantCustomer.payload.id}`, {
+      method: "PATCH",
+      token: accountant.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        phone: "9000000999",
+        billingAddress: "Shared workspace billing address",
+      },
+    });
+    assert.equal(accountantCustomerUpdate.response.status, 200);
+    assert.equal(accountantCustomerUpdate.payload.phone, "9000000999");
+
+    const viewerCustomerUpdateDenied = await request(`/customers/${accountantCustomer.payload.id}`, {
+      method: "PATCH",
+      token: viewer.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        phone: "viewer-should-not-edit",
+      },
+    });
+    assert.notEqual(viewerCustomerUpdateDenied.response.status, 200);
+    assert.match(viewerCustomerUpdateDenied.payload.error, /team role cannot perform/i);
+
+    const deletedCustomer = await request(`/customers/${accountantCustomer.payload.id}?workspaceOwnerUserId=${owner.user.id}`, {
+      method: "DELETE",
+      token: accountant.token,
+    });
+    assert.equal(deletedCustomer.response.status, 200);
+    assert.equal(deletedCustomer.payload.status, "deleted");
+
+    const restoredCustomer = await request(`/customers/${accountantCustomer.payload.id}/reactivate`, {
+      method: "POST",
+      token: accountant.token,
+      body: { workspaceOwnerUserId: owner.user.id },
+    });
+    assert.equal(restoredCustomer.response.status, 200);
+    assert.equal(restoredCustomer.payload.status, "active");
+
+    const accountantVendor = await request("/vendors", {
+      method: "POST",
+      token: accountant.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        vendorType: "company",
+        name: "Shared Vendor",
+        email: "shared-vendor@example.com",
+        phone: "9000000888",
+      },
+    });
+    assert.equal(accountantVendor.response.status, 201);
+    assert.equal(accountantVendor.payload.ownerUserId, owner.user.id);
+    assert.match(accountantVendor.payload.vendorCode, /^VEN-/);
+
+    const accountantVendorUpdate = await request(`/vendors/${accountantVendor.payload.id}`, {
+      method: "PATCH",
+      token: accountant.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        phone: "9000000777",
+        billingAddress: "Shared vendor billing address",
+      },
+    });
+    assert.equal(accountantVendorUpdate.response.status, 200);
+    assert.equal(accountantVendorUpdate.payload.phone, "9000000777");
+
+    const viewerVendorUpdateDenied = await request(`/vendors/${accountantVendor.payload.id}`, {
+      method: "PATCH",
+      token: viewer.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        phone: "viewer-should-not-edit-vendor",
+      },
+    });
+    assert.notEqual(viewerVendorUpdateDenied.response.status, 200);
+    assert.match(viewerVendorUpdateDenied.payload.error, /team role cannot perform/i);
+
+    const deletedVendor = await request(`/vendors/${accountantVendor.payload.id}?workspaceOwnerUserId=${owner.user.id}`, {
+      method: "DELETE",
+      token: accountant.token,
+    });
+    assert.equal(deletedVendor.response.status, 200);
+    assert.equal(deletedVendor.payload.status, "deleted");
+
+    const restoredVendor = await request(`/vendors/${accountantVendor.payload.id}/reactivate`, {
+      method: "POST",
+      token: accountant.token,
+      body: { workspaceOwnerUserId: owner.user.id },
+    });
+    assert.equal(restoredVendor.response.status, 200);
+    assert.equal(restoredVendor.payload.status, "active");
+
     const accountantInvoice = await request("/invoices", {
       method: "POST",
       token: accountant.token,
@@ -3045,6 +3136,20 @@ test("business workspace invite routes enforce owner accountant and viewer permi
     const unrelatedInvoices = await request(`/invoices?workspaceOwnerUserId=${owner.user.id}`, { token: unrelated.token });
     assert.notEqual(unrelatedInvoices.response.status, 200);
     assert.match(unrelatedInvoices.payload.error, /Business workspace access denied/i);
+
+    const unrelatedCustomerDeleteDenied = await request(`/customers/${accountantCustomer.payload.id}?workspaceOwnerUserId=${owner.user.id}`, {
+      method: "DELETE",
+      token: unrelated.token,
+    });
+    assert.notEqual(unrelatedCustomerDeleteDenied.response.status, 200);
+    assert.match(unrelatedCustomerDeleteDenied.payload.error, /Business workspace access denied/i);
+
+    const unrelatedVendorDeleteDenied = await request(`/vendors/${accountantVendor.payload.id}?workspaceOwnerUserId=${owner.user.id}`, {
+      method: "DELETE",
+      token: unrelated.token,
+    });
+    assert.notEqual(unrelatedVendorDeleteDenied.response.status, 200);
+    assert.match(unrelatedVendorDeleteDenied.payload.error, /Business workspace access denied/i);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

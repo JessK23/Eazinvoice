@@ -464,6 +464,7 @@
       }
       let fallbackCompanies = [];
       let fallbackCustomers = [];
+      let fallbackVendors = [];
       let currentUser = null;
       let activePlanKey = "free";
       let fallbackSavedInvoice = null;
@@ -491,8 +492,25 @@
         if (customerTypeLabel?.firstChild) customerTypeLabel.firstChild.textContent = isPoFlow ? "Vendor Type" : "Customer Type";
         const savedCustomerWrap = document.getElementById("savedCustomerWrap");
         if (savedCustomerWrap?.firstChild) savedCustomerWrap.firstChild.textContent = isPoFlow ? "Saved Vendor " : "Saved Customer ";
+        const newBoxTitle = newFields?.querySelector("h3");
+        const newBoxHint = newFields?.querySelector("p");
+        const newBoxBadge = newFields?.querySelector(".pill");
+        const categoryLabel = categorySelect?.closest("label");
+        const addressLabel = addressInput?.closest("label");
+        const newAddressInput = form?.querySelector('textarea[name="newCustomerBillingAddress"]');
+        const newAddressLabel = newAddressInput?.closest("label");
+        if (newBoxTitle) newBoxTitle.textContent = isPoFlow ? "Add New Vendor" : "Add New Customer";
+        if (newBoxHint) newBoxHint.textContent = isPoFlow
+          ? "Add the vendor once, then select them from the saved vendor dropdown for this PO/WO."
+          : "Add the customer once, then select them from the saved customer dropdown for this invoice.";
+        if (newBoxBadge) newBoxBadge.textContent = isPoFlow ? "Vendor code auto" : "Customer code auto";
+        if (categoryLabel?.firstChild) categoryLabel.firstChild.textContent = isPoFlow ? "Vendor Category" : "Customer Category";
+        if (addressLabel?.firstChild) addressLabel.firstChild.textContent = isPoFlow ? "Vendor Address " : "Bill To Address ";
+        if (newAddressLabel?.firstChild) newAddressLabel.firstChild.textContent = isPoFlow ? "Vendor Address " : "Address ";
+        if (addButton) addButton.textContent = isPoFlow ? "Add Vendor" : "Add Customer";
         nameInput?.setAttribute("placeholder", isPoFlow ? "Auto-filled from saved vendor" : "Auto-filled from saved customer");
         addressInput?.setAttribute("placeholder", isPoFlow ? "Optional vendor address" : "Optional invoice billing address");
+        newAddressInput?.setAttribute("placeholder", isPoFlow ? "Vendor billing address" : "Customer billing address");
         if (modeSelect) {
           modeSelect.options[0].textContent = isPoFlow ? "Choose vendor type" : "Choose customer type";
           modeSelect.options[1].textContent = isPoFlow ? "Existing Vendor" : "Existing Customer";
@@ -546,7 +564,7 @@
         const company = activeIssuer();
         if (!input || !company || input.value) return;
         const invoiceDate = form?.querySelector('input[name="invoiceDate"]')?.value || new Date().toISOString().slice(0, 10);
-        input.value = `${issuerCode(company)}/${String(invoiceDate).slice(0, 4)}/${documentTypeShort()}-${String(fallbackCompanies.length + fallbackCustomers.length + 1).padStart(4, "0")}`;
+        input.value = `${issuerCode(company)}/${String(invoiceDate).slice(0, 4)}/${documentTypeShort()}-${String(fallbackCompanies.length + fallbackCustomers.length + fallbackVendors.length + 1).padStart(4, "0")}`;
       }
 
       function simpleNumber(value) {
@@ -750,11 +768,11 @@
           if (status) status.textContent = "Add at least one good, item, or service before saving.";
           return null;
         }
-        const selectedCustomer = fallbackCustomers.find((entry) => entry.id === customerSelect?.value) || null;
+        const selectedCustomer = activeRecipients().find((entry) => entry.id === customerSelect?.value) || null;
         const invoiceNumberInput = form?.querySelector('input[name="invoiceNumber"]');
         ensureDraftInvoiceNumber();
         const billToName = data.get("customerName") || selectedCustomer?.businessName || selectedCustomer?.name || (isPoFlow ? "Vendor" : "Customer");
-        const billToAddress = data.get("customerBillingAddress") || selectedCustomer?.billingAddress || "";
+        const billToAddress = data.get("customerBillingAddress") || recipientAddress(selectedCustomer);
         const payload = {
           companyId: issuer.isUserIssuer ? null : issuer.id,
           customerId: selectedCustomer?.id || null,
@@ -981,10 +999,27 @@
         if (gstWrap) gstWrap.hidden = !show;
       }
 
+      function activeRecipients() {
+        return isPoFlow ? fallbackVendors : fallbackCustomers;
+      }
+
+      function recipientCode(entry) {
+        return isPoFlow ? (entry?.vendorCode || entry?.id) : (entry?.customerCode || entry?.id);
+      }
+
+      function recipientName(entry) {
+        return entry?.businessName || entry?.name || (isPoFlow ? "Vendor" : "Customer");
+      }
+
+      function recipientAddress(entry) {
+        return entry?.billingAddress || entry?.shippingAddress || entry?.address || "";
+      }
+
       function fillCustomer() {
-        const customer = fallbackCustomers.find((entry) => entry.id === customerSelect?.value);
-        if (nameInput) nameInput.value = customer ? (customer.businessName || customer.name || "") : "";
-        if (addressInput) addressInput.value = customer ? (customer.billingAddress || customer.shippingAddress || "") : "";
+        const customer = activeRecipients().find((entry) => entry.id === customerSelect?.value);
+        if (nameInput) nameInput.value = customer ? recipientName(customer) : "";
+        if (addressInput) addressInput.value = customer ? recipientAddress(customer) : "";
+        if (customerCodePreview) customerCodePreview.textContent = customer ? `${recipientCode(customer)} - ${recipientName(customer)}` : (isPoFlow ? "No saved vendor" : "No saved customer");
       }
 
       function applyMode() {
@@ -1018,9 +1053,11 @@
 
       function renderCustomers() {
         if (!customerSelect) return;
-        customerSelect.innerHTML = fallbackCustomers.length
-          ? fallbackCustomers.map((customer) => `<option value="${customer.id}">${customer.customerCode || customer.id} - ${customer.businessName || customer.name || "Customer"}</option>`).join("")
-          : '<option value="">No saved customers yet</option>';
+        const recipients = activeRecipients();
+        const emptyLabel = isPoFlow ? "No saved vendors yet" : "No saved customers yet";
+        customerSelect.innerHTML = recipients.length
+          ? recipients.map((customer) => `<option value="${customer.id}">${recipientCode(customer)} - ${recipientName(customer)}</option>`).join("")
+          : `<option value="">${emptyLabel}</option>`;
       }
 
       function syncBusinessNotice() {
@@ -1204,15 +1241,17 @@
       async function loadLists() {
         if (!token) return;
         try {
-          const [me, companies, customers] = await Promise.all([
+          const [me, companies, customers, vendors] = await Promise.all([
             api("/me").catch(() => null),
             api("/companies").catch(() => []),
             api("/customers").catch(() => []),
+            api("/vendors").catch(() => []),
           ]);
           currentUser = me?.user || null;
           activePlanKey = me?.plan?.active?.plan || currentUser?.plan || "free";
           fallbackCompanies = companies;
           fallbackCustomers = customers;
+          fallbackVendors = vendors;
           renderCompanies();
           renderCustomers();
           updateStandardFeatureControls();
@@ -1230,19 +1269,20 @@
         const data = new FormData(form);
         const name = String(data.get("newCustomerName") || "").trim();
         if (!name) {
-          setNewCustomerStatus("Enter customer or business name before adding.", "error");
+          setNewCustomerStatus(isPoFlow ? "Enter vendor or business name before adding." : "Enter customer or business name before adding.", "error");
           return;
         }
         const company = fallbackCompanies.find((entry) => entry.id === companySelect?.value) || fallbackCompanies[0];
         try {
-          setNewCustomerStatus("Adding customer...", "");
+          setNewCustomerStatus(isPoFlow ? "Adding vendor..." : "Adding customer...", "");
           addButton.disabled = true;
           const isCompany = data.get("newCustomerCategory") === "company";
           const isInr = data.get("currency") === "INR";
-          const customer = await api("/customers", {
+          const customer = await api(isPoFlow ? "/vendors" : "/customers", {
             method: "POST",
             body: JSON.stringify({
               companyId: company?.id || null,
+              vendorType: isPoFlow ? data.get("newCustomerCategory") : undefined,
               name,
               businessName: isCompany ? name : "",
               phone: data.get("newCustomerPhone"),
@@ -1252,16 +1292,17 @@
               gstNumber: isCompany && isInr ? data.get("newCustomerGstin") : "",
             }),
           });
-          fallbackCustomers.push(customer);
+          if (isPoFlow) fallbackVendors.push(customer);
+          else fallbackCustomers.push(customer);
           renderCustomers();
           if (customerSelect) customerSelect.value = customer.id;
           if (modeSelect) modeSelect.value = "existing";
           applyMode();
-          const message = `${isPoFlow ? "Vendor" : "Customer"} ${customer.customerCode || customer.id} added and selected. Continue below.`;
+          const message = `${isPoFlow ? "Vendor" : "Customer"} ${recipientCode(customer)} added and selected. Continue below.`;
           setNewCustomerStatus(message, "success");
           if (status) status.textContent = message;
         } catch (error) {
-          setNewCustomerStatus(error.message || "Could not add customer.", "error");
+          setNewCustomerStatus(error.message || (isPoFlow ? "Could not add vendor." : "Could not add customer."), "error");
         } finally {
           addButton.disabled = false;
         }

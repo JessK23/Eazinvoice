@@ -1707,6 +1707,127 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname.startsWith("/customers/") && req.method === "PATCH") {
+      const customerId = url.pathname.split("/")[2];
+      const body = await readBody(req);
+      const existing = api.getCustomer(customerId, user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+      });
+      if (!existing) {
+        sendJson(res, 404, { error: "Customer not found or not available in this workspace." });
+        return;
+      }
+      const customer = api.updateCustomer(customerId, body, {
+        user,
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || existing.ownerUserId || null,
+      });
+      sendJson(res, 200, customer);
+      return;
+    }
+
+    if (url.pathname.startsWith("/customers/") && req.method === "DELETE") {
+      const customerId = url.pathname.split("/")[2];
+      const customer = api.deleteCustomer(customerId, user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+      });
+      if (!customer) {
+        sendJson(res, 404, { error: "Customer not found or not available in this workspace." });
+        return;
+      }
+      sendJson(res, 200, customer);
+      return;
+    }
+
+    {
+      const customerActionMatch = url.pathname.match(/^\/customers\/([^/]+)\/(reactivate)$/);
+      if (customerActionMatch && req.method === "POST") {
+        const [, customerId] = customerActionMatch;
+        const body = await readBody(req).catch(() => ({}));
+        const customer = api.reactivateCustomer(customerId, user, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || url.searchParams.get("workspaceOwnerUserId") || null,
+        });
+        if (!customer) {
+          sendJson(res, 404, { error: "Customer not found or not available in this workspace." });
+          return;
+        }
+        sendJson(res, 200, customer);
+        return;
+      }
+    }
+
+    if (url.pathname === "/vendors" && req.method === "GET") {
+      sendJson(res, 200, api.listVendors(user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+      }));
+      return;
+    }
+
+    if (url.pathname === "/vendors" && req.method === "POST") {
+      const body = await readBody(req);
+      sendJson(res, 201, api.createVendor({
+        ...body,
+        ownerUserId: body.workspaceOwnerUserId || user.id,
+      }, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null }));
+      return;
+    }
+
+    if (url.pathname.startsWith("/vendors/") && req.method === "PATCH") {
+      const vendorId = url.pathname.split("/")[2];
+      const body = await readBody(req);
+      const existing = api.getVendor(vendorId, user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+      });
+      if (!existing) {
+        sendJson(res, 404, { error: "Vendor not found or not available in this workspace." });
+        return;
+      }
+      const vendor = api.updateVendor(vendorId, body, {
+        user,
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || existing.ownerUserId || null,
+      });
+      sendJson(res, 200, vendor);
+      return;
+    }
+
+    if (url.pathname.startsWith("/vendors/") && req.method === "DELETE") {
+      const vendorId = url.pathname.split("/")[2];
+      const vendor = api.deleteVendor(vendorId, user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+      });
+      if (!vendor) {
+        sendJson(res, 404, { error: "Vendor not found or not available in this workspace." });
+        return;
+      }
+      sendJson(res, 200, vendor);
+      return;
+    }
+
+    {
+      const vendorActionMatch = url.pathname.match(/^\/vendors\/([^/]+)\/(reactivate)$/);
+      if (vendorActionMatch && req.method === "POST") {
+        const [, vendorId] = vendorActionMatch;
+        const body = await readBody(req).catch(() => ({}));
+        const vendor = api.reactivateVendor(vendorId, user, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || url.searchParams.get("workspaceOwnerUserId") || null,
+        });
+        if (!vendor) {
+          sendJson(res, 404, { error: "Vendor not found or not available in this workspace." });
+          return;
+        }
+        sendJson(res, 200, vendor);
+        return;
+      }
+    }
+
     if (url.pathname === "/billing/razorpay/order" && req.method === "POST") {
       try {
         const body = await readBody(req);

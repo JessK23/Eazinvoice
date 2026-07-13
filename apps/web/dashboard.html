@@ -473,7 +473,39 @@
           </div>
           <a class="primary" href="/apps/web/invoice.html?type=po">Add Vendor Through PO/WO</a>
         </div>
-        <div class="notice">Vendors are currently derived from saved PO/WO records. A dedicated vendor master can be added once backend vendor routes are created.</div>
+        <form id="vendorForm" class="stacked-form">
+          <div class="form-grid two">
+            <label>Vendor Type
+              <select name="vendorType">
+                <option value="business">Business</option>
+                <option value="individual">Individual</option>
+              </select>
+            </label>
+            <label>Vendor / Business Name
+              <input name="name" placeholder="Vendor name" required />
+            </label>
+            <label>Contact Number
+              <input name="phone" placeholder="Phone" />
+            </label>
+            <label>Email
+              <input name="email" type="email" placeholder="vendor@example.com" />
+            </label>
+            <label>GSTIN / Tax ID
+              <input name="gstNumber" placeholder="Optional" />
+            </label>
+            <label>PAN
+              <input name="panNumber" placeholder="Optional" />
+            </label>
+          </div>
+          <label>Billing Address
+            <textarea name="billingAddress" placeholder="Vendor address"></textarea>
+          </label>
+          <div class="row-actions">
+            <button class="primary" type="submit">Add Vendor</button>
+            <span id="vendorFormStatus" class="hint" aria-live="polite"></span>
+          </div>
+        </form>
+        <div class="notice">Vendor records are now maintained separately. Existing PO/WO records still remain visible as spend context below.</div>
         <div id="vendorsList" class="management-list"></div>
       </section>
       <section id="business-workspace" class="panel dashboard-page" data-dashboard-page="business-workspace">
@@ -496,6 +528,48 @@
         <div id="businessWorkspaceStatusBoard" class="workspace-status-board" aria-live="polite"></div>
         <div id="businessWorkspacePermissionPanel" class="workspace-permission-panel" aria-live="polite"></div>
         <div id="businessWorkspaceFlowChecklist" class="workspace-flow-checklist" aria-live="polite"></div>
+        <div class="workspace-section-picker">
+          <div>
+            <span class="pill blue">Choose one area</span>
+            <h3>Business Workspace Sections</h3>
+            <p class="hint">Open only the feature you want to work on. These tools are connected, but they are not all mandatory at the same time.</p>
+          </div>
+          <label for="workspaceSectionSelect">Open section</label>
+          <select id="workspaceSectionSelect" aria-label="Open Business Workspace section">
+            <option value="workspace-email-settings">Email and SMTP</option>
+            <option value="workspace-gateway-settings">Razorpay Gateway</option>
+            <option value="workspace-compliance-profile">Compliance Profile</option>
+            <option value="workspace-team-access">Create Sub-user Access</option>
+            <option value="workspace-api-access">API Access</option>
+            <option value="workspace-approval-queue">Approval Requests</option>
+          </select>
+        </div>
+        <div class="workspace-section-shortcuts" aria-label="Business Workspace quick sections">
+          <button class="workspace-section-shortcut" type="button" data-workspace-target="workspace-email-settings">
+            <strong>Email and SMTP</strong>
+            <span>Invites, approvals, reminders</span>
+          </button>
+          <button class="workspace-section-shortcut" type="button" data-workspace-target="workspace-gateway-settings">
+            <strong>Razorpay Gateway</strong>
+            <span>Business invoice payment links</span>
+          </button>
+          <button class="workspace-section-shortcut" type="button" data-workspace-target="workspace-compliance-profile">
+            <strong>Compliance Profile</strong>
+            <span>GST, PAN, audit readiness</span>
+          </button>
+          <button class="workspace-section-shortcut" type="button" data-workspace-target="workspace-team-access">
+            <strong>Sub-users</strong>
+            <span>Admins, accountants, viewers</span>
+          </button>
+          <button class="workspace-section-shortcut" type="button" data-workspace-target="workspace-api-access">
+            <strong>API Access</strong>
+            <span>WordPress and integrations</span>
+          </button>
+          <button class="workspace-section-shortcut" type="button" data-workspace-target="workspace-approval-queue">
+            <strong>Approvals</strong>
+            <span>Document review queue</span>
+          </button>
+        </div>
         <div class="quick-grid">
           <article class="quick-card">
             <strong>Team Members</strong>

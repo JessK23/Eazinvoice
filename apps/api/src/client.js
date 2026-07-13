@@ -82,6 +82,30 @@ export const apiClient = {
   createCustomer(token, body) {
     return request("/customers", { method: "POST", token, body });
   },
+  updateCustomer(token, customerId, body) {
+    return request(`/customers/${customerId}`, { method: "PATCH", token, body });
+  },
+  deleteCustomer(token, customerId, options = {}) {
+    return request(`/customers/${customerId}${queryString(options)}`, { method: "DELETE", token });
+  },
+  reactivateCustomer(token, customerId, body = {}) {
+    return request(`/customers/${customerId}/reactivate`, { method: "POST", token, body });
+  },
+  listVendors(token, options = {}) {
+    return request(`/vendors${queryString(options)}`, { token });
+  },
+  createVendor(token, body) {
+    return request("/vendors", { method: "POST", token, body });
+  },
+  updateVendor(token, vendorId, body) {
+    return request(`/vendors/${vendorId}`, { method: "PATCH", token, body });
+  },
+  deleteVendor(token, vendorId, options = {}) {
+    return request(`/vendors/${vendorId}${queryString(options)}`, { method: "DELETE", token });
+  },
+  reactivateVendor(token, vendorId, body = {}) {
+    return request(`/vendors/${vendorId}/reactivate`, { method: "POST", token, body });
+  },
   listInvoices(token) {
     return request("/invoices", { token });
   },
