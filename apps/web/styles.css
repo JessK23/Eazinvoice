@@ -2346,6 +2346,27 @@ input:focus, textarea:focus, select:focus { outline: 3px solid rgba(37,99,235,.1
   font-size: 12px;
   line-height: 1.35;
 }
+.workspace-section-shortcut small {
+  width: fit-content;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #475569;
+  background: #f1f5f9;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+.workspace-section-shortcut[data-tone="ready"] small { color: #166534; background: #dcfce7; }
+.workspace-section-shortcut[data-tone="attention"] small { color: #92400e; background: #fef3c7; }
+.workspace-section-shortcut[data-tone="danger"] small { color: #991b1b; background: #fee2e2; }
+.workspace-section-shortcut[data-tone="locked"] small { color: #64748b; background: #e2e8f0; }
+.workspace-section-hint {
+  grid-column: 2 / -1;
+  margin: -4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
 .workspace-group {
   margin-top: 18px;
   border: 1px solid var(--line);
@@ -3445,6 +3466,10 @@ label,
   .workspace-section-picker {
     grid-template-columns: 1fr;
     align-items: stretch;
+  }
+
+  .workspace-section-hint {
+    grid-column: 1;
   }
 
   .workspace-section-shortcuts {

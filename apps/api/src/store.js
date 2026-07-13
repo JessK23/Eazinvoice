@@ -1137,6 +1137,38 @@ export function createStore(seed = {}, options = {}) {
     return sanitizeBusinessSettings(stored);
   }
 
+  function recordBusinessEmailDelivery(user, input = {}) {
+    if (!user?.id) throw new Error("Authentication required");
+    const companyId = input.companyId || null;
+    let settings = state.businessSettings.find((entry) => (
+      entry.ownerUserId === user.id && (entry.companyId || null) === companyId
+    ));
+    if (!settings) {
+      settings = {
+        id: nextId("bset", ++state.counters.businessSetting),
+        ownerUserId: user.id,
+        companyId,
+        emailSettings: {},
+        paymentSettings: {},
+        complianceProfile: {},
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      state.businessSettings.push(settings);
+    }
+    settings.emailSettings = {
+      ...(settings.emailSettings || {}),
+      lastDeliveryAt: new Date().toISOString(),
+      lastDeliveryStatus: String(input.status || "failed").trim().toLowerCase(),
+      lastDeliveryMessage: String(input.message || "").trim().slice(0, 500),
+      lastDeliveryRecipient: String(input.recipient || "").trim().toLowerCase(),
+      lastDeliveryAction: String(input.action || "email").trim().slice(0, 80),
+    };
+    settings.updatedAt = new Date().toISOString();
+    persist();
+    return sanitizeBusinessSettings(settings);
+  }
+
   function buildComplianceTaskKey(user, companyId, taskId) {
     return [
       user?.id || "unknown",
@@ -1684,6 +1716,28 @@ export function createStore(seed = {}, options = {}) {
     request.decisionNotes = String(updates.decisionNotes || updates.notes || request.decisionNotes || "").trim();
     request.decidedAt = request.status === "pending" ? null : new Date().toISOString();
     request.updatedAt = new Date().toISOString();
+    persist();
+    return clone(request);
+  }
+
+  function recordApprovalNotification(approvalId, input = {}, user = null) {
+    const request = state.approvalRequests.find((entry) => entry.id === approvalId);
+    if (!request) return null;
+    if (user && user.role !== "admin" && request.ownerUserId !== user.id && request.approverUserId !== user.id && request.requestedByUserId !== user.id) return null;
+    request.notificationStatus = String(input.status || "not_configured").trim().toLowerCase();
+    request.notificationMessage = String(input.message || "").trim().slice(0, 500);
+    request.notificationRecipient = String(input.recipient || "").trim().toLowerCase();
+    request.notificationAt = new Date().toISOString();
+    request.updatedAt = new Date().toISOString();
+    request.auditTrail = Array.isArray(request.auditTrail) ? request.auditTrail.slice(-24) : [];
+    request.auditTrail.push({
+      action: "notification",
+      at: request.notificationAt,
+      byUserId: user?.id || null,
+      status: request.notificationStatus,
+      recipient: request.notificationRecipient,
+      message: request.notificationMessage,
+    });
     persist();
     return clone(request);
   }
@@ -2279,12 +2333,14 @@ export function createStore(seed = {}, options = {}) {
     getRawBusinessSettingsForUser,
     upsertBusinessSettings,
     validateBusinessEmailSettings,
+    recordBusinessEmailDelivery,
     getBusinessComplianceDashboard,
     updateComplianceTask,
     recordComplianceReminderDelivery,
     createApprovalRequest,
     listApprovalRequestsForUser,
     decideApprovalRequest,
+    recordApprovalNotification,
     createApiKey,
     findActiveApiKeyByToken,
     listApiKeysForUser,

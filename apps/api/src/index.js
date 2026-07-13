@@ -509,6 +509,14 @@ export function createApi(deps = {}) {
       return store.validateBusinessEmailSettings(access.owner, input);
     },
 
+    recordBusinessEmailDelivery(user, input = {}, options = {}) {
+      const access = this.requireBusinessWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+      }, "manageSettings");
+      return store.recordBusinessEmailDelivery(access.owner, input);
+    },
+
     getBusinessComplianceDashboard(user, options = {}) {
       const access = this.requireBusinessWorkspaceAccess(user, options, "read");
       return store.getBusinessComplianceDashboard(access.owner, options.companyId || access.companyId || null);
@@ -581,6 +589,17 @@ export function createApi(deps = {}) {
         ...input,
         approverUserId: user.id,
       }, access.owner);
+      if (!request) throw new Error("Approval request not found");
+      return request;
+    },
+
+    recordApprovalNotification(user, approvalId, input = {}, options = {}) {
+      const targetOwnerUserId = input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id;
+      const access = this.requireBusinessWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: targetOwnerUserId,
+      }, "read");
+      const request = store.recordApprovalNotification(approvalId, input, access.owner);
       if (!request) throw new Error("Approval request not found");
       return request;
     },

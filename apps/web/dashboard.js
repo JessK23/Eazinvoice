@@ -154,6 +154,7 @@ const approvalRequestStatus = document.getElementById("approvalRequestStatus");
 const approvalRequestsList = document.getElementById("approvalRequestsList");
 const workspaceTargetLinks = document.querySelectorAll("[data-workspace-target]");
 const workspaceSectionSelect = document.getElementById("workspaceSectionSelect");
+const workspaceSectionHint = document.getElementById("workspaceSectionHint");
 const workspaceGroups = document.querySelectorAll(".workspace-group");
 
 let planCatalog = [
@@ -325,6 +326,120 @@ const WORKSPACE_PERMISSION_COPY = [
   { key: "manageTeam", label: "Team members", description: "Invite, remove, and manage workspace users." },
   { key: "manageSettings", label: "Business settings", description: "Change SMTP, gateway, and business configuration." },
 ];
+const WORKSPACE_SECTION_META = [
+  {
+    id: "workspace-email-settings",
+    title: "Email and SMTP",
+    description: "Use only when business emails should go from your own mailbox.",
+    permission: "manageSettings",
+  },
+  {
+    id: "workspace-gateway-settings",
+    title: "Razorpay Gateway",
+    description: "Optional business payment links for invoices.",
+    permission: "manageSettings",
+  },
+  {
+    id: "workspace-compliance-profile",
+    title: "Compliance Profile",
+    description: "GST, PAN, audit, and statutory readiness data.",
+    permission: "compliance",
+  },
+  {
+    id: "workspace-team-access",
+    title: "Sub-users",
+    description: "Create accountant, admin, or viewer access by email.",
+    permission: "manageTeam",
+  },
+  {
+    id: "workspace-api-access",
+    title: "API Access",
+    description: "Keys for WordPress and external integrations.",
+    permission: "apiAccess",
+  },
+  {
+    id: "workspace-approval-queue",
+    title: "Approvals",
+    description: "Review requests for invoices, PO, and WO records.",
+    permission: "approvals",
+  },
+];
+
+function businessWorkspaceSectionCards(enabled) {
+  const emailSettings = dashboardBusinessSettings.emailSettings || {};
+  const paymentSettings = dashboardBusinessSettings.paymentSettings || {};
+  const activeKeys = dashboardApiKeys.filter((key) => key.status !== "revoked");
+  const smtpConfigured = Boolean(emailSettings.smtpHost && emailSettings.smtpUser && emailSettings.fromEmail);
+  const smtpFailed = ["failed", "error"].includes(String(emailSettings.lastDeliveryStatus || emailSettings.lastTestStatus || "").toLowerCase());
+  const gatewayStatus = paymentSettings.status || "not_configured";
+  const complianceReady = Boolean(dashboardBusinessCompliance?.readiness?.compliance);
+  const values = {
+    "workspace-email-settings": smtpFailed
+      ? { status: "Needs attention", tone: "danger" }
+      : smtpConfigured
+        ? { status: "Configured", tone: "ready" }
+        : { status: "Optional setup", tone: "attention" },
+    "workspace-gateway-settings": gatewayStatus === "live_ready"
+      ? { status: "Live ready", tone: "ready" }
+      : gatewayStatus === "test_mode"
+        ? { status: "Test mode", tone: "attention" }
+        : { status: "Optional setup", tone: "neutral" },
+    "workspace-compliance-profile": complianceReady
+      ? { status: "Ready", tone: "ready" }
+      : { status: "Review needed", tone: "attention" },
+    "workspace-team-access": dashboardTeamMembers.length
+      ? { status: `${dashboardTeamMembers.length} sub-user${dashboardTeamMembers.length === 1 ? "" : "s"}`, tone: "ready" }
+      : { status: "Optional setup", tone: "neutral" },
+    "workspace-api-access": activeKeys.length
+      ? { status: `${activeKeys.length} active key${activeKeys.length === 1 ? "" : "s"}`, tone: "ready" }
+      : { status: "Optional setup", tone: "neutral" },
+    "workspace-approval-queue": dashboardApprovalRequests.length
+      ? { status: `${dashboardApprovalRequests.length} request${dashboardApprovalRequests.length === 1 ? "" : "s"}`, tone: "ready" }
+      : { status: "Use when needed", tone: "neutral" },
+  };
+  return WORKSPACE_SECTION_META.map((item) => {
+    const allowed = enabled && workspaceCan(item.permission);
+    const current = values[item.id] || { status: "Optional", tone: "neutral" };
+    return {
+      ...item,
+      allowed,
+      status: allowed ? current.status : "View only",
+      tone: allowed ? current.tone : "locked",
+    };
+  });
+}
+
+function renderBusinessWorkspaceSectionControls(enabled) {
+  const cards = businessWorkspaceSectionCards(enabled);
+  if (workspaceSectionSelect) {
+    [...workspaceSectionSelect.options].forEach((option) => {
+      const card = cards.find((item) => item.id === option.value);
+      if (card) option.textContent = `${card.title} - ${card.status}`;
+    });
+  }
+  workspaceTargetLinks.forEach((link) => {
+    const targetId = link.getAttribute("data-workspace-target");
+    const card = cards.find((item) => item.id === targetId);
+    if (!card) return;
+    link.dataset.tone = card.tone;
+    if (link.classList.contains("workspace-section-shortcut")) {
+      link.innerHTML = `
+        <strong>${escapeHtml(card.title)}</strong>
+        <span>${escapeHtml(card.description)}</span>
+        <small>${escapeHtml(card.status)}</small>
+      `;
+    } else if (link.classList.contains("nav-subitem")) {
+      link.title = `${card.title}: ${card.status}`;
+    }
+  });
+  if (workspaceSectionHint) {
+    const activeId = workspaceSectionSelect?.value || cards[0]?.id || "";
+    const active = cards.find((item) => item.id === activeId) || cards[0];
+    workspaceSectionHint.textContent = active
+      ? `${active.title}: ${active.description} Status: ${active.status}.`
+      : "Choose one Business Workspace area at a time.";
+  }
+}
 
 function renderWorkspacePermissionPanel(enabled) {
   if (!businessWorkspacePermissionPanel) return;
@@ -2782,6 +2897,7 @@ function renderBusinessWorkspace() {
   renderWorkspacePermissionPanel(enabled);
   renderBusinessWorkspaceFlowChecklist(enabled);
   renderBusinessWorkspaceStatusBoard(enabled);
+  renderBusinessWorkspaceSectionControls(enabled);
   if (businessWorkspaceNotice) {
     if (!enabled) {
       businessWorkspaceNotice.textContent = "Upgrade to Business, or use Admin plan preview locally, to test team access, approvals, and API keys.";

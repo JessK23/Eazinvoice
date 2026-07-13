@@ -2993,6 +2993,34 @@ test("business workspace invite routes enforce owner accountant and viewer permi
     assert.equal(reminderWithoutSmtp.payload.deliveryStatus, "not_configured");
     assert.match(reminderWithoutSmtp.payload.deliveryMessage, /compliance reminders/i);
 
+    const failingSmtpSettings = await request("/business/settings", {
+      method: "PATCH",
+      token: owner.token,
+      body: {
+        emailSettings: {
+          senderName: "Workspace Owner",
+          fromEmail: "owner@example.com",
+          replyToEmail: "owner@example.com",
+          smtpHost: "127.0.0.1",
+          smtpPort: "1",
+          smtpUser: "owner@example.com",
+          smtpPass: "app-password",
+          smtpSecure: false,
+        },
+      },
+    });
+    assert.equal(failingSmtpSettings.response.status, 200);
+    assert.equal(failingSmtpSettings.payload.emailSettings.smtpPassConfigured, true);
+
+    const failedDeliveryInvite = await request("/business/team", {
+      method: "POST",
+      token: owner.token,
+      body: { name: "Delivery Failure User", email: "workspace-delivery-fail@example.com", role: "viewer" },
+    });
+    assert.equal(failedDeliveryInvite.response.status, 201);
+    assert.equal(failedDeliveryInvite.payload.inviteDeliveryStatus, "failed");
+    assert.match(failedDeliveryInvite.payload.inviteDeliveryMessage, /Could not send sub-user access email/i);
+
     const accountantSettingsDenied = await request("/business/settings", {
       method: "PATCH",
       token: accountant.token,

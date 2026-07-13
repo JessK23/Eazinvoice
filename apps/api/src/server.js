@@ -83,6 +83,32 @@ function smtpNotConfiguredMessage(action = "send this email") {
   return `Business SMTP is not configured, so EazInvoice saved the record but could not ${action}. Configure SMTP in Business Workspace to enable external email delivery.`;
 }
 
+function publicSmtpErrorMessage(error, action = "send email") {
+  const raw = String(error?.message || error || "SMTP delivery failed").replace(/[\r\n]+/g, " ").trim();
+  if (/ENOTFOUND|getaddrinfo|not found/i.test(raw)) {
+    return `Could not ${action}: SMTP host was not found. Check the host name, for example mail.privateemail.com.`;
+  }
+  if (/ECONNREFUSED|connection refused/i.test(raw)) {
+    return `Could not ${action}: SMTP connection was refused. Check the host, port, and secure SMTP setting.`;
+  }
+  if (/timed out|ETIMEDOUT|timeout/i.test(raw)) {
+    return `Could not ${action}: SMTP connection timed out. Check whether the mailbox provider allows this port.`;
+  }
+  if (/TLS|secureConnect|certificate|SSL/i.test(raw)) {
+    return `Could not ${action}: SMTP TLS/SSL failed. For port 465 use secure SMTP; for port 587 usually leave secure SMTP off.`;
+  }
+  if (/AUTH|password|username|535|authentication|credential/i.test(raw)) {
+    return `Could not ${action}: SMTP authentication failed. Check the full mailbox email and app password.`;
+  }
+  if (/recipient|RCPT/i.test(raw)) {
+    return `Could not ${action}: recipient email was rejected by the SMTP server.`;
+  }
+  if (/sender|MAIL FROM/i.test(raw)) {
+    return `Could not ${action}: sender email was rejected. The From email should normally match the SMTP username.`;
+  }
+  return `Could not ${action}: ${raw.slice(0, 240)}`;
+}
+
 function buildComplianceReminderMessage(emailSettings = {}, task = {}, recipient = "") {
   const businessName = emailSettings.senderName || "EazInvoice workspace";
   const complianceName = task.complianceName || task.id || "Compliance task";
@@ -167,10 +193,21 @@ async function sendBusinessApprovalNotification(api, user, approval, body = {}, 
     companyId: body.companyId || approval.companyId || null,
   });
   if (!businessSmtpReady(deliverySettings)) {
-    return {
+    const result = {
       notificationStatus: "not_configured",
       notificationMessage: smtpNotConfiguredMessage("send approval notification emails"),
+      notificationRecipient: "",
     };
+    try {
+      return api.recordApprovalNotification(user, approval.id, {
+        status: result.notificationStatus,
+        message: result.notificationMessage,
+        recipient: result.notificationRecipient,
+        workspaceOwnerUserId: approval.ownerUserId || null,
+      }, options);
+    } catch {
+      return result;
+    }
   }
   const owner = approval.ownerUserId ? api.getUserById(approval.ownerUserId) : null;
   const requester = approval.requestedByUserId ? api.getUserById(approval.requestedByUserId) : null;
@@ -190,15 +227,33 @@ async function sendBusinessApprovalNotification(api, user, approval, body = {}, 
       to: recipient,
       ...buildApprovalNotificationMessage(deliverySettings, approval, action, user),
     });
-    return {
+    const result = {
       notificationStatus: "sent",
       notificationMessage: `Approval notification sent to ${recipient}`,
+      notificationRecipient: recipient,
     };
+    return api.recordApprovalNotification(user, approval.id, {
+      status: result.notificationStatus,
+      message: result.notificationMessage,
+      recipient,
+      workspaceOwnerUserId: approval.ownerUserId || null,
+    }, options);
   } catch (error) {
-    return {
+    const result = {
       notificationStatus: "failed",
-      notificationMessage: `Approval saved, but notification email failed: ${error.message}`,
+      notificationMessage: publicSmtpErrorMessage(error, "send approval notification"),
+      notificationRecipient: recipient,
     };
+    try {
+      return api.recordApprovalNotification(user, approval.id, {
+        status: result.notificationStatus,
+        message: result.notificationMessage,
+        recipient,
+        workspaceOwnerUserId: approval.ownerUserId || null,
+      }, options);
+    } catch {
+      return result;
+    }
   }
 }
 
@@ -2211,23 +2266,40 @@ export function createServer(options = {}) {
               subject: "EazInvoice SMTP test email",
               text: `Hi,\n\nThis is a test email from EazInvoice Business Workspace for ${deliverySettings.senderName || user.name || "your business"}.\n\nIf you received this, SMTP delivery is working.\n\nEazInvoice`,
             });
+            const emailDelivery = api.recordBusinessEmailDelivery(user, {
+              workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+              companyId: body.companyId || null,
+              status: "sent",
+              message: `Test email sent to ${recipient}`,
+              recipient,
+              action: "smtp_test",
+            }, { previewPlan });
             sendJson(res, 200, {
-              ...validated,
+              ...emailDelivery,
               businessWorkspaceSync,
               emailSettings: {
-                ...validated.emailSettings,
+                ...emailDelivery.emailSettings,
                 lastDeliveryStatus: "sent",
                 lastDeliveryMessage: `Test email sent to ${recipient}`,
               },
             });
           } catch (deliveryError) {
+            const deliveryMessage = publicSmtpErrorMessage(deliveryError, "send SMTP test email");
+            const emailDelivery = api.recordBusinessEmailDelivery(user, {
+              workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+              companyId: body.companyId || null,
+              status: "failed",
+              message: deliveryMessage,
+              recipient,
+              action: "smtp_test",
+            }, { previewPlan });
             sendJson(res, 400, {
-              error: `SMTP settings validated, but test email failed: ${deliveryError.message}`,
+              error: deliveryMessage,
               businessWorkspaceSync,
               emailSettings: {
-                ...validated.emailSettings,
+                ...emailDelivery.emailSettings,
                 lastDeliveryStatus: "failed",
-                lastDeliveryMessage: deliveryError.message,
+                lastDeliveryMessage: deliveryMessage,
               },
             });
           }
@@ -2308,19 +2380,20 @@ export function createServer(options = {}) {
             businessWorkspaceSync,
           });
         } catch (deliveryError) {
+          const deliveryMessage = publicSmtpErrorMessage(deliveryError, "send compliance reminder");
           const updatedTask = api.recordComplianceReminderDelivery(user, taskId, {
             companyId: body.companyId || null,
             workspaceOwnerUserId: body.workspaceOwnerUserId || null,
             to: recipient,
             status: "failed",
-            message: deliveryError.message,
+            message: deliveryMessage,
           }, { previewPlan });
           const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-compliance-reminder-failed");
           sendJson(res, 400, {
-            error: `Compliance reminder failed: ${deliveryError.message}`,
+            error: deliveryMessage,
             ...updatedTask,
             deliveryStatus: "failed",
-            deliveryMessage: deliveryError.message,
+            deliveryMessage,
             businessWorkspaceSync,
           });
         }
@@ -2372,7 +2445,7 @@ export function createServer(options = {}) {
           }
         } catch (deliveryError) {
           deliveryStatus = "failed";
-          deliveryMessage = `Sub-user access saved, but email delivery failed: ${deliveryError.message}`;
+          deliveryMessage = publicSmtpErrorMessage(deliveryError, "send sub-user access email");
           member = api.updateTeamMember(user, member.id, {
             inviteDeliveryStatus: deliveryStatus,
             inviteDeliveryMessage: deliveryMessage,
