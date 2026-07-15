@@ -3292,6 +3292,117 @@ test("business workspace invite routes enforce owner accountant and viewer permi
   }
 });
 
+test("security hardening blocks public uploads and cross-user business records", async () => {
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const api = createApi({ store });
+  const server = createServer({ store, persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  async function signup(name, email, phone) {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email, phone },
+    });
+    const created = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name,
+        email,
+        password: "SecurePass123",
+        phone,
+        otp: otp.payload.devOtp,
+      },
+    });
+    assert.equal(created.response.status, 201);
+    return created.payload;
+  }
+
+  try {
+    const owner = await signup("Secure Owner", "secure-owner@example.com", "9100000001");
+    const other = await signup("Secure Other", "secure-other@example.com", "9100000002");
+    const company = api.createCompany({
+      name: "Secure Owner Co",
+      ownerUserId: owner.user.id,
+      entityType: "company",
+      panNumber: "ABCDE1234F",
+    });
+    const invoice = api.createInvoice({
+      ownerUserId: owner.user.id,
+      companyId: company.id,
+      billToName: "Owner Client",
+      invoiceDate: "2026-07-15",
+      status: "created",
+      currency: "INR",
+      items: [{ description: "Private service", quantity: 1, rate: 1000, gstRate: 18 }],
+    });
+    const purchaseOrder = api.createPurchaseOrder({
+      ownerUserId: owner.user.id,
+      companyId: company.id,
+      billToName: "Owner Vendor",
+      poDate: "2026-07-15",
+      status: "created",
+      currency: "INR",
+      items: [{ description: "Private purchase", quantity: 1, rate: 500, gstRate: 18 }],
+    });
+
+    const upload = await request("/uploads", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        files: [{
+          fileName: "kyc-proof.txt",
+          mimeType: "text/plain",
+          dataUrl: `data:text/plain;base64,${Buffer.from("private kyc").toString("base64")}`,
+        }],
+      },
+    });
+    assert.equal(upload.response.status, 201);
+    assert.match(upload.payload.files[0].filePath, /^\/data\/uploads\//);
+
+    const publicUploadFetch = await fetch(`${baseUrl}${upload.payload.files[0].filePath}`);
+    assert.equal(publicUploadFetch.status, 401);
+
+    const crossCompanyUpdate = await request(`/companies/${company.id}`, {
+      method: "PATCH",
+      token: other.token,
+      body: { name: "Hijacked Company" },
+    });
+    assert.equal(crossCompanyUpdate.response.status, 404);
+
+    const crossInvoiceRead = await request(`/invoices/${invoice.id}`, { token: other.token });
+    assert.equal(crossInvoiceRead.response.status, 404);
+
+    const crossInvoicePayment = await request(`/invoices/${invoice.id}/payments`, {
+      method: "POST",
+      token: other.token,
+      body: { amount: 100 },
+    });
+    assert.equal(crossInvoicePayment.response.status, 404);
+
+    const crossPoRead = await request(`/purchase-orders/${purchaseOrder.id}`, { token: other.token });
+    assert.equal(crossPoRead.response.status, 404);
+
+    const ownerInvoiceRead = await request(`/invoices/${invoice.id}`, { token: owner.token });
+    assert.equal(ownerInvoiceRead.response.status, 200);
+    assert.equal(ownerInvoiceRead.payload.ownerUserId, owner.user.id);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("wordpress connection validates active api keys and blocks mismatched accounts", async () => {
   const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
   const api = createApi({ store });

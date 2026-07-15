@@ -812,7 +812,6 @@ const STATIC_ROOTS = [
   { prefix: "/apps/mobile/", dir: path.join(ROOT, "apps", "mobile") },
   { prefix: "/plugins/wordpress/", dir: path.join(ROOT, "plugins", "wordpress") },
   { prefix: "/apps/api/src/", dir: path.join(ROOT, "apps", "api", "src") },
-  { prefix: "/data/uploads/", dir: path.join(ROOT, "data", "uploads") },
 ];
 
 function contentType(filePath) {
@@ -1739,7 +1738,11 @@ export function createServer(options = {}) {
         workspaceOwnerUserId: workspaceOwnerUserId || existingCompany.ownerUserId,
       }, "manageSettings");
       const body = await readBody(req);
-      const updated = api.updateCompany(companyId, body);
+      const updated = api.updateCompany(companyId, body, {
+        user,
+        previewPlan,
+        workspaceOwnerUserId: workspaceOwnerUserId || existingCompany.ownerUserId,
+      });
       sendJson(res, 200, updated);
       return;
     }

@@ -230,7 +230,15 @@ export function createApi(deps = {}) {
     updateCompanyKyc(companyId, updates) {
       return store.updateCompanyKyc(companyId, updates);
     },
-    updateCompany(companyId, updates) {
+    updateCompany(companyId, updates, options = {}) {
+      if (options.user) {
+        const workspace = this.resolveRecordsWorkspaceAccess(options.user, {
+          ...options,
+          workspaceOwnerUserId: options.workspaceOwnerUserId || updates.workspaceOwnerUserId || null,
+        }, "manageSettings");
+        const company = store.listCompanies().find((entry) => entry.id === companyId);
+        if (!company || company.ownerUserId !== workspace.ownerUserId) return null;
+      }
       return store.updateCompany(companyId, updates);
     },
 
