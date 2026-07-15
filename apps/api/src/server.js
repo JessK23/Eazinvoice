@@ -2164,6 +2164,99 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/accounting/summary" && req.method === "GET") {
+      if (!hasPostgresConfig()) {
+        sendJson(res, 200, {
+          available: false,
+          reason: "Postgres is not configured.",
+        });
+        return;
+      }
+      try {
+        sendJson(res, 200, {
+          available: true,
+          ...(await api.getAccountingSummary(user, Object.fromEntries(url.searchParams.entries()))),
+        });
+      } catch (error) {
+        sendJson(res, 500, {
+          available: false,
+          error: error.message,
+        });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/accounts" && req.method === "GET") {
+      try {
+        sendJson(res, 200, await api.getLedgerAccounts(user, Object.fromEntries(url.searchParams.entries())));
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/accounts" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, await api.createLedgerAccount(user, body, {
+          companyId: body.companyId || null,
+        }));
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/accounting/accounts/") && url.pathname.endsWith("/ledger") && req.method === "GET") {
+      try {
+        const parts = url.pathname.split("/");
+        const accountId = decodeURIComponent(parts[3] || "");
+        sendJson(res, 200, await api.getLedgerAccountEntries(user, accountId, Object.fromEntries(url.searchParams.entries())));
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/journals" && req.method === "GET") {
+      try {
+        sendJson(res, 200, await api.getJournalEntries(user, Object.fromEntries(url.searchParams.entries())));
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/journals" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, await api.createJournalEntry(user, body, {
+          companyId: body.companyId || null,
+        }));
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/books" && req.method === "GET") {
+      try {
+        sendJson(res, 200, await api.getBookEntries(user, Object.fromEntries(url.searchParams.entries())));
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/gst-summary" && req.method === "GET") {
+      try {
+        sendJson(res, 200, await api.getGstComplianceSummary(user, Object.fromEntries(url.searchParams.entries())));
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
     if (url.pathname === "/reports" && req.method === "GET") {
       if (usePostgresDashboardReports(options)) {
         try {

@@ -9,6 +9,39 @@
   --line: #e7e0f3;
 }
 
+.accounting-grid {
+  align-items: start;
+  margin-top: 18px;
+}
+
+.mini-table {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.mini-table-row {
+  display: grid;
+  grid-template-columns: 84px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.mini-table-row span,
+.mini-table-row small {
+  color: #667085;
+}
+
+@media (max-width: 760px) {
+  .mini-table-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 .status[data-tone="success"] {
   color: #047857;
   font-weight: 800;
@@ -3642,4 +3675,18 @@ label,
   .compliance-task-card .compact-fields {
     grid-template-columns: 1fr;
   }
+}
+/* Accounting drill-down rows use buttons for keyboard access while retaining table-row styling. */
+.ledger-row-button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ledger-row-button:hover {
+  background: rgba(37, 99, 235, 0.06);
 }

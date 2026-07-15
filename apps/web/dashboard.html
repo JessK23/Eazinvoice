@@ -48,6 +48,7 @@
       <nav class="nav nav-groups">
         <a class="nav-item nav-item-featured" href="/apps/web/dashboard.html#ai-assistant" data-page-link="ai-assistant">AI Assistant</a>
         <a class="nav-item active" href="/apps/web/dashboard.html#reports" data-page-link="reports">Reports</a>
+        <a class="nav-item" href="/apps/web/dashboard.html#accounting" data-page-link="accounting">Accounting</a>
         <a class="nav-item" href="/apps/web/dashboard.html#invoices" data-page-link="invoices">Invoices</a>
         <a class="nav-item" href="/apps/web/dashboard.html#purchase-orders" data-page-link="purchase-orders">Purchase / Work Order</a>
         <details class="nav-group">
@@ -255,6 +256,128 @@
         </div>
         <div id="reportsList" class="list"></div>
       </section>
+      <section id="accounting" class="panel dashboard-page" data-dashboard-page="accounting">
+        <div class="dashboard-head">
+          <div>
+            <span class="pill green">Accounting foundation</span>
+            <h1>Accounting</h1>
+            <p class="hint">Read-only ledger view derived from created invoices, PO/WO records, and recorded payments.</p>
+          </div>
+          <button id="refreshAccountingBtn" class="ghost" type="button">Refresh Accounting</button>
+        </div>
+        <div class="stats-grid compact">
+          <article class="stat-card"><span>Assets</span><strong id="accountingAssets">INR 0.00</strong></article>
+          <article class="stat-card"><span>Liabilities</span><strong id="accountingLiabilities">INR 0.00</strong></article>
+          <article class="stat-card"><span>Income</span><strong id="accountingIncome">INR 0.00</strong></article>
+          <article class="stat-card"><span>Expenses</span><strong id="accountingExpenses">INR 0.00</strong></article>
+          <article class="stat-card"><span>Profit</span><strong id="accountingProfit">INR 0.00</strong></article>
+        </div>
+        <div class="two-column accounting-grid">
+          <article class="quick-card">
+            <strong>Chart of Accounts</strong>
+            <div id="chartOfAccountsList" class="mini-table"></div>
+          </article>
+          <article class="quick-card">
+            <strong>Trial Balance</strong>
+            <div id="trialBalanceList" class="mini-table"></div>
+          </article>
+        </div>
+        <article class="quick-card">
+          <div class="panel-head compact-head">
+            <div>
+              <strong>GST Compliance Reconciliation</strong>
+              <p class="hint">Ledger-backed Output GST, Input GST, and estimated net GST payable from created invoices and PO/WO records.</p>
+            </div>
+            <span class="pill blue">Ledger backed</span>
+          </div>
+          <div id="accountingGstCards" class="stats-grid compact"></div>
+          <div id="accountingGstEntries" class="mini-table"></div>
+        </article>
+        <div class="two-column accounting-grid">
+          <article class="quick-card">
+            <strong>Add Custom Ledger Account</strong>
+            <form id="ledgerAccountForm" class="stacked-form">
+              <div class="form-grid two">
+                <label>Code
+                  <input name="accountCode" placeholder="6200" required />
+                </label>
+                <label>Name
+                  <input name="accountName" placeholder="Professional fees" required />
+                </label>
+                <label>Type
+                  <select name="accountType">
+                    <option value="asset">Asset</option>
+                    <option value="liability">Liability</option>
+                    <option value="equity">Equity</option>
+                    <option value="income">Income</option>
+                    <option value="expense">Expense</option>
+                  </select>
+                </label>
+                <label>Normal Balance
+                  <select name="normalBalance">
+                    <option value="debit">Debit</option>
+                    <option value="credit">Credit</option>
+                  </select>
+                </label>
+              </div>
+              <button class="primary" type="submit">Save Ledger Account</button>
+              <p id="ledgerAccountStatus" class="inline-status" aria-live="polite"></p>
+            </form>
+          </article>
+          <article class="quick-card">
+            <strong>Post Journal Entry</strong>
+            <form id="journalEntryForm" class="stacked-form">
+              <div class="form-grid two">
+                <label>Date
+                  <input name="journalDate" type="date" required />
+                </label>
+                <label>Currency
+                  <select name="currency">
+                    <option value="INR">INR</option>
+                    <option value="USD">USD</option>
+                    <option value="AUD">AUD</option>
+                    <option value="GBP">GBP</option>
+                  </select>
+                </label>
+                <label>Debit Account
+                  <select id="journalDebitAccount" name="debitAccount" required></select>
+                </label>
+                <label>Credit Account
+                  <select id="journalCreditAccount" name="creditAccount" required></select>
+                </label>
+                <label>Amount
+                  <input name="amount" type="number" min="0" step="0.01" required />
+                </label>
+                <label>Narration
+                  <input name="narration" placeholder="Opening balance or adjustment" required />
+                </label>
+              </div>
+              <button class="primary" type="submit">Post Journal</button>
+              <p id="journalEntryStatus" class="inline-status" aria-live="polite"></p>
+            </form>
+          </article>
+        </div>
+        <div class="two-column accounting-grid">
+          <article class="quick-card">
+            <strong>Recent Journal Entries</strong>
+            <div id="journalEntriesList" class="mini-table"></div>
+          </article>
+          <article class="quick-card">
+            <strong>Bank Book</strong>
+            <div id="bankBookList" class="mini-table"></div>
+          </article>
+          <article class="quick-card">
+            <strong>Cash Book</strong>
+            <div id="cashBookList" class="mini-table"></div>
+          </article>
+          <article class="quick-card">
+            <strong>Ledger Drill-down</strong>
+            <div id="ledgerDrilldownList" class="mini-table"></div>
+          </article>
+        </div>
+        <p id="accountingStatus" class="form-status"></p>
+      </section>
+
       <section id="report-detail" class="panel dashboard-page" data-dashboard-page="report-detail">
         <div class="panel-head">
           <div>
@@ -596,13 +719,18 @@
               <h3>GST, Gateway, SMTP and Financial Health</h3>
               <p class="hint">A quick readiness view for statutory compliance, payment collection, and audit reporting.</p>
             </div>
-            <span id="complianceOverallBadge" class="pill gold">Review needed</span>
+            <div class="row-actions">
+              <button id="complianceExportCsv" class="ghost small" type="button">Export CSV</button>
+              <button id="compliancePrintReport" class="ghost small" type="button">Print / PDF</button>
+              <span id="complianceOverallBadge" class="pill gold">Review needed</span>
+            </div>
           </div>
           <div id="complianceHealthCards" class="quick-grid"></div>
           <div class="grid two">
             <div id="complianceReadinessList" class="notice compact"></div>
             <div id="gstComplianceSummary" class="notice compact"></div>
           </div>
+          <div id="complianceAuditSnapshot" class="notice compact"></div>
         </div>
 
         <details id="workspace-email-settings" class="workspace-group" open>

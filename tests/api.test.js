@@ -29,6 +29,32 @@ test("health check is ok", () => {
   assert.equal(api.healthCheck().ok, true);
 });
 
+test("accounting summary is safe when Postgres is not configured", async () => {
+  const previousDatabaseUrl = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+  try {
+    const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+    const user = api.createUser({ name: "Accounting User", email: "accounting@example.com" });
+    const summary = await api.getAccountingSummary(user);
+    assert.equal(summary.enabled, false);
+    assert.match(summary.reason, /DATABASE_URL/i);
+    const accounts = await api.getLedgerAccounts(user);
+    assert.equal(accounts.enabled, false);
+    const journals = await api.getJournalEntries(user);
+    assert.equal(journals.enabled, false);
+    const bankBook = await api.getBookEntries(user, { book: "bank" });
+    assert.equal(bankBook.enabled, false);
+    const gstSummary = await api.getGstComplianceSummary(user);
+    assert.equal(gstSummary.enabled, false);
+  } finally {
+    if (previousDatabaseUrl === undefined) {
+      delete process.env.DATABASE_URL;
+    } else {
+      process.env.DATABASE_URL = previousDatabaseUrl;
+    }
+  }
+});
+
 test("Postgres report periods support monthly, yearly, custom, and financial-year filters", () => {
   assert.deepEqual(resolveReportPeriod({ month: "6", year: "2026" }), {
     mode: "month",

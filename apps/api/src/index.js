@@ -13,6 +13,16 @@ import {
 import { describePersistence } from "./persistence.js";
 import { describePostgresState } from "./postgres-state.js";
 import { hasPostgresConfig, maskDatabaseUrl } from "./postgres.js";
+import {
+  createJournalEntry,
+  createLedgerAccount,
+  getAccountingSummary,
+  getBookEntries,
+  getGstComplianceSummary,
+  getJournalEntries,
+  getLedgerAccountEntries,
+  getLedgerAccounts,
+} from "./postgres-accounting.js";
 import { summarizePostgresReports } from "./postgres-reporting.js";
 import { buildAiCommand } from "./ai-assistant.js";
 import { tryBuildAiCommandWithLlm } from "./ai-llm.js";
@@ -520,6 +530,46 @@ export function createApi(deps = {}) {
     getBusinessComplianceDashboard(user, options = {}) {
       const access = this.requireBusinessWorkspaceAccess(user, options, "read");
       return store.getBusinessComplianceDashboard(access.owner, options.companyId || access.companyId || null);
+    },
+
+    getAccountingSummary(user, options = {}) {
+      if (!user?.id) throw new Error("Authentication required");
+      return getAccountingSummary(user, options);
+    },
+
+    getLedgerAccounts(user, options = {}) {
+      if (!user?.id) throw new Error("Authentication required");
+      return getLedgerAccounts(user, options);
+    },
+
+    createLedgerAccount(user, input = {}, options = {}) {
+      if (!user?.id) throw new Error("Authentication required");
+      return createLedgerAccount(user, input, options);
+    },
+
+    getJournalEntries(user, options = {}) {
+      if (!user?.id) throw new Error("Authentication required");
+      return getJournalEntries(user, options);
+    },
+
+    createJournalEntry(user, input = {}, options = {}) {
+      if (!user?.id) throw new Error("Authentication required");
+      return createJournalEntry(user, input, options);
+    },
+
+    getBookEntries(user, options = {}) {
+      if (!user?.id) throw new Error("Authentication required");
+      return getBookEntries(user, options);
+    },
+
+    getGstComplianceSummary(user, options = {}) {
+      if (!user?.id) throw new Error("Authentication required");
+      return getGstComplianceSummary(user, options);
+    },
+
+    getLedgerAccountEntries(user, accountId, options = {}) {
+      if (!user?.id) throw new Error("Authentication required");
+      return getLedgerAccountEntries(user, accountId, options);
     },
 
     updateComplianceTask(user, taskId, input = {}, options = {}) {

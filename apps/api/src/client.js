@@ -239,6 +239,30 @@ export const apiClient = {
     const suffix = query.toString() ? `?${query.toString()}` : "";
     return request(`/reports/summary${suffix}`, { token });
   },
+  getAccountingSummary(token, filters = {}) {
+    return request(`/accounting/summary${queryString(filters)}`, { token });
+  },
+  listLedgerAccounts(token, filters = {}) {
+    return request(`/accounting/accounts${queryString(filters)}`, { token });
+  },
+  createLedgerAccount(token, body) {
+    return request("/accounting/accounts", { method: "POST", token, body });
+  },
+  listJournalEntries(token, filters = {}) {
+    return request(`/accounting/journals${queryString(filters)}`, { token });
+  },
+  createJournalEntry(token, body) {
+    return request("/accounting/journals", { method: "POST", token, body });
+  },
+  getAccountingBook(token, filters = {}) {
+    return request(`/accounting/books${queryString(filters)}`, { token });
+  },
+  getGstComplianceSummary(token, filters = {}) {
+    return request(`/accounting/gst-summary${queryString(filters)}`, { token });
+  },
+  getLedgerAccountEntries(token, accountId, filters = {}) {
+    return request(`/accounting/accounts/${encodeURIComponent(accountId)}/ledger${queryString(filters)}`, { token });
+  },
   listTeamMembers(token, options = {}) {
     return request(`/business/team${queryString(options)}`, { token });
   },

@@ -52,6 +52,27 @@ const createdPoList = document.getElementById("createdPoList");
 const reportIncomeTotal = document.getElementById("reportIncomeTotal");
 const reportExpenseTotal = document.getElementById("reportExpenseTotal");
 const reportProfitTotal = document.getElementById("reportProfitTotal");
+const accountingAssets = document.getElementById("accountingAssets");
+const accountingLiabilities = document.getElementById("accountingLiabilities");
+const accountingIncome = document.getElementById("accountingIncome");
+const accountingExpenses = document.getElementById("accountingExpenses");
+const accountingProfit = document.getElementById("accountingProfit");
+const chartOfAccountsList = document.getElementById("chartOfAccountsList");
+const trialBalanceList = document.getElementById("trialBalanceList");
+const accountingStatus = document.getElementById("accountingStatus");
+const refreshAccountingBtn = document.getElementById("refreshAccountingBtn");
+const ledgerAccountForm = document.getElementById("ledgerAccountForm");
+const ledgerAccountStatus = document.getElementById("ledgerAccountStatus");
+const journalEntryForm = document.getElementById("journalEntryForm");
+const journalEntryStatus = document.getElementById("journalEntryStatus");
+const journalDebitAccount = document.getElementById("journalDebitAccount");
+const journalCreditAccount = document.getElementById("journalCreditAccount");
+const journalEntriesList = document.getElementById("journalEntriesList");
+const bankBookList = document.getElementById("bankBookList");
+const cashBookList = document.getElementById("cashBookList");
+const ledgerDrilldownList = document.getElementById("ledgerDrilldownList");
+const accountingGstCards = document.getElementById("accountingGstCards");
+const accountingGstEntries = document.getElementById("accountingGstEntries");
 const reportMonth = document.getElementById("reportMonth");
 const reportYear = document.getElementById("reportYear");
 const paymentModal = document.getElementById("paymentModal");
@@ -131,6 +152,9 @@ const complianceOverallBadge = document.getElementById("complianceOverallBadge")
 const complianceHealthCards = document.getElementById("complianceHealthCards");
 const complianceReadinessList = document.getElementById("complianceReadinessList");
 const gstComplianceSummary = document.getElementById("gstComplianceSummary");
+const complianceAuditSnapshot = document.getElementById("complianceAuditSnapshot");
+const complianceExportCsv = document.getElementById("complianceExportCsv");
+const compliancePrintReport = document.getElementById("compliancePrintReport");
 const teamMemberCount = document.getElementById("teamMemberCount");
 const approvalRequestCount = document.getElementById("approvalRequestCount");
 const apiKeyCount = document.getElementById("apiKeyCount");
@@ -186,6 +210,7 @@ let razorpayCheckoutPromise = null;
 let pendingAiDraftCommand = null;
 let pendingAiDraftResult = null;
 let aiThinkingMessage = null;
+let accountingAccounts = [];
 
 const FEATURE_GATES = [
   { key: "basicInvoices", label: "Invoice creation", upgrade: "Free" },
@@ -1591,6 +1616,158 @@ function activeReportSummary() {
     : dashboardReportSummary;
 }
 
+function accountingMoney(value) {
+  return `INR ${money(value)}`;
+}
+
+function accountingEntryRow(entry) {
+  return `
+    <div class="mini-table-row">
+      <span>${escapeHtml(entry.transactionDate || "")}</span>
+      <strong>${escapeHtml(entry.referenceNumber || entry.sourceType || "Entry")}</strong>
+      <small>Dr ${money(entry.debit)} / Cr ${money(entry.credit)}</small>
+    </div>
+  `;
+}
+
+function renderAccountingBook(target, entries = []) {
+  if (!target) return;
+  target.innerHTML = entries.length
+    ? entries.map(accountingEntryRow).join("")
+    : "<p class=\"hint\">No entries yet.</p>";
+}
+
+function renderAccountingGstSummary(payload = {}) {
+  if (accountingGstCards) {
+    accountingGstCards.innerHTML = [
+      metricCard("Output GST", accountingMoney(payload.outputGst || 0)),
+      metricCard("Input GST", accountingMoney(payload.inputGst || 0)),
+      metricCard(payload.netGstPayable >= 0 ? "Net GST Payable" : "GST Credit Available", accountingMoney(Math.abs(payload.netGstPayable || 0))),
+    ].join("");
+  }
+  if (accountingGstEntries) {
+    const entries = payload.entries || [];
+    accountingGstEntries.innerHTML = entries.length
+      ? entries.map((entry) => `
+        <div class="mini-table-row">
+          <span>${escapeHtml(entry.transactionDate || "")}</span>
+          <strong>${escapeHtml(entry.accountName || entry.accountCode || "GST")}</strong>
+          <small>${escapeHtml(entry.referenceNumber || entry.sourceType || "Entry")} - Dr ${money(entry.debit)} / Cr ${money(entry.credit)}</small>
+        </div>
+      `).join("")
+      : "<p class=\"hint\">GST ledger entries will appear after GST invoices or PO/WO records are created.</p>";
+  }
+}
+
+function syncJournalAccountOptions() {
+  const options = accountingAccounts.map((account) => (
+    `<option value="${escapeHtml(account.id)}">${escapeHtml(account.accountCode)} - ${escapeHtml(account.accountName)}</option>`
+  )).join("");
+  if (journalDebitAccount) journalDebitAccount.innerHTML = options;
+  if (journalCreditAccount) journalCreditAccount.innerHTML = options;
+}
+
+function renderAccountingSummary(payload = {}) {
+  const summary = payload.summary || {};
+  if (accountingAssets) accountingAssets.textContent = accountingMoney(summary.assets);
+  if (accountingLiabilities) accountingLiabilities.textContent = accountingMoney(summary.liabilities);
+  if (accountingIncome) accountingIncome.textContent = accountingMoney(summary.income);
+  if (accountingExpenses) accountingExpenses.textContent = accountingMoney(summary.expenses);
+  if (accountingProfit) accountingProfit.textContent = accountingMoney(summary.profit);
+
+  const accounts = (payload.accounts || []).map((account) => ({
+    id: account.id,
+    accountCode: account.account_code || account.accountCode || "",
+    accountName: account.account_name || account.accountName || "",
+    accountType: account.account_type || account.accountType || "",
+    normalBalance: account.normal_balance || account.normalBalance || "",
+    systemAccount: Boolean(account.system_account || account.systemAccount),
+  }));
+  accountingAccounts = accounts;
+  syncJournalAccountOptions();
+  if (chartOfAccountsList) {
+    chartOfAccountsList.innerHTML = accounts.length
+      ? accounts.map((account) => `
+        <div class="mini-table-row" data-ledger-account-id="${escapeHtml(account.id || "")}">
+          <span>${escapeHtml(account.accountCode)}</span>
+          <strong>${escapeHtml(account.accountName)}</strong>
+          <small>${escapeHtml(account.accountType)}${account.systemAccount ? " · system" : ""}</small>
+        </div>
+      `).join("")
+      : "<p class=\"hint\">No ledger accounts available yet.</p>";
+  }
+
+  const rows = payload.trialBalance || [];
+  if (trialBalanceList) {
+    trialBalanceList.innerHTML = rows.length
+      ? rows.map((row) => `
+        <button class="mini-table-row ledger-row-button" type="button" data-ledger-account-id="${escapeHtml(row.id || "")}">
+          <span>${escapeHtml(row.accountCode || "")}</span>
+          <strong>${escapeHtml(row.accountName || "")}</strong>
+          <small>Dr ${money(row.debit)} / Cr ${money(row.credit)}</small>
+        </button>
+      `).join("")
+      : "<p class=\"hint\">Trial balance will appear after invoices or PO/WO records are created.</p>";
+  }
+
+  if (accountingStatus) {
+    if (payload.available === false || payload.enabled === false) {
+      accountingStatus.textContent = payload.reason || payload.error || "Accounting summary is not available yet.";
+      accountingStatus.className = "form-status error";
+    } else {
+      accountingStatus.textContent = `Synced ${payload.invoicesSynced || 0} invoice(s) and ${payload.purchaseOrdersSynced || 0} PO/WO record(s) into the accounting foundation.`;
+      accountingStatus.className = "form-status success";
+    }
+  }
+}
+
+async function refreshAccountingSummary() {
+  if (!chartOfAccountsList && !trialBalanceList) return null;
+  if (accountingStatus) {
+    accountingStatus.textContent = "Refreshing accounting summary...";
+    accountingStatus.className = "form-status";
+  }
+  try {
+    const payload = await apiClient.getAccountingSummary(token);
+    const [journals, bankBook, cashBook, gstSummary] = await Promise.all([
+      apiClient.listJournalEntries(token).catch(() => ({ journals: [] })),
+      apiClient.getAccountingBook(token, { book: "bank" }).catch(() => ({ entries: [] })),
+      apiClient.getAccountingBook(token, { book: "cash" }).catch(() => ({ entries: [] })),
+      apiClient.getGstComplianceSummary(token).catch(() => ({ entries: [] })),
+    ]);
+    renderAccountingSummary(payload);
+    if (journalEntriesList) {
+      journalEntriesList.innerHTML = (journals.journals || []).length
+        ? journals.journals.map((journal) => `
+          <div class="mini-table-row">
+            <span>${escapeHtml(journal.journalDate || "")}</span>
+            <strong>${escapeHtml(journal.journalNumber || "Journal")}</strong>
+            <small>${escapeHtml(journal.currency || "INR")} ${money(journal.totalDebit || 0)} · ${escapeHtml(journal.narration || "")}</small>
+          </div>
+        `).join("")
+        : "<p class=\"hint\">No manual journals posted yet.</p>";
+    }
+    renderAccountingBook(bankBookList, bankBook.entries || []);
+    renderAccountingBook(cashBookList, cashBook.entries || []);
+    renderAccountingGstSummary(gstSummary);
+    return payload;
+  } catch (error) {
+    renderAccountingSummary({ available: false, error: error.message || "Could not load accounting summary." });
+    return null;
+  }
+}
+
+async function loadLedgerDrilldown(accountId) {
+  if (!ledgerDrilldownList || !accountId) return;
+  ledgerDrilldownList.innerHTML = "<p class=\"hint\">Loading ledger entries...</p>";
+  try {
+    const payload = await apiClient.getLedgerAccountEntries(token, accountId);
+    renderAccountingBook(ledgerDrilldownList, payload.entries || []);
+  } catch (error) {
+    ledgerDrilldownList.innerHTML = `<p class="hint">${escapeHtml(error.message || "Could not load ledger entries.")}</p>`;
+  }
+}
+
 function reportSourceInvoices() {
   const summary = activeReportSummary();
   return summary?.available && Array.isArray(summary.invoices)
@@ -1666,6 +1843,80 @@ function selectedReportPeriodLabel() {
 function csvCell(value) {
   const text = String(value ?? "");
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function complianceExportData() {
+  const engine = dashboardBusinessCompliance?.complianceEngine || {};
+  const exportData = engine.export || {};
+  return {
+    title: "EazInvoice Compliance Report",
+    generatedAt: new Date().toLocaleString(),
+    fileName: exportData.fileName || "eazinvoice-compliance-report.csv",
+    headers: exportData.headers || ["Compliance", "Department", "Status", "Due Date", "Reminder Date", "Responsible", "Required Documents"],
+    rows: exportData.rows || [],
+  };
+}
+
+function downloadComplianceCsv() {
+  const exportData = complianceExportData();
+  if (!exportData.rows.length) {
+    setInlineStatus(businessComplianceStatus, "No compliance records are available to export yet.", "error");
+    return;
+  }
+  const lines = [
+    [exportData.title],
+    [`Generated: ${exportData.generatedAt}`],
+    [],
+    exportData.headers,
+    ...exportData.rows,
+  ].map((row) => row.map(csvCell).join(","));
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = exportData.fileName;
+  document.body.appendChild(link);
+  link.click();
+  URL.revokeObjectURL(link.href);
+  link.remove();
+  setInlineStatus(businessComplianceStatus, `Compliance CSV prepared: ${exportData.fileName}`, "success");
+}
+
+function printComplianceReport() {
+  const exportData = complianceExportData();
+  if (!exportData.rows.length) {
+    setInlineStatus(businessComplianceStatus, "No compliance records are available to print yet.", "error");
+    return;
+  }
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    window.print();
+    return;
+  }
+  const tableHead = exportData.headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("");
+  const tableRows = exportData.rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("");
+  printWindow.document.write(`
+    <!doctype html>
+    <html>
+      <head>
+        <title>${escapeHtml(exportData.title)}</title>
+        <style>
+          body { font-family: Arial, sans-serif; color: #111827; padding: 24px; }
+          table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+          th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; font-size: 12px; }
+          th { background: #eef2ff; }
+        </style>
+      </head>
+      <body>
+        <h1>${escapeHtml(exportData.title)}</h1>
+        <p>Generated: ${escapeHtml(exportData.generatedAt)}</p>
+        <table><thead><tr>${tableHead}</tr></thead><tbody>${tableRows}</tbody></table>
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
+  printWindow.focus();
+  printWindow.print();
+  setInlineStatus(businessComplianceStatus, "Compliance print view opened.", "success");
 }
 
 function downloadCurrentReportCsv() {
@@ -2766,12 +3017,16 @@ function renderComplianceDashboard(enabled) {
   const readiness = data.readiness || {};
   const financials = data.financials || {};
   const gst = data.gst || {};
+  const accountingGst = data.accountingGst || null;
   const review = data.complianceReview || {};
   const engine = data.complianceEngine || {};
   const engineSummary = engine.summary || {};
   const tasks = Array.isArray(engine.tasks) ? engine.tasks : [];
   const reminderDigest = engine.reminders || {};
   const nextReminder = reminderDigest.next || null;
+  const upcomingCount = Number(reminderDigest.counts?.upcoming || 0);
+  const overdueCount = Number(reminderDigest.counts?.overdue || 0);
+  const dueThisMonth = Number(reminderDigest.counts?.dueThisMonth || 0);
   const readyCount = ["compliance", "gst", "smtp", "gateway"].filter((key) => readiness[key]).length;
   if (complianceOverallBadge) {
     complianceOverallBadge.textContent = enabled
@@ -2782,12 +3037,12 @@ function renderComplianceDashboard(enabled) {
   if (complianceHealthCards) {
     complianceHealthCards.innerHTML = [
       ["Compliance", readiness.compliance ? "Ready" : "Review", review.message || "Profile not checked"],
-      ["GST Position", `INR ${money(gst.netGstPayable || 0)}`, `Output INR ${money(gst.outputGst || 0)} less input INR ${money(gst.inputGst || 0)}`],
+      ["GST Position", `INR ${money(accountingGst?.netGstPayable ?? gst.netGstPayable ?? 0)}`, `Output INR ${money(accountingGst?.outputGst ?? gst.outputGst ?? 0)} less input INR ${money(accountingGst?.inputGst ?? gst.inputGst ?? 0)}`],
       ["SMTP", readiness.smtp ? "Ready" : "Not ready", data.communication?.status || "not_configured"],
       ["Gateway", readiness.gateway ? "Ready" : "Not ready", data.gateway?.paymentLinkEnabled ? "Payment links enabled" : "Payment links not enabled"],
       ["Profit", `INR ${money(financials.profit || 0)}`, `Revenue INR ${money(financials.revenue || 0)} less expenses INR ${money(financials.expenses || 0)}`],
       ["Receivables", `INR ${money(financials.receivables || 0)}`, `Paid INR ${money(financials.paid || 0)}`],
-      ["Compliance reminders", String(reminderDigest.counts?.upcoming || 0), nextReminder ? `${nextReminder.complianceName} on ${nextReminder.nextReminderDate || nextReminder.dueDate || "date"}` : "No upcoming reminder in 30 days"],
+      ["Compliance reminders", String(upcomingCount), nextReminder ? `${nextReminder.complianceName} on ${nextReminder.nextReminderDate || nextReminder.dueDate || "date"}` : "No upcoming reminder in 30 days"],
     ].map(([title, value, hint]) => `
       <article class="quick-card">
         <strong>${escapeHtml(title)}</strong>
@@ -2814,6 +3069,7 @@ function renderComplianceDashboard(enabled) {
               <div>
                 <strong>${escapeHtml(task.complianceName)}</strong>
                 <span>${escapeHtml(task.department || "Compliance")} - ${escapeHtml(task.frequency || "review")} - Due ${escapeHtml(task.dueDate || task.dueDateLabel || "date to be tracked")}</span>
+                <span class="pill ${complianceStatusTone(task.status)}">${escapeHtml(String(task.status || "pending").replaceAll("_", " ").toUpperCase())}</span>
               </div>
               <div class="compact-fields">
                 <select name="status" aria-label="Compliance task status">
@@ -2844,6 +3100,17 @@ function renderComplianceDashboard(enabled) {
       <p>Output GST: INR ${money(gst.outputGst || 0)}</p>
       <p>Input GST: INR ${money(gst.inputGst || 0)}</p>
       <p><strong>Estimated net GST payable: INR ${money(gst.netGstPayable || 0)}</strong></p>
+      ${accountingGst?.enabled ? `
+        <p class="hint"><strong>Ledger reconciliation:</strong> Output INR ${money(accountingGst.outputGst || 0)} | Input INR ${money(accountingGst.inputGst || 0)} | Net INR ${money(accountingGst.netGstPayable || 0)}</p>
+      ` : ""}
+    `;
+  }
+  if (complianceAuditSnapshot) {
+    complianceAuditSnapshot.innerHTML = `
+      <strong>Audit-ready snapshot</strong>
+      <p>Status mix: ${escapeHtml(engineSummary.pending || 0)} pending, ${escapeHtml(engineSummary.filed || 0)} filed, ${escapeHtml(overdueCount)} overdue.</p>
+      <p>Reminder queue: ${escapeHtml(upcomingCount)} upcoming, ${escapeHtml(dueThisMonth)} due this month.</p>
+      <p>Export includes compliance name, department, status, due date, reminder date, responsible person, and required documents.</p>
     `;
   }
 }
@@ -3091,18 +3358,21 @@ async function loadBusinessWorkspace() {
     return;
   }
   const workspaceOptions = selectedWorkspaceOptions();
-  const [members, approvals, apiKeys, settings, compliance] = await Promise.all([
+  const [members, approvals, apiKeys, settings, compliance, accountingGst] = await Promise.all([
     apiClient.listTeamMembers(token, workspaceOptions).catch(() => []),
     apiClient.listApprovalRequests(token, workspaceOptions).catch(() => []),
     apiClient.listApiKeys(token, workspaceOptions).catch(() => []),
     apiClient.getBusinessSettings(token, workspaceOptions).catch(() => ({ emailSettings: {}, paymentSettings: {}, complianceProfile: {} })),
     apiClient.getBusinessComplianceDashboard(token, workspaceOptions).catch(() => null),
+    apiClient.getGstComplianceSummary(token, workspaceOptions).catch(() => null),
   ]);
   dashboardTeamMembers = members;
   dashboardApprovalRequests = approvals;
   dashboardApiKeys = apiKeys;
   dashboardBusinessSettings = settings;
-  dashboardBusinessCompliance = compliance;
+  dashboardBusinessCompliance = compliance && accountingGst?.enabled
+    ? { ...compliance, accountingGst }
+    : compliance;
   renderBusinessWorkspace();
 }
 
@@ -3439,6 +3709,14 @@ businessComplianceForm?.addEventListener("submit", async (event) => {
   }
 });
 
+complianceExportCsv?.addEventListener("click", () => {
+  downloadComplianceCsv();
+});
+
+compliancePrintReport?.addEventListener("click", () => {
+  printComplianceReport();
+});
+
 complianceReadinessList?.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-compliance-reminder-id]");
   if (!button) return;
@@ -3715,6 +3993,68 @@ vendorForm?.addEventListener("submit", async (event) => {
 
 window.addEventListener("hashchange", () => showDashboardPage());
 
+refreshAccountingBtn?.addEventListener("click", () => {
+  refreshAccountingSummary();
+});
+
+ledgerAccountForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const formData = new FormData(ledgerAccountForm);
+  setInlineStatus(ledgerAccountStatus, "Saving ledger account...", "");
+  try {
+    await apiClient.createLedgerAccount(token, {
+      accountCode: formData.get("accountCode"),
+      accountName: formData.get("accountName"),
+      accountType: formData.get("accountType"),
+      normalBalance: formData.get("normalBalance"),
+    });
+    ledgerAccountForm.reset();
+    setInlineStatus(ledgerAccountStatus, "Ledger account saved.", "success");
+    await refreshAccountingSummary();
+  } catch (error) {
+    setInlineStatus(ledgerAccountStatus, error.message || "Could not save ledger account.", "error");
+  }
+});
+
+journalEntryForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const formData = new FormData(journalEntryForm);
+  const debitAccount = String(formData.get("debitAccount") || "");
+  const creditAccount = String(formData.get("creditAccount") || "");
+  const amount = Number(formData.get("amount") || 0);
+  if (!debitAccount || !creditAccount || debitAccount === creditAccount) {
+    setInlineStatus(journalEntryStatus, "Choose different debit and credit accounts.", "error");
+    return;
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    setInlineStatus(journalEntryStatus, "Enter a valid journal amount.", "error");
+    return;
+  }
+  setInlineStatus(journalEntryStatus, "Posting journal entry...", "");
+  try {
+    await apiClient.createJournalEntry(token, {
+      journalDate: formData.get("journalDate"),
+      currency: formData.get("currency"),
+      narration: formData.get("narration"),
+      lines: [
+        { accountId: debitAccount, debit: amount, credit: 0, description: formData.get("narration") },
+        { accountId: creditAccount, debit: 0, credit: amount, description: formData.get("narration") },
+      ],
+    });
+    journalEntryForm.reset();
+    setInlineStatus(journalEntryStatus, "Journal entry posted and books updated.", "success");
+    await refreshAccountingSummary();
+  } catch (error) {
+    setInlineStatus(journalEntryStatus, error.message || "Could not post journal entry.", "error");
+  }
+});
+
+trialBalanceList?.addEventListener("click", (event) => {
+  const row = event.target.closest("[data-ledger-account-id]");
+  const accountId = row?.getAttribute("data-ledger-account-id");
+  if (accountId) loadLedgerDrilldown(accountId);
+});
+
 async function initializeDashboard() {
   try {
     const [summary, companies, customers, vendors, reports, invoices, purchaseOrders, payments, subscriptions] = await Promise.all([
@@ -3751,6 +4091,7 @@ async function initializeDashboard() {
   dashboardPayments = payments;
   populateReportFilters(dashboardInvoices, dashboardPurchaseOrders);
   await refreshDashboardReportSummary();
+  await refreshAccountingSummary();
   const activeOrg = companies[0] || null;
   renderDashboardMetrics(dashboardInvoices);
   renderInvoiceWorkspace(dashboardInvoices);
