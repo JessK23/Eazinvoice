@@ -744,6 +744,85 @@ test("signup and login require email OTP verification", async () => {
   }
 });
 
+test("auth OTP falls back to app SMTP when Supabase email delivery fails", async () => {
+  const previousEnv = {
+    EMAIL_SMTP_HOST: process.env.EMAIL_SMTP_HOST,
+    EMAIL_SMTP_PORT: process.env.EMAIL_SMTP_PORT,
+    EMAIL_SMTP_USER: process.env.EMAIL_SMTP_USER,
+    EMAIL_SMTP_PASS: process.env.EMAIL_SMTP_PASS,
+    EMAIL_SMTP_FROM: process.env.EMAIL_SMTP_FROM,
+    EMAIL_SMTP_FROM_NAME: process.env.EMAIL_SMTP_FROM_NAME,
+    EMAIL_SMTP_SECURE: process.env.EMAIL_SMTP_SECURE,
+  };
+  process.env.EMAIL_SMTP_HOST = "smtp.example.com";
+  process.env.EMAIL_SMTP_PORT = "465";
+  process.env.EMAIL_SMTP_USER = "info@example.com";
+  process.env.EMAIL_SMTP_PASS = "app-password";
+  process.env.EMAIL_SMTP_FROM = "info@example.com";
+  process.env.EMAIL_SMTP_FROM_NAME = "EazInvoice";
+  process.env.EMAIL_SMTP_SECURE = "true";
+
+  const sentMessages = [];
+  const server = createServer({
+    persist: false,
+    useSupabaseEmailOtp: true,
+    supabaseEmailOtpRequester: async () => {
+      throw new Error("Error sending magic link email");
+    },
+    supabaseEmailOtpVerifier: async () => {
+      throw new Error("Token has expired or is invalid");
+    },
+    authEmailOtpSender: async (settings, message) => {
+      sentMessages.push({ settings, message });
+      return { ok: true };
+    },
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const otpResponse = await fetch(`${baseUrl}/auth/email-otp/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "signup",
+        email: "smtp-fallback@example.com",
+      }),
+    });
+    const otp = await otpResponse.json();
+    assert.equal(otpResponse.status, 200);
+    assert.equal(otp.provider, "app-smtp");
+    assert.match(otp.devOtp, /^\d{6}$/);
+    assert.equal(sentMessages.length, 1);
+    assert.equal(sentMessages[0].message.to, "smtp-fallback@example.com");
+    assert.match(sentMessages[0].message.text, new RegExp(otp.devOtp));
+
+    const signupResponse = await fetch(`${baseUrl}/auth/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "SMTP Fallback",
+        email: "smtp-fallback@example.com",
+        password: "Secure123",
+        phone: "9876543210",
+        otp: otp.devOtp,
+      }),
+    });
+    const signup = await signupResponse.json();
+    assert.equal(signupResponse.status, 201);
+    assert.equal(signup.user.emailVerified, true);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
 test("signup OTP blocks already registered users and login OTP blocks unknown users", async () => {
   const server = createServer({ persist: false, useSupabaseEmailOtp: false });
   await new Promise((resolve) => server.listen(0, resolve));

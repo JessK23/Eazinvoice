@@ -439,7 +439,10 @@ function renderBusinessWorkspaceSectionControls(enabled) {
   if (workspaceSectionSelect) {
     [...workspaceSectionSelect.options].forEach((option) => {
       const card = cards.find((item) => item.id === option.value);
-      if (card) option.textContent = `${card.title} - ${card.status}`;
+      if (card) {
+        option.textContent = `${card.title} - ${card.status}`;
+        option.dataset.tone = card.tone;
+      }
     });
   }
   workspaceTargetLinks.forEach((link) => {
@@ -447,6 +450,7 @@ function renderBusinessWorkspaceSectionControls(enabled) {
     const card = cards.find((item) => item.id === targetId);
     if (!card) return;
     link.dataset.tone = card.tone;
+    link.setAttribute("aria-label", `${card.title}: ${card.status}`);
     if (link.classList.contains("workspace-section-shortcut")) {
       link.innerHTML = `
         <strong>${escapeHtml(card.title)}</strong>
@@ -455,7 +459,27 @@ function renderBusinessWorkspaceSectionControls(enabled) {
       `;
     } else if (link.classList.contains("nav-subitem")) {
       link.title = `${card.title}: ${card.status}`;
+      link.innerHTML = `
+        <span>${escapeHtml(card.title)}</span>
+        <small>${escapeHtml(card.status)}</small>
+      `;
     }
+  });
+  document.querySelectorAll(".workspace-group").forEach((group) => {
+    const card = cards.find((item) => item.id === group.id);
+    if (!card) return;
+    group.dataset.tone = card.tone;
+    group.dataset.allowed = card.allowed ? "true" : "false";
+    const summary = group.querySelector(".workspace-group-summary");
+    if (!summary) return;
+    let roleBadge = summary.querySelector("[data-workspace-role-badge]");
+    if (!roleBadge) {
+      roleBadge = document.createElement("span");
+      roleBadge.setAttribute("data-workspace-role-badge", "");
+      summary.append(roleBadge);
+    }
+    roleBadge.className = `pill ${card.allowed ? "blue" : "gold"}`;
+    roleBadge.textContent = card.allowed ? "Editable" : "View only";
   });
   if (workspaceSectionHint) {
     const activeId = workspaceSectionSelect?.value || cards[0]?.id || "";

@@ -630,6 +630,55 @@ function isSupabaseEmailOtpConfigured() {
   return Boolean(config.url && config.key);
 }
 
+function getAuthEmailSmtpSettings() {
+  const smtpSecureRaw = String(process.env.EMAIL_SMTP_SECURE || process.env.SMTP_SECURE || "").trim().toLowerCase();
+  const smtpPort = process.env.EMAIL_SMTP_PORT || process.env.SMTP_PORT || "";
+  const secureFromPort = String(smtpPort).trim() === "465";
+  return {
+    senderName: process.env.EMAIL_SMTP_FROM_NAME || process.env.SMTP_FROM_NAME || "EazInvoice",
+    fromEmail: process.env.EMAIL_SMTP_FROM || process.env.SMTP_FROM || process.env.EMAIL_SMTP_USER || process.env.SMTP_USER || "",
+    replyToEmail: process.env.EMAIL_SMTP_REPLY_TO || process.env.SMTP_REPLY_TO || process.env.EMAIL_SMTP_FROM || process.env.SMTP_FROM || "",
+    smtpHost: process.env.EMAIL_SMTP_HOST || process.env.SMTP_HOST || "",
+    smtpPort,
+    smtpUser: process.env.EMAIL_SMTP_USER || process.env.SMTP_USER || "",
+    smtpPass: process.env.EMAIL_SMTP_PASS || process.env.SMTP_PASS || "",
+    smtpSecure: smtpSecureRaw ? ["1", "true", "yes", "on"].includes(smtpSecureRaw) : secureFromPort,
+  };
+}
+
+function authEmailSmtpReady(settings = getAuthEmailSmtpSettings()) {
+  return Boolean(settings.smtpHost && settings.smtpPort && settings.smtpUser && settings.smtpPass && settings.fromEmail);
+}
+
+function buildAuthOtpEmail({ email, otp }) {
+  return {
+    to: email,
+    subject: "EazInvoice verification code",
+    text: [
+      "Hi,",
+      "",
+      "Your EazInvoice verification code is:",
+      "",
+      otp,
+      "",
+      `This code expires in ${Math.ceil(getEmailOtpExpirySeconds() / 60)} minute(s). Do not share it with anyone.`,
+      "",
+      "EazInvoice",
+    ].join("\n"),
+  };
+}
+
+function publicEmailOtpErrorMessage(error) {
+  const raw = String(error?.message || error || "").replace(/[\r\n]+/g, " ").trim();
+  if (/rate limit/i.test(raw)) {
+    return "Email OTP rate limit exceeded. Please wait a few minutes before requesting another code.";
+  }
+  if (/magic link|send.*email|mailer|smtp|email/i.test(raw)) {
+    return "EazInvoice could not send the OTP email. Check Supabase SMTP settings, or configure EazInvoice app SMTP environment variables for OTP fallback.";
+  }
+  return raw || "EazInvoice could not send the OTP email. Please try again.";
+}
+
 async function supabaseAuthRequest(pathname, body) {
   const config = getSupabaseAuthConfig();
   const response = await fetch(`${config.url}/auth/v1/${pathname}`, {
@@ -658,6 +707,19 @@ async function requestSupabaseEmailOtp({ email }) {
     create_user: true,
   });
   return { email: normalizedEmail, expiresInSeconds: getEmailOtpExpirySeconds() };
+}
+
+async function requestAppSmtpEmailOtp({ emailOtps, email, mode, sender = sendSmtpMail }) {
+  const settings = getAuthEmailSmtpSettings();
+  if (!authEmailSmtpReady(settings)) {
+    throw new Error("EazInvoice app SMTP is not configured for OTP fallback.");
+  }
+  const otp = emailOtps.request({ email, mode });
+  await sender(settings, buildAuthOtpEmail({ email: otp.email, otp: otp.devOtp }), {
+    heloName: "eazinvoice.com",
+    timeoutMs: 12000,
+  });
+  return { ...otp, provider: "app-smtp" };
 }
 
 async function verifySupabaseEmailOtp({ email, otp }) {
@@ -859,6 +921,9 @@ export function createServer(options = {}) {
   const oauthStates = createOAuthStateStore();
   const emailOtps = createEmailOtpStore();
   const useSupabaseEmailOtp = options.useSupabaseEmailOtp ?? isSupabaseEmailOtpConfigured();
+  const supabaseEmailOtpRequester = options.supabaseEmailOtpRequester ?? requestSupabaseEmailOtp;
+  const supabaseEmailOtpVerifier = options.supabaseEmailOtpVerifier ?? verifySupabaseEmailOtp;
+  const authEmailOtpSender = options.authEmailOtpSender ?? sendSmtpMail;
   const rateBuckets = new Map();
 
   function isRateLimited(req, url) {
@@ -1173,24 +1238,42 @@ export function createServer(options = {}) {
           });
           return;
         }
-        const otp = useSupabaseEmailOtp
-          ? await requestSupabaseEmailOtp({ email: body.email })
-          : emailOtps.request({
+        let otp;
+        let provider = "local-email";
+        if (useSupabaseEmailOtp) {
+          try {
+            otp = await supabaseEmailOtpRequester({ email: body.email });
+            provider = "supabase";
+          } catch (supabaseError) {
+            if (!authEmailSmtpReady()) throw supabaseError;
+            otp = await requestAppSmtpEmailOtp({
+              emailOtps,
+              email: body.email,
+              mode,
+              sender: authEmailOtpSender,
+            });
+            provider = otp.provider;
+          }
+        } else {
+          otp = emailOtps.request({
             email: body.email,
             mode,
           });
+        }
         sendJson(res, 200, {
           ok: true,
-          provider: useSupabaseEmailOtp ? "supabase" : "local-email",
-          message: useSupabaseEmailOtp ? "Email OTP sent by Supabase" : "Email OTP requested",
+          provider,
+          message: provider === "supabase"
+            ? "Email OTP sent by Supabase"
+            : provider === "app-smtp"
+              ? "Email OTP sent by EazInvoice email service"
+              : "Email OTP requested",
           ...otp,
         });
       } catch (error) {
         const isRateLimit = /rate limit/i.test(error.message || "");
         sendJson(res, isRateLimit ? 429 : 400, {
-          error: isRateLimit
-            ? "Supabase email OTP rate limit exceeded. Please wait a few minutes before requesting another code."
-            : error.message,
+          error: publicEmailOtpErrorMessage(error),
         });
       }
       return;
@@ -1200,7 +1283,19 @@ export function createServer(options = {}) {
       const body = await readBody(req);
       try {
         if (useSupabaseEmailOtp) {
-          await verifySupabaseEmailOtp({ email: body.email, otp: body.otp });
+          try {
+            await supabaseEmailOtpVerifier({ email: body.email, otp: body.otp });
+          } catch (supabaseError) {
+            try {
+              emailOtps.verify({
+                otp: body.otp,
+                email: body.email,
+                mode: "signup",
+              });
+            } catch {
+              throw supabaseError;
+            }
+          }
         } else {
           emailOtps.verify({
             otp: body.otp,
@@ -1262,7 +1357,19 @@ export function createServer(options = {}) {
       }
       try {
         if (useSupabaseEmailOtp) {
-          await verifySupabaseEmailOtp({ email: body.email, otp: body.otp });
+          try {
+            await supabaseEmailOtpVerifier({ email: body.email, otp: body.otp });
+          } catch (supabaseError) {
+            try {
+              emailOtps.verify({
+                otp: body.otp,
+                email: body.email,
+                mode: "login",
+              });
+            } catch {
+              throw supabaseError;
+            }
+          }
         } else {
           emailOtps.verify({
             otp: body.otp,
