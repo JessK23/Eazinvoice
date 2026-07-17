@@ -823,6 +823,65 @@ test("auth OTP falls back to app SMTP when Supabase email delivery fails", async
   }
 });
 
+test("auth OTP reports safe diagnostics when Supabase and SMTP fallback fail", async () => {
+  const previousEnv = {
+    EMAIL_SMTP_HOST: process.env.EMAIL_SMTP_HOST,
+    EMAIL_SMTP_PORT: process.env.EMAIL_SMTP_PORT,
+    EMAIL_SMTP_USER: process.env.EMAIL_SMTP_USER,
+    EMAIL_SMTP_PASS: process.env.EMAIL_SMTP_PASS,
+    EMAIL_SMTP_FROM: process.env.EMAIL_SMTP_FROM,
+    EMAIL_SMTP_FROM_NAME: process.env.EMAIL_SMTP_FROM_NAME,
+    EMAIL_SMTP_SECURE: process.env.EMAIL_SMTP_SECURE,
+  };
+  process.env.EMAIL_SMTP_HOST = "smtp.example.com";
+  process.env.EMAIL_SMTP_PORT = "465";
+  process.env.EMAIL_SMTP_USER = "info@example.com";
+  process.env.EMAIL_SMTP_PASS = "app-password";
+  process.env.EMAIL_SMTP_FROM = "info@example.com";
+  process.env.EMAIL_SMTP_FROM_NAME = "EazInvoice";
+  process.env.EMAIL_SMTP_SECURE = "true";
+
+  const server = createServer({
+    persist: false,
+    useSupabaseEmailOtp: true,
+    supabaseEmailOtpRequester: async () => {
+      throw new Error("Error sending magic link email");
+    },
+    authEmailOtpSender: async () => {
+      throw new Error("SMTP server rejected SMTP password");
+    },
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const response = await fetch(`${baseUrl}/auth/email-otp/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "signup",
+        email: "smtp-failure@example.com",
+      }),
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 400);
+    assert.match(payload.error, /SMTP fallback also failed/);
+    assert.equal(payload.diagnostics.appSmtpConfigured, true);
+    assert.equal(payload.diagnostics.supabaseStatus, "failed");
+    assert.equal(payload.diagnostics.appSmtpStatus, "failed");
+    assert.doesNotMatch(JSON.stringify(payload), /app-password/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
 test("signup OTP blocks already registered users and login OTP blocks unknown users", async () => {
   const server = createServer({ persist: false, useSupabaseEmailOtp: false });
   await new Promise((resolve) => server.listen(0, resolve));
@@ -2862,6 +2921,15 @@ test("business workspace endpoints honor plan preview and gating", async () => {
     assert.equal(missingSmtpReminder.response.status, 400);
     assert.match(missingSmtpReminder.payload.error, /Configure and validate Business SMTP settings/);
 
+    const earlyNotifications = await request("/business/notifications", {
+      token: signup.payload.token,
+      previewPlan: "business",
+    });
+    assert.equal(earlyNotifications.response.status, 200);
+    assert.ok(earlyNotifications.payload.some((notification) => notification.id === "smtp.not_configured"));
+    assert.ok(earlyNotifications.payload.some((notification) => notification.id === "gateway.not_ready"));
+    assert.equal(new Set(earlyNotifications.payload.map((notification) => notification.id)).size, earlyNotifications.payload.length);
+
     const settings = await request("/business/settings", {
       method: "PATCH",
       token: signup.payload.token,
@@ -2952,6 +3020,77 @@ test("business workspace endpoints honor plan preview and gating", async () => {
     assert.equal(refreshedCompliance.payload.complianceEngine.summary.filed, 1);
     assert.equal(refreshedCompliance.payload.complianceEngine.summary.total, compliance.payload.complianceEngine.summary.total);
     assert.ok(refreshedCompliance.payload.complianceEngine.summary.pending < compliance.payload.complianceEngine.summary.pending);
+
+    const approvalRequest = await request("/business/approvals", {
+      method: "POST",
+      token: signup.payload.token,
+      previewPlan: "business",
+      body: { documentType: "invoice", documentNumber: "EA/2026/0001", notes: "Review before sending." },
+    });
+    assert.equal(approvalRequest.response.status, 201);
+
+    const auditEvents = await request("/business/audit-events", {
+      token: signup.payload.token,
+      previewPlan: "business",
+    });
+    assert.equal(auditEvents.response.status, 200);
+    const actions = auditEvents.payload.map((event) => event.action);
+    assert.ok(actions.includes("api_key.created"));
+    assert.ok(actions.includes("settings.email_saved"));
+    assert.ok(actions.includes("settings.gateway_saved"));
+    assert.ok(actions.includes("smtp.validate"));
+    assert.ok(actions.includes("smtp.compliance_reminder"));
+    assert.ok(actions.includes("compliance.task_updated"));
+    assert.equal(auditEvents.payload.every((event) => event.ownerUserId === signup.payload.user.id), true);
+    const serializedAuditEvents = JSON.stringify(auditEvents.payload);
+    assert.doesNotMatch(serializedAuditEvents, /app-password/);
+    assert.doesNotMatch(serializedAuditEvents, /eaz_live_/);
+    assert.doesNotMatch(serializedAuditEvents, /"keySecret":"secret"/);
+    assert.doesNotMatch(serializedAuditEvents, /"webhookSecret":"webhook"/);
+
+    const smtpAuditEvents = await request("/business/audit-events?category=smtp", {
+      token: signup.payload.token,
+      previewPlan: "business",
+    });
+    assert.equal(smtpAuditEvents.response.status, 200);
+    assert.ok(smtpAuditEvents.payload.length > 0);
+    assert.equal(smtpAuditEvents.payload.every((event) => event.category === "smtp"), true);
+
+    const actionAuditEvents = await request("/business/audit-events?action=api_key.created", {
+      token: signup.payload.token,
+      previewPlan: "business",
+    });
+    assert.equal(actionAuditEvents.response.status, 200);
+    assert.equal(actionAuditEvents.payload.every((event) => event.action === "api_key.created"), true);
+
+    const actorAuditEvents = await request(`/business/audit-events?actor=${encodeURIComponent("support")}`, {
+      token: signup.payload.token,
+      previewPlan: "business",
+    });
+    assert.equal(actorAuditEvents.response.status, 200);
+    assert.ok(actorAuditEvents.payload.length > 0);
+    assert.equal(actorAuditEvents.payload.every((event) => /support/i.test(`${event.actorName} ${event.actorEmail}`)), true);
+
+    const failedAuditEvents = await request("/business/audit-events?outcome=not_configured", {
+      token: signup.payload.token,
+      previewPlan: "business",
+    });
+    assert.equal(failedAuditEvents.response.status, 200);
+    assert.equal(failedAuditEvents.payload.every((event) => event.outcome === "not_configured"), true);
+
+    const businessNotifications = await request("/business/notifications", {
+      token: signup.payload.token,
+      previewPlan: "business",
+    });
+    assert.equal(businessNotifications.response.status, 200);
+    const notificationIds = businessNotifications.payload.map((notification) => notification.id);
+    assert.ok(notificationIds.includes("approvals.pending"));
+    assert.ok(notificationIds.includes("api_keys.active"));
+    assert.ok(notificationIds.some((id) => id.startsWith("compliance.")));
+    assert.ok(notificationIds.some((id) => id.startsWith("audit.")));
+    assert.equal(new Set(notificationIds).size, notificationIds.length);
+    assert.ok(businessNotifications.payload.every((notification) => notification.targetSection?.startsWith("workspace-")));
+    assert.equal(JSON.stringify(businessNotifications.payload).includes("notification_record"), false);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     restoreAdminEmail();

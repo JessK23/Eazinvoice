@@ -39,7 +39,9 @@ async function apiRequest(path, body) {
     payload = {};
   }
   if (!response.ok) {
-    throw new Error(payload.error || `Request failed (${response.status}). Please try again or contact EazInvoice support.`);
+    const error = new Error(payload.error || `Request failed (${response.status}). Please try again or contact EazInvoice support.`);
+    error.payload = payload;
+    throw error;
   }
   return payload;
 }
@@ -220,7 +222,11 @@ async function requestEmailOtp() {
     setOtpSent();
     startOtpTimers(response.expiresInSeconds);
   } catch (error) {
-    setStatus(error.message || "Could not send OTP. Please try again.");
+    const diagnostics = error.payload?.diagnostics;
+    const diagnosticLine = diagnostics
+      ? ` Supabase: ${diagnostics.supabaseStatus || (diagnostics.supabaseConfigured ? "configured" : "not configured")}. EazInvoice SMTP: ${diagnostics.appSmtpStatus || (diagnostics.appSmtpConfigured ? "configured" : "not configured")}.`
+      : "";
+    setStatus(`${error.message || "Could not send OTP. Please try again."}${diagnosticLine}`);
     if (/already registered/i.test(error.message || "")) {
       window.setTimeout(() => setMode("login"), 900);
     }

@@ -311,4 +311,10 @@ export const apiClient = {
   revokeApiKey(token, apiKeyId, options = {}) {
     return request(`/business/api-keys/${apiKeyId}${queryString(options)}`, { method: "DELETE", token });
   },
+  listBusinessAuditEvents(token, options = {}) {
+    return request(`/business/audit-events${queryString(options)}`, { token });
+  },
+  listBusinessNotifications(token, options = {}) {
+    return request(`/business/notifications${queryString(options)}`, { token });
+  },
 };

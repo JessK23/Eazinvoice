@@ -818,12 +818,62 @@ async function syncApiKeys(client, apiKeys) {
   }
 }
 
+async function syncBusinessAuditEvents(client, businessAuditEvents) {
+  for (const event of businessAuditEvents) {
+    await client.query(
+      `insert into eazinvoice_business_audit_events
+        (id, owner_user_id, company_id, actor_user_id, actor_email, actor_name, actor_role, workspace_role,
+         category, action, outcome, target_type, target_id, target_label, message, metadata, record, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17::jsonb, coalesce($18::timestamptz, now()), now())
+       on conflict (id) do update set
+        owner_user_id = excluded.owner_user_id,
+        company_id = excluded.company_id,
+        actor_user_id = excluded.actor_user_id,
+        actor_email = excluded.actor_email,
+        actor_name = excluded.actor_name,
+        actor_role = excluded.actor_role,
+        workspace_role = excluded.workspace_role,
+        category = excluded.category,
+        action = excluded.action,
+        outcome = excluded.outcome,
+        target_type = excluded.target_type,
+        target_id = excluded.target_id,
+        target_label = excluded.target_label,
+        message = excluded.message,
+        metadata = excluded.metadata,
+        record = excluded.record,
+        updated_at = now()`,
+      [
+        text(event.id),
+        text(event.ownerUserId, event.userId),
+        text(event.companyId),
+        text(event.actorUserId),
+        lowerText(event.actorEmail),
+        text(event.actorName),
+        lowerText(event.actorRole),
+        lowerText(event.workspaceRole),
+        lowerText(event.category, "workspace"),
+        lowerText(event.action, "workspace.event"),
+        lowerText(event.outcome, "info"),
+        lowerText(event.targetType),
+        text(event.targetId),
+        text(event.targetLabel),
+        text(event.message),
+        json(event.metadata || {}),
+        json(event),
+        timestamp(event.createdAt),
+      ],
+    );
+  }
+}
+
 export async function syncBusinessWorkspaceTables(client, state = {}, options = {}) {
   await syncBusinessSettings(client, toArray(state.businessSettings));
   await syncComplianceTasks(client, toArray(state.complianceTasks));
   await syncTeamMembers(client, toArray(state.teamMembers));
   await syncApprovalRequests(client, toArray(state.approvalRequests));
   await syncApiKeys(client, toArray(state.apiKeys));
+  await syncBusinessAuditEvents(client, toArray(state.businessAuditEvents));
 
   if (options.audit !== false) {
     await client.query(
@@ -839,6 +889,7 @@ export async function syncBusinessWorkspaceTables(client, state = {}, options = 
             teamMembers: toArray(state.teamMembers).length,
             approvalRequests: toArray(state.approvalRequests).length,
             apiKeys: toArray(state.apiKeys).length,
+            businessAuditEvents: toArray(state.businessAuditEvents).length,
           },
           source: options.source || "runtime",
         }),
@@ -911,6 +962,7 @@ export function countCoreState(state = {}) {
     teamMembers: toArray(state.teamMembers).length,
     approvalRequests: toArray(state.approvalRequests).length,
     apiKeys: toArray(state.apiKeys).length,
+    businessAuditEvents: toArray(state.businessAuditEvents).length,
   };
 }
 

@@ -167,6 +167,7 @@ export function createStore(seed = {}, options = {}) {
     apiKeys: [],
     businessSettings: [],
     complianceTasks: [],
+    businessAuditEvents: [],
     counters: {
       user: 0,
       company: 0,
@@ -185,6 +186,7 @@ export function createStore(seed = {}, options = {}) {
       apiKey: 0,
       businessSetting: 0,
       complianceTask: 0,
+      businessAuditEvent: 0,
     },
     ...clone(seed),
     ...clone(persisted),
@@ -208,6 +210,7 @@ export function createStore(seed = {}, options = {}) {
     apiKey: 0,
     businessSetting: 0,
     complianceTask: 0,
+    businessAuditEvent: 0,
     ...(clone(seed).counters || {}),
     ...(clone(persisted).counters || {}),
   };
@@ -232,6 +235,7 @@ export function createStore(seed = {}, options = {}) {
       apiKeys: state.apiKeys,
       businessSettings: state.businessSettings,
       complianceTasks: state.complianceTasks,
+      businessAuditEvents: state.businessAuditEvents,
       counters: state.counters,
     });
   }
@@ -1596,6 +1600,86 @@ export function createStore(seed = {}, options = {}) {
     return clone(state.teamMembers.filter((member) => member.ownerUserId === ownerUserId));
   }
 
+  function sanitizeAuditMetadata(value, depth = 0) {
+    if (depth > 4) return "[truncated]";
+    if (Array.isArray(value)) return value.slice(0, 20).map((entry) => sanitizeAuditMetadata(entry, depth + 1));
+    if (!value || typeof value !== "object") {
+      if (typeof value === "string") return value.slice(0, 500);
+      return value ?? null;
+    }
+    return Object.fromEntries(Object.entries(value).slice(0, 50).map(([key, entry]) => {
+      if (/pass|secret|token|webhook|authorization|credential/i.test(key)) return [key, "[redacted]"];
+      return [key, sanitizeAuditMetadata(entry, depth + 1)];
+    }));
+  }
+
+  function normalizeAuditOutcome(outcome) {
+    const candidate = String(outcome || "info").trim().toLowerCase();
+    return ["success", "failed", "not_configured", "blocked", "queued", "info", "sent"].includes(candidate)
+      ? candidate
+      : "info";
+  }
+
+  function recordBusinessAuditEvent(actorUser, input = {}) {
+    const ownerUserId = input.ownerUserId || input.workspaceOwnerUserId || actorUser?.id || null;
+    if (!ownerUserId) throw new Error("Business audit owner is required");
+    const category = String(input.category || "workspace").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_").slice(0, 60) || "workspace";
+    const action = String(input.action || "workspace.event").trim().toLowerCase().replace(/[^a-z0-9_.:-]/g, "_").slice(0, 100) || "workspace.event";
+    const event = {
+      id: nextId("baud", ++state.counters.businessAuditEvent),
+      ownerUserId,
+      companyId: input.companyId || null,
+      actorUserId: input.actorUserId || actorUser?.id || null,
+      actorEmail: String(input.actorEmail || actorUser?.email || "").trim().toLowerCase(),
+      actorName: String(input.actorName || actorUser?.name || "").trim(),
+      actorRole: String(input.actorRole || actorUser?.role || "").trim(),
+      workspaceRole: String(input.workspaceRole || "").trim(),
+      category,
+      action,
+      outcome: normalizeAuditOutcome(input.outcome),
+      targetType: String(input.targetType || "").trim().slice(0, 80),
+      targetId: String(input.targetId || "").trim().slice(0, 120),
+      targetLabel: String(input.targetLabel || "").trim().slice(0, 160),
+      message: String(input.message || "").trim().slice(0, 500),
+      metadata: sanitizeAuditMetadata(input.metadata || {}),
+      createdAt: input.createdAt || new Date().toISOString(),
+    };
+    state.businessAuditEvents.push(event);
+    if (state.businessAuditEvents.length > 10000) {
+      state.businessAuditEvents = state.businessAuditEvents.slice(-10000);
+    }
+    persist();
+    return clone(event);
+  }
+
+  function listBusinessAuditEventsForWorkspace(ownerUserId, options = {}) {
+    const limit = Math.max(1, Math.min(200, Number(options.limit || 50)));
+    const category = String(options.category || "").trim().toLowerCase();
+    const action = String(options.action || "").trim().toLowerCase();
+    const outcome = String(options.outcome || "").trim().toLowerCase();
+    const companyId = String(options.companyId || "").trim();
+    const actor = String(options.actor || options.actorEmail || "").trim().toLowerCase();
+    const dateFrom = options.dateFrom ? new Date(options.dateFrom) : null;
+    const dateTo = options.dateTo ? new Date(options.dateTo) : null;
+    const fromTime = dateFrom && !Number.isNaN(dateFrom.getTime()) ? dateFrom.getTime() : null;
+    const toTime = dateTo && !Number.isNaN(dateTo.getTime()) ? dateTo.getTime() + 86400000 - 1 : null;
+    return clone(state.businessAuditEvents
+      .filter((event) => event.ownerUserId === ownerUserId)
+      .filter((event) => !companyId || event.companyId === companyId)
+      .filter((event) => !category || event.category === category)
+      .filter((event) => !action || event.action === action)
+      .filter((event) => !outcome || event.outcome === outcome)
+      .filter((event) => !actor || String(event.actorEmail || "").toLowerCase().includes(actor) || String(event.actorName || "").toLowerCase().includes(actor))
+      .filter((event) => {
+        if (!fromTime && !toTime) return true;
+        const eventTime = new Date(event.createdAt || "").getTime();
+        if (Number.isNaN(eventTime)) return false;
+        return (!fromTime || eventTime >= fromTime) && (!toTime || eventTime <= toTime);
+      })
+      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+      .slice(0, limit));
+  }
+
   function createTeamMember(input = {}) {
     const email = String(input.email || "").trim().toLowerCase();
     if (!email) throw new Error("Team member email is required");
@@ -2132,6 +2216,7 @@ export function createStore(seed = {}, options = {}) {
       apiKeys: state.apiKeys.length,
       businessSettings: state.businessSettings.length,
       complianceTasks: state.complianceTasks.length,
+      businessAuditEvents: state.businessAuditEvents.length,
     };
   }
 
@@ -2334,6 +2419,8 @@ export function createStore(seed = {}, options = {}) {
     upsertBusinessSettings,
     validateBusinessEmailSettings,
     recordBusinessEmailDelivery,
+    recordBusinessAuditEvent,
+    listBusinessAuditEventsForWorkspace,
     getBusinessComplianceDashboard,
     updateComplianceTask,
     recordComplianceReminderDelivery,

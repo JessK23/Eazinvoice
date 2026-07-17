@@ -32,6 +32,7 @@ try {
       ["teamMembers", "eazinvoice_team_members", state.teamMembers],
       ["approvalRequests", "eazinvoice_approval_requests", state.approvalRequests],
       ["apiKeys", "eazinvoice_api_keys", state.apiKeys],
+      ["businessAuditEvents", "eazinvoice_business_audit_events", state.businessAuditEvents],
     ];
     for (const [label, table, records] of tables) {
       const sourceIds = idSet(records);

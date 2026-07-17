@@ -69,6 +69,8 @@
             <a class="nav-subitem" href="/apps/web/dashboard.html#business-workspace" data-page-link="business-workspace" data-workspace-target="workspace-team-access">Team Access</a>
             <a class="nav-subitem" href="/apps/web/dashboard.html#business-workspace" data-page-link="business-workspace" data-workspace-target="workspace-api-access">API Access</a>
             <a class="nav-subitem" href="/apps/web/dashboard.html#business-workspace" data-page-link="business-workspace" data-workspace-target="workspace-approval-queue">Approval Queue</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#business-workspace" data-page-link="business-workspace" data-workspace-target="workspace-notification-center">Notification Center</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#business-workspace" data-page-link="business-workspace" data-workspace-target="workspace-audit-trail">Audit Trail</a>
           </div>
         </details>
         <a class="nav-item" href="/apps/web/dashboard.html#subscription" data-page-link="subscription">Subscription Upgrade</a>
@@ -665,6 +667,8 @@
             <option value="workspace-team-access">Create Sub-user Access</option>
             <option value="workspace-api-access">API Access</option>
             <option value="workspace-approval-queue">Approval Requests</option>
+            <option value="workspace-notification-center">Notification Center</option>
+            <option value="workspace-audit-trail">Audit Trail</option>
           </select>
           <p id="workspaceSectionHint" class="workspace-section-hint">Choose one Business Workspace area at a time.</p>
         </div>
@@ -692,6 +696,14 @@
           <button class="workspace-section-shortcut" type="button" data-workspace-target="workspace-approval-queue">
             <strong>Approvals</strong>
             <span>Document review queue</span>
+          </button>
+          <button class="workspace-section-shortcut" type="button" data-workspace-target="workspace-notification-center">
+            <strong>Notifications</strong>
+            <span>Operational alerts and follow-ups</span>
+          </button>
+          <button class="workspace-section-shortcut" type="button" data-workspace-target="workspace-audit-trail">
+            <strong>Audit Trail</strong>
+            <span>Workspace activity and security log</span>
           </button>
         </div>
         <div class="quick-grid">
@@ -912,6 +924,62 @@
               <div id="approvalRequestStatus" class="inline-status full" aria-live="polite"></div>
             </form>
             <div id="approvalRequestsList" class="list"></div>
+          </div>
+        </details>
+
+        <details id="workspace-notification-center" class="workspace-group">
+          <summary class="workspace-group-summary">
+            <div>
+              <h3>Notification Center</h3>
+              <p class="hint">Review operational alerts generated from SMTP, gateway, approvals, compliance, API keys, team access, and audit events.</p>
+            </div>
+            <span id="businessNotificationCount" class="pill blue">0 alerts</span>
+          </summary>
+          <div class="workspace-group-body">
+            <div class="notice compact">
+              These alerts are generated from existing workspace records. No separate notification data is created, so the status always reflects the current workspace state.
+            </div>
+            <div id="businessNotificationList" class="list"></div>
+          </div>
+        </details>
+
+        <details id="workspace-audit-trail" class="workspace-group">
+          <summary class="workspace-group-summary">
+            <div>
+              <h3>Business Audit Trail</h3>
+              <p class="hint">Review sub-user actions, approval changes, SMTP delivery attempts, API-key events, and payment/gateway activity for this workspace.</p>
+            </div>
+            <span id="businessAuditCount" class="pill blue">0 events</span>
+          </summary>
+          <div class="workspace-group-body">
+            <form id="businessAuditFilterForm" class="audit-filter-bar">
+              <select name="category" aria-label="Audit category">
+                <option value="">All activity</option>
+                <option value="team">Sub-users</option>
+                <option value="approval">Approvals</option>
+                <option value="smtp">SMTP / Email</option>
+                <option value="api_key">API Keys</option>
+                <option value="payment">Payments</option>
+                <option value="gateway">Gateway</option>
+                <option value="compliance">Compliance</option>
+              </select>
+              <select name="outcome" aria-label="Audit outcome">
+                <option value="">All outcomes</option>
+                <option value="success">Success</option>
+                <option value="sent">Sent</option>
+                <option value="failed">Failed</option>
+                <option value="not_configured">Not configured</option>
+                <option value="blocked">Blocked</option>
+                <option value="info">Info</option>
+              </select>
+              <input name="actor" placeholder="User name or email" aria-label="Audit actor" />
+              <input name="dateFrom" type="date" aria-label="Audit date from" />
+              <input name="dateTo" type="date" aria-label="Audit date to" />
+              <button class="ghost small" type="submit">Apply Filters</button>
+              <button id="businessAuditClearFilters" class="ghost small" type="button">Clear</button>
+            </form>
+            <p id="businessAuditFilterStatus" class="hint" aria-live="polite">Showing latest workspace events.</p>
+            <div id="businessAuditList" class="list"></div>
           </div>
         </details>
       </section>

@@ -673,10 +673,36 @@ function publicEmailOtpErrorMessage(error) {
   if (/rate limit/i.test(raw)) {
     return "Email OTP rate limit exceeded. Please wait a few minutes before requesting another code.";
   }
+  if (/fallback also failed/i.test(raw)) {
+    return "Supabase OTP failed and EazInvoice app SMTP fallback also failed. Check EMAIL_SMTP_* settings in Render.";
+  }
+  if (/app smtp is not configured/i.test(raw)) {
+    return "EazInvoice app SMTP fallback is not configured. Add EMAIL_SMTP_HOST, EMAIL_SMTP_PORT, EMAIL_SMTP_USER, EMAIL_SMTP_PASS, EMAIL_SMTP_FROM, and EMAIL_SMTP_SECURE in Render.";
+  }
   if (/magic link|send.*email|mailer|smtp|email/i.test(raw)) {
     return "EazInvoice could not send the OTP email. Check Supabase SMTP settings, or configure EazInvoice app SMTP environment variables for OTP fallback.";
   }
   return raw || "EazInvoice could not send the OTP email. Please try again.";
+}
+
+function publicAuthOtpDiagnostics(details = {}) {
+  const diagnostics = {
+    supabaseConfigured: isSupabaseEmailOtpConfigured(),
+    appSmtpConfigured: authEmailSmtpReady(),
+  };
+  if (details.supabaseError) {
+    diagnostics.supabaseStatus = "failed";
+    diagnostics.supabaseMessage = publicEmailOtpErrorMessage(details.supabaseError);
+  }
+  if (details.appSmtpError) {
+    diagnostics.appSmtpStatus = "failed";
+    diagnostics.appSmtpMessage = publicEmailOtpErrorMessage(details.appSmtpError);
+  } else if (diagnostics.appSmtpConfigured) {
+    diagnostics.appSmtpStatus = "ready";
+  } else {
+    diagnostics.appSmtpStatus = "not_configured";
+  }
+  return diagnostics;
 }
 
 async function supabaseAuthRequest(pathname, body) {
@@ -1072,6 +1098,17 @@ export function createServer(options = {}) {
     };
   }
 
+  async function recordBusinessAudit(user, input = {}, auditOptions = {}, source = "business-audit") {
+    try {
+      const event = api.recordBusinessAuditEvent(user, input, auditOptions);
+      await syncBusinessWorkspaceRows(source);
+      return event;
+    } catch (error) {
+      console.warn("Business audit event skipped:", error.message);
+      return null;
+    }
+  }
+
   async function activateVerifiedRazorpayOrder(orderMeta, paymentId, orderId) {
     if (!orderMeta) return null;
     const now = new Date().toISOString();
@@ -1108,6 +1145,24 @@ export function createServer(options = {}) {
         gatewayOrderId: orderId,
       });
       const entitlementSync = await syncUserSubscriptionEntitlements(subscription.userId, "razorpay-activation");
+      await recordBusinessAudit(subscriptionUser, {
+        ownerUserId: subscription.userId,
+        companyId: subscription.companyId || null,
+        category: "gateway",
+        action: "gateway.subscription_activated",
+        outcome: "success",
+        targetType: "subscription",
+        targetId: subscription.id,
+        targetLabel: subscription.plan,
+        message: `${subscription.plan} subscription activated from Razorpay payment.`,
+        metadata: {
+          amount: subscription.amount,
+          currency: subscription.currency,
+          billingCycle: subscription.billingCycle,
+          gatewayOrderId: orderId,
+          gatewayPaymentId: paymentId,
+        },
+      }, { previewPlan: subscription.plan }, "business-razorpay-subscription-audit");
       api.updateBillingOrder(orderId, { status: "consumed", consumedAt: new Date().toISOString() });
       return { ok: true, type: "subscription", subscription, entitlementSync };
     }
@@ -1132,6 +1187,24 @@ export function createServer(options = {}) {
         gatewayOrderId: orderId,
       });
       if (!recorded) return null;
+      const invoiceOwner = recorded.invoice?.ownerUserId ? api.getUserById(recorded.invoice.ownerUserId) : null;
+      await recordBusinessAudit(invoiceOwner, {
+        ownerUserId: recorded.invoice?.ownerUserId || orderMeta.userId || null,
+        companyId: recorded.invoice?.companyId || null,
+        category: "gateway",
+        action: "gateway.invoice_payment_captured",
+        outcome: "success",
+        targetType: "invoice",
+        targetId: recorded.invoice?.id || orderMeta.invoiceId,
+        targetLabel: recorded.invoice?.invoiceNumber || orderMeta.invoiceId,
+        message: `Razorpay payment captured for invoice ${recorded.invoice?.invoiceNumber || orderMeta.invoiceId}.`,
+        metadata: {
+          amount: recorded.payment?.amount,
+          currency: recorded.payment?.currency,
+          gatewayOrderId: orderId,
+          gatewayPaymentId: paymentId,
+        },
+      }, { previewPlan: "business" }, "business-razorpay-invoice-payment-audit");
       const reportSync = await syncInvoicePaymentReportRows(recorded);
       api.updateBillingOrder(orderId, { status: "consumed", consumedAt: new Date().toISOString() });
       return { ok: true, type: "invoice", ...recorded, reportSync };
@@ -1245,14 +1318,24 @@ export function createServer(options = {}) {
             otp = await supabaseEmailOtpRequester({ email: body.email });
             provider = "supabase";
           } catch (supabaseError) {
-            if (!authEmailSmtpReady()) throw supabaseError;
-            otp = await requestAppSmtpEmailOtp({
-              emailOtps,
-              email: body.email,
-              mode,
-              sender: authEmailOtpSender,
-            });
-            provider = otp.provider;
+            if (!authEmailSmtpReady()) {
+              const diagnosticError = new Error(publicEmailOtpErrorMessage(supabaseError));
+              diagnosticError.authOtpDiagnostics = publicAuthOtpDiagnostics({ supabaseError });
+              throw diagnosticError;
+            }
+            try {
+              otp = await requestAppSmtpEmailOtp({
+                emailOtps,
+                email: body.email,
+                mode,
+                sender: authEmailOtpSender,
+              });
+              provider = otp.provider;
+            } catch (appSmtpError) {
+              const diagnosticError = new Error("Supabase OTP failed and EazInvoice app SMTP fallback also failed. Check EMAIL_SMTP_* settings in Render.");
+              diagnosticError.authOtpDiagnostics = publicAuthOtpDiagnostics({ supabaseError, appSmtpError });
+              throw diagnosticError;
+            }
           }
         } else {
           otp = emailOtps.request({
@@ -1274,6 +1357,7 @@ export function createServer(options = {}) {
         const isRateLimit = /rate limit/i.test(error.message || "");
         sendJson(res, isRateLimit ? 429 : 400, {
           error: publicEmailOtpErrorMessage(error),
+          diagnostics: error.authOtpDiagnostics || publicAuthOtpDiagnostics(),
         });
       }
       return;
@@ -2419,6 +2503,39 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/business/audit-events" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listBusinessAuditEvents(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          companyId: url.searchParams.get("companyId") || null,
+          category: url.searchParams.get("category") || "",
+          action: url.searchParams.get("action") || "",
+          outcome: url.searchParams.get("outcome") || "",
+          actor: url.searchParams.get("actor") || "",
+          dateFrom: url.searchParams.get("dateFrom") || "",
+          dateTo: url.searchParams.get("dateTo") || "",
+          limit: url.searchParams.get("limit") || 50,
+        }));
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/business/notifications" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listBusinessNotifications(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          companyId: url.searchParams.get("companyId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+
     if (url.pathname === "/business/settings" && req.method === "GET") {
       try {
         sendJson(res, 200, api.getBusinessSettings(user, {
@@ -2436,6 +2553,42 @@ export function createServer(options = {}) {
       try {
         const body = await readBody(req);
         const settings = api.updateBusinessSettings(user, body, { previewPlan });
+        if (body.emailSettings) {
+          await recordBusinessAudit(user, {
+            ownerUserId: body.workspaceOwnerUserId || user.id,
+            companyId: body.companyId || null,
+            category: "smtp",
+            action: "settings.email_saved",
+            outcome: "success",
+            targetType: "business_settings",
+            targetId: settings.id,
+            message: "Business email settings were saved.",
+            metadata: {
+              smtpHost: body.emailSettings.smtpHost,
+              smtpPort: body.emailSettings.smtpPort,
+              fromEmail: body.emailSettings.fromEmail,
+              smtpPass: body.emailSettings.smtpPass,
+            },
+          }, { previewPlan }, "business-settings-email-audit");
+        }
+        if (body.paymentSettings) {
+          await recordBusinessAudit(user, {
+            ownerUserId: body.workspaceOwnerUserId || user.id,
+            companyId: body.companyId || null,
+            category: "gateway",
+            action: "settings.gateway_saved",
+            outcome: "success",
+            targetType: "business_settings",
+            targetId: settings.id,
+            message: "Business Razorpay gateway settings were saved.",
+            metadata: {
+              keyId: body.paymentSettings.keyId,
+              paymentLinkEnabled: body.paymentSettings.paymentLinkEnabled,
+              keySecret: body.paymentSettings.keySecret,
+              webhookSecret: body.paymentSettings.webhookSecret,
+            },
+          }, { previewPlan }, "business-settings-gateway-audit");
+        }
         const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-settings-update");
         sendJson(res, 200, { ...settings, businessWorkspaceSync });
       } catch (error) {
@@ -2477,6 +2630,17 @@ export function createServer(options = {}) {
               recipient,
               action: "smtp_test",
             }, { previewPlan });
+            await recordBusinessAudit(user, {
+              ownerUserId: body.workspaceOwnerUserId || user.id,
+              companyId: body.companyId || null,
+              category: "smtp",
+              action: "smtp.test_email",
+              outcome: "sent",
+              targetType: "email",
+              targetLabel: recipient,
+              message: `SMTP test email sent to ${recipient}.`,
+              metadata: { recipient, status: "sent" },
+            }, { previewPlan }, "business-smtp-test-sent-audit");
             sendJson(res, 200, {
               ...emailDelivery,
               businessWorkspaceSync,
@@ -2496,6 +2660,17 @@ export function createServer(options = {}) {
               recipient,
               action: "smtp_test",
             }, { previewPlan });
+            await recordBusinessAudit(user, {
+              ownerUserId: body.workspaceOwnerUserId || user.id,
+              companyId: body.companyId || null,
+              category: "smtp",
+              action: "smtp.test_email",
+              outcome: "failed",
+              targetType: "email",
+              targetLabel: recipient,
+              message: deliveryMessage,
+              metadata: { recipient, status: "failed" },
+            }, { previewPlan }, "business-smtp-test-failed-audit");
             sendJson(res, 400, {
               error: deliveryMessage,
               businessWorkspaceSync,
@@ -2508,6 +2683,17 @@ export function createServer(options = {}) {
           }
           return;
         }
+        await recordBusinessAudit(user, {
+          ownerUserId: body.workspaceOwnerUserId || user.id,
+          companyId: body.companyId || null,
+          category: "smtp",
+          action: "smtp.validate",
+          outcome: status === "ready" ? "success" : "failed",
+          targetType: "business_settings",
+          targetId: validated.id || "",
+          message: status === "ready" ? "SMTP settings passed validation." : (validated.emailSettings?.lastTestMessage || "SMTP settings validation failed."),
+          metadata: { status },
+        }, { previewPlan }, "business-smtp-validation-audit");
         sendJson(res, 200, { ...validated, businessWorkspaceSync });
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
@@ -2559,6 +2745,18 @@ export function createServer(options = {}) {
           || "",
         ).trim();
         if (!businessSmtpReady(deliverySettings)) {
+          await recordBusinessAudit(user, {
+            ownerUserId: body.workspaceOwnerUserId || user.id,
+            companyId: body.companyId || null,
+            category: "smtp",
+            action: "smtp.compliance_reminder",
+            outcome: "not_configured",
+            targetType: "compliance_task",
+            targetId: taskId,
+            targetLabel: task.complianceName || taskId,
+            message: smtpNotConfiguredMessage("send compliance reminders"),
+            metadata: { recipient },
+          }, { previewPlan }, "business-compliance-reminder-not-configured-audit");
           sendJson(res, 400, {
             error: "Configure and validate Business SMTP settings before sending compliance reminders.",
             deliveryStatus: "not_configured",
@@ -2575,6 +2773,18 @@ export function createServer(options = {}) {
             status: "sent",
             message: `Reminder sent to ${recipient}`,
           }, { previewPlan });
+          await recordBusinessAudit(user, {
+            ownerUserId: body.workspaceOwnerUserId || user.id,
+            companyId: body.companyId || null,
+            category: "smtp",
+            action: "smtp.compliance_reminder",
+            outcome: "sent",
+            targetType: "compliance_task",
+            targetId: taskId,
+            targetLabel: task.complianceName || taskId,
+            message: `Compliance reminder sent to ${recipient}.`,
+            metadata: { recipient },
+          }, { previewPlan }, "business-compliance-reminder-sent-audit");
           const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-compliance-reminder-sent");
           sendJson(res, 200, {
             ...updatedTask,
@@ -2591,6 +2801,18 @@ export function createServer(options = {}) {
             status: "failed",
             message: deliveryMessage,
           }, { previewPlan });
+          await recordBusinessAudit(user, {
+            ownerUserId: body.workspaceOwnerUserId || user.id,
+            companyId: body.companyId || null,
+            category: "smtp",
+            action: "smtp.compliance_reminder",
+            outcome: "failed",
+            targetType: "compliance_task",
+            targetId: taskId,
+            targetLabel: task.complianceName || taskId,
+            message: deliveryMessage,
+            metadata: { recipient },
+          }, { previewPlan }, "business-compliance-reminder-failed-audit");
           const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-compliance-reminder-failed");
           sendJson(res, 400, {
             error: deliveryMessage,
@@ -2610,6 +2832,18 @@ export function createServer(options = {}) {
         const taskId = decodeURIComponent(url.pathname.split("/").pop() || "");
         const body = await readBody(req);
         const task = api.updateComplianceTask(user, taskId, body, { previewPlan });
+        await recordBusinessAudit(user, {
+          ownerUserId: body.workspaceOwnerUserId || user.id,
+          companyId: body.companyId || null,
+          category: "compliance",
+          action: "compliance.task_updated",
+          outcome: "success",
+          targetType: "compliance_task",
+          targetId: taskId,
+          targetLabel: task.complianceName || taskId,
+          message: `Compliance task updated to ${task.status || "updated"}.`,
+          metadata: { status: task.status, dueDate: task.dueDate },
+        }, { previewPlan }, "business-compliance-task-update-audit");
         const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-compliance-task-update");
         sendJson(res, 200, { ...task, businessWorkspaceSync });
       } catch (error) {
@@ -2654,6 +2888,30 @@ export function createServer(options = {}) {
             inviteDeliveryMessage: deliveryMessage,
           }, { previewPlan });
         }
+        await recordBusinessAudit(user, {
+          ownerUserId: body.workspaceOwnerUserId || user.id,
+          companyId: body.companyId || null,
+          category: "team",
+          action: "team.sub_user_created",
+          outcome: "success",
+          targetType: "team_member",
+          targetId: member.id,
+          targetLabel: member.email,
+          message: `${member.role || "viewer"} access was created for ${member.email}.`,
+          metadata: { role: member.role, status: member.status },
+        }, { previewPlan }, "business-team-created-audit");
+        await recordBusinessAudit(user, {
+          ownerUserId: body.workspaceOwnerUserId || user.id,
+          companyId: body.companyId || null,
+          category: "smtp",
+          action: "smtp.sub_user_access_email",
+          outcome: deliveryStatus,
+          targetType: "team_member",
+          targetId: member.id,
+          targetLabel: member.email,
+          message: deliveryMessage,
+          metadata: { recipient: member.email, deliveryStatus },
+        }, { previewPlan }, "business-team-delivery-audit");
         const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-team-invite");
         sendJson(res, 201, {
           ...member,
@@ -2672,6 +2930,18 @@ export function createServer(options = {}) {
         const id = url.pathname.split("/")[3];
         const body = await readBody(req);
         const member = api.updateTeamMember(user, id, body, { previewPlan });
+        await recordBusinessAudit(user, {
+          ownerUserId: body.workspaceOwnerUserId || member.ownerUserId || user.id,
+          companyId: body.companyId || member.companyId || null,
+          category: "team",
+          action: "team.member_updated",
+          outcome: "success",
+          targetType: "team_member",
+          targetId: member.id,
+          targetLabel: member.email,
+          message: `Sub-user access updated for ${member.email}.`,
+          metadata: { role: member.role, status: member.status },
+        }, { previewPlan }, "business-team-update-audit");
         const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-team-update");
         sendJson(res, 200, { ...member, businessWorkspaceSync });
       } catch (error) {
@@ -2704,6 +2974,30 @@ export function createServer(options = {}) {
         const body = await readBody(req);
         const approval = api.createApprovalRequest(user, body, { previewPlan });
         const notification = await sendBusinessApprovalNotification(api, user, approval, body, { previewPlan }, "created");
+        await recordBusinessAudit(user, {
+          ownerUserId: body.workspaceOwnerUserId || approval.ownerUserId || user.id,
+          companyId: body.companyId || approval.companyId || null,
+          category: "approval",
+          action: "approval.request_created",
+          outcome: "success",
+          targetType: "approval_request",
+          targetId: approval.id,
+          targetLabel: approval.documentNumber,
+          message: `Approval requested for ${approval.documentNumber || "a document"}.`,
+          metadata: { documentType: approval.documentType, notificationStatus: notification.notificationStatus },
+        }, { previewPlan }, "business-approval-create-audit");
+        await recordBusinessAudit(user, {
+          ownerUserId: body.workspaceOwnerUserId || approval.ownerUserId || user.id,
+          companyId: body.companyId || approval.companyId || null,
+          category: "smtp",
+          action: "smtp.approval_notification",
+          outcome: notification.notificationStatus || "not_configured",
+          targetType: "approval_request",
+          targetId: approval.id,
+          targetLabel: approval.documentNumber,
+          message: notification.notificationMessage || "",
+          metadata: { recipient: notification.notificationRecipient || "" },
+        }, { previewPlan }, "business-approval-notification-audit");
         const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-approval-create");
         sendJson(res, 201, { ...approval, ...notification, businessWorkspaceSync });
       } catch (error) {
@@ -2718,6 +3012,30 @@ export function createServer(options = {}) {
         const body = await readBody(req);
         const approval = api.decideApprovalRequest(user, id, body, { previewPlan });
         const notification = await sendBusinessApprovalNotification(api, user, approval, body, { previewPlan }, "decision");
+        await recordBusinessAudit(user, {
+          ownerUserId: body.workspaceOwnerUserId || approval.ownerUserId || user.id,
+          companyId: body.companyId || approval.companyId || null,
+          category: "approval",
+          action: "approval.request_decided",
+          outcome: "success",
+          targetType: "approval_request",
+          targetId: approval.id,
+          targetLabel: approval.documentNumber,
+          message: `Approval request ${approval.status || "updated"} for ${approval.documentNumber || "a document"}.`,
+          metadata: { status: approval.status, notificationStatus: notification.notificationStatus },
+        }, { previewPlan }, "business-approval-decision-audit");
+        await recordBusinessAudit(user, {
+          ownerUserId: body.workspaceOwnerUserId || approval.ownerUserId || user.id,
+          companyId: body.companyId || approval.companyId || null,
+          category: "smtp",
+          action: "smtp.approval_notification",
+          outcome: notification.notificationStatus || "not_configured",
+          targetType: "approval_request",
+          targetId: approval.id,
+          targetLabel: approval.documentNumber,
+          message: notification.notificationMessage || "",
+          metadata: { recipient: notification.notificationRecipient || "" },
+        }, { previewPlan }, "business-approval-decision-notification-audit");
         const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-approval-decision");
         sendJson(res, 200, { ...approval, ...notification, businessWorkspaceSync });
       } catch (error) {
@@ -2742,6 +3060,18 @@ export function createServer(options = {}) {
       try {
         const body = await readBody(req);
         const apiKey = api.createApiKey(user, body, { previewPlan });
+        await recordBusinessAudit(user, {
+          ownerUserId: body.workspaceOwnerUserId || apiKey.ownerUserId || user.id,
+          companyId: body.companyId || apiKey.companyId || null,
+          category: "api_key",
+          action: "api_key.created",
+          outcome: "success",
+          targetType: "api_key",
+          targetId: apiKey.id,
+          targetLabel: apiKey.label,
+          message: `API key created for ${apiKey.label}.`,
+          metadata: { scopes: apiKey.scopes, tokenPreview: apiKey.tokenPreview, token: apiKey.token },
+        }, { previewPlan }, "business-api-key-create-audit");
         const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-api-key-create");
         sendJson(res, 201, { ...apiKey, businessWorkspaceSync });
       } catch (error) {
@@ -2757,6 +3087,18 @@ export function createServer(options = {}) {
           previewPlan,
           workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
         });
+        await recordBusinessAudit(user, {
+          ownerUserId: url.searchParams.get("workspaceOwnerUserId") || apiKey.ownerUserId || user.id,
+          companyId: apiKey.companyId || null,
+          category: "api_key",
+          action: "api_key.revoked",
+          outcome: "success",
+          targetType: "api_key",
+          targetId: apiKey.id,
+          targetLabel: apiKey.label,
+          message: `API key revoked for ${apiKey.label}.`,
+          metadata: { tokenPreview: apiKey.tokenPreview },
+        }, { previewPlan }, "business-api-key-revoke-audit");
         const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-api-key-revoke");
         sendJson(res, 200, { ...apiKey, businessWorkspaceSync });
       } catch (error) {
@@ -2957,6 +3299,24 @@ export function createServer(options = {}) {
           paymentDate: body.paymentDate,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
         }, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null });
+        await recordBusinessAudit(user, {
+          ownerUserId: body.workspaceOwnerUserId || recorded.invoice.ownerUserId || user.id,
+          companyId: recorded.invoice.companyId || null,
+          category: "payment",
+          action: "payment.invoice_recorded",
+          outcome: "success",
+          targetType: "invoice",
+          targetId: recorded.invoice.id,
+          targetLabel: recorded.invoice.invoiceNumber,
+          message: `Invoice payment recorded for ${recorded.payment.currency} ${recorded.payment.amount}.`,
+          metadata: {
+            amount: recorded.payment.amount,
+            currency: recorded.payment.currency,
+            mode: recorded.payment.mode,
+            reference: recorded.payment.reference,
+            paymentStatus: recorded.invoice.paymentStatus,
+          },
+        }, { previewPlan }, "business-invoice-payment-audit");
         const reportSync = await syncInvoicePaymentReportRows(recorded);
         sendJson(res, 201, { ...recorded, reportSync });
       } catch (error) {
@@ -2987,6 +3347,18 @@ export function createServer(options = {}) {
           url: body.url,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
         }, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null });
+        await recordBusinessAudit(user, {
+          ownerUserId: body.workspaceOwnerUserId || invoice.ownerUserId || user.id,
+          companyId: invoice.companyId || null,
+          category: "gateway",
+          action: "gateway.invoice_payment_link_created",
+          outcome: "success",
+          targetType: "invoice",
+          targetId: invoice.id,
+          targetLabel: invoice.invoiceNumber,
+          message: `Payment link created for invoice ${invoice.invoiceNumber || invoice.id}.`,
+          metadata: { gateway: invoice.paymentGateway, amount: invoice.paymentLink?.amount, currency: invoice.paymentLink?.currency },
+        }, { previewPlan }, "business-invoice-payment-link-audit");
         const reportSync = await syncInvoiceReportRows(invoice, "invoice-payment-link");
         sendJson(res, 201, { ...invoice, reportSync });
       } catch (error) {
@@ -3109,6 +3481,24 @@ export function createServer(options = {}) {
           paymentDate: body.paymentDate,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
         }, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null });
+        await recordBusinessAudit(user, {
+          ownerUserId: body.workspaceOwnerUserId || recorded.purchaseOrder.ownerUserId || user.id,
+          companyId: recorded.purchaseOrder.companyId || null,
+          category: "payment",
+          action: "payment.purchase_order_recorded",
+          outcome: "success",
+          targetType: "purchase_order",
+          targetId: recorded.purchaseOrder.id,
+          targetLabel: recorded.purchaseOrder.poNumber || recorded.purchaseOrder.documentNumber,
+          message: `PO/WO payment recorded for ${recorded.payment.currency} ${recorded.payment.amount}.`,
+          metadata: {
+            amount: recorded.payment.amount,
+            currency: recorded.payment.currency,
+            mode: recorded.payment.mode,
+            reference: recorded.payment.reference,
+            paymentStatus: recorded.purchaseOrder.paymentStatus,
+          },
+        }, { previewPlan }, "business-purchase-order-payment-audit");
         const reportSync = await syncPurchaseOrderReportRows(recorded?.purchaseOrder, "purchase-order-payment");
         sendJson(res, 201, { ...recorded, reportSync });
       } catch (error) {

@@ -37,6 +37,7 @@ function expectedCounts(state) {
     eazinvoice_team_members: toArray(state.teamMembers).length,
     eazinvoice_approval_requests: toArray(state.approvalRequests).length,
     eazinvoice_api_keys: toArray(state.apiKeys).length,
+    eazinvoice_business_audit_events: toArray(state.businessAuditEvents).length,
   };
 }
 

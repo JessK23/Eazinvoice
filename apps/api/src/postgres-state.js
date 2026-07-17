@@ -17,6 +17,7 @@ export const STATE_COLLECTIONS = [
   "approvalRequests",
   "apiKeys",
   "businessSettings",
+  "businessAuditEvents",
 ];
 
 export const STATE_KEY = "primary";
@@ -70,6 +71,7 @@ const COUNTER_COLLECTIONS = {
   approvalRequest: "approvalRequests",
   apiKey: "apiKeys",
   businessSetting: "businessSettings",
+  businessAuditEvent: "businessAuditEvents",
 };
 
 const COUNTER_PREFIXES = {
@@ -89,6 +91,7 @@ const COUNTER_PREFIXES = {
   approvalRequest: "apr",
   apiKey: "key",
   businessSetting: "bs",
+  businessAuditEvent: "baud",
 };
 
 export function deriveCounters(state) {

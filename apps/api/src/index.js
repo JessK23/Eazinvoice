@@ -535,6 +535,218 @@ export function createApi(deps = {}) {
       return store.recordBusinessEmailDelivery(access.owner, input);
     },
 
+    recordBusinessAuditEvent(user, input = {}, options = {}) {
+      const targetOwnerUserId = input.ownerUserId || input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id;
+      const access = this.requireBusinessWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: targetOwnerUserId,
+      }, "read");
+      return store.recordBusinessAuditEvent(user, {
+        ...input,
+        ownerUserId: access.ownerUserId,
+        companyId: input.companyId || options.companyId || access.companyId || null,
+        workspaceRole: input.workspaceRole || access.role || "",
+      });
+    },
+
+    listBusinessAuditEvents(user, options = {}) {
+      const access = this.requireBusinessWorkspaceAccess(user, options, "read");
+      return store.listBusinessAuditEventsForWorkspace(access.ownerUserId, {
+        ...options,
+        companyId: options.companyId || "",
+      });
+    },
+
+    listBusinessNotifications(user, options = {}) {
+      const access = this.requireBusinessWorkspaceAccess(user, options, "read");
+      const companyId = options.companyId || access.companyId || null;
+      const settings = store.getBusinessSettingsForUser(access.owner, companyId) || {
+        emailSettings: {},
+        paymentSettings: {},
+        complianceProfile: {},
+      };
+      const compliance = store.getBusinessComplianceDashboard(access.owner, companyId);
+      const approvals = store.listApprovalRequestsForUser(access.owner);
+      const teamMembers = store.listTeamMembersForWorkspace(access.ownerUserId);
+      const apiKeys = store.listApiKeysForUser(access.owner);
+      const auditEvents = store.listBusinessAuditEventsForWorkspace(access.ownerUserId, {
+        companyId: companyId || "",
+        limit: 100,
+      });
+      const emailSettings = settings.emailSettings || {};
+      const paymentSettings = settings.paymentSettings || {};
+      const reminderCounts = compliance?.complianceEngine?.reminders?.counts || {};
+      const complianceSummary = compliance?.complianceEngine?.summary || {};
+      const notifications = [];
+      const addNotification = (notification) => {
+        notifications.push({
+          id: notification.id,
+          severity: notification.severity || "green",
+          category: notification.category || "workspace",
+          title: notification.title || "Workspace notice",
+          message: notification.message || "",
+          actionLabel: notification.actionLabel || "Open",
+          targetSection: notification.targetSection || "workspace-audit-trail",
+          sourceType: notification.sourceType || "computed",
+          sourceId: notification.sourceId || "",
+          createdAt: notification.createdAt || new Date().toISOString(),
+        });
+      };
+
+      const smtpConfigured = Boolean(emailSettings.smtpHost && emailSettings.smtpPort && emailSettings.smtpUser && emailSettings.fromEmail && emailSettings.smtpPassConfigured);
+      const smtpStatus = String(emailSettings.lastDeliveryStatus || emailSettings.lastTestStatus || "").toLowerCase();
+      if (!smtpConfigured) {
+        addNotification({
+          id: "smtp.not_configured",
+          severity: "amber",
+          category: "smtp",
+          title: "Business SMTP is not fully configured",
+          message: "Invite emails, approval notices, and compliance reminders need validated business SMTP settings.",
+          actionLabel: "Open Email Settings",
+          targetSection: "workspace-email-settings",
+          sourceType: "business_settings",
+          sourceId: settings.id || "",
+        });
+      } else if (["failed", "error"].includes(smtpStatus) || smtpStatus.includes("missing:")) {
+        addNotification({
+          id: "smtp.delivery_failed",
+          severity: "red",
+          category: "smtp",
+          title: "Business SMTP needs attention",
+          message: emailSettings.lastDeliveryMessage || emailSettings.lastTestStatus || "The latest SMTP validation or delivery attempt failed.",
+          actionLabel: "Check SMTP",
+          targetSection: "workspace-email-settings",
+          sourceType: "business_settings",
+          sourceId: settings.id || "",
+        });
+      }
+
+      const gatewayReady = Boolean(paymentSettings.keyId && paymentSettings.keySecretConfigured && paymentSettings.webhookSecretConfigured && paymentSettings.paymentLinkEnabled);
+      if (!gatewayReady) {
+        addNotification({
+          id: "gateway.not_ready",
+          severity: "amber",
+          category: "gateway",
+          title: "Business payment links are not ready",
+          message: "Add Razorpay key, secret, webhook secret, and enable payment links before invoice collection can run from the business account.",
+          actionLabel: "Open Gateway",
+          targetSection: "workspace-gateway-settings",
+          sourceType: "business_settings",
+          sourceId: settings.id || "",
+        });
+      }
+
+      if (Number(reminderCounts.overdue || 0) > 0) {
+        addNotification({
+          id: "compliance.overdue",
+          severity: "red",
+          category: "compliance",
+          title: `${reminderCounts.overdue} compliance item${reminderCounts.overdue === 1 ? "" : "s"} overdue`,
+          message: "Review overdue statutory, GST, audit, or filing tasks from the compliance profile.",
+          actionLabel: "Open Compliance",
+          targetSection: "workspace-compliance-profile",
+          sourceType: "compliance_dashboard",
+        });
+      } else if (Number(reminderCounts.actionable || reminderCounts.dueThisMonth || 0) > 0) {
+        addNotification({
+          id: "compliance.actionable",
+          severity: "amber",
+          category: "compliance",
+          title: `${reminderCounts.actionable || reminderCounts.dueThisMonth} compliance item${(reminderCounts.actionable || reminderCounts.dueThisMonth) === 1 ? "" : "s"} need follow-up`,
+          message: "Use the compliance profile to update status, responsible person, and reminder schedule.",
+          actionLabel: "Open Compliance",
+          targetSection: "workspace-compliance-profile",
+          sourceType: "compliance_dashboard",
+        });
+      } else if (Number(complianceSummary.pending || 0) > 0) {
+        addNotification({
+          id: "compliance.tracked",
+          severity: "green",
+          category: "compliance",
+          title: `${complianceSummary.pending} compliance item${complianceSummary.pending === 1 ? "" : "s"} being tracked`,
+          message: "No compliance reminders are currently overdue or due this month.",
+          actionLabel: "Open Compliance",
+          targetSection: "workspace-compliance-profile",
+          sourceType: "compliance_dashboard",
+        });
+      }
+
+      const pendingApprovals = approvals.filter((approval) => String(approval.status || "pending").toLowerCase() === "pending");
+      if (pendingApprovals.length) {
+        addNotification({
+          id: "approvals.pending",
+          severity: "amber",
+          category: "approval",
+          title: `${pendingApprovals.length} approval request${pendingApprovals.length === 1 ? "" : "s"} pending`,
+          message: "Open the approval queue to approve or reject pending invoice, PO, or WO requests.",
+          actionLabel: "Open Approvals",
+          targetSection: "workspace-approval-queue",
+          sourceType: "approval_requests",
+        });
+      }
+
+      const failedEvents = auditEvents.filter((event) => ["failed", "blocked", "not_configured"].includes(String(event.outcome || "").toLowerCase()));
+      failedEvents.slice(0, 3).forEach((event) => {
+        addNotification({
+          id: `audit.${event.id}`,
+          severity: String(event.outcome || "").toLowerCase() === "failed" ? "red" : "amber",
+          category: event.category || "audit",
+          title: event.message || "Workspace event needs review",
+          message: `${event.category || "Workspace"} event: ${event.action || "activity"} (${event.outcome || "info"}).`,
+          actionLabel: "Open Audit Trail",
+          targetSection: "workspace-audit-trail",
+          sourceType: "business_audit_event",
+          sourceId: event.id,
+          createdAt: event.createdAt,
+        });
+      });
+
+      const activeApiKeys = apiKeys.filter((key) => String(key.status || "active").toLowerCase() === "active");
+      if (activeApiKeys.length) {
+        addNotification({
+          id: "api_keys.active",
+          severity: "green",
+          category: "api_key",
+          title: `${activeApiKeys.length} active API key${activeApiKeys.length === 1 ? "" : "s"}`,
+          message: "Review API keys regularly and revoke keys that are no longer used.",
+          actionLabel: "Open API Access",
+          targetSection: "workspace-api-access",
+          sourceType: "api_keys",
+        });
+      }
+
+      if (teamMembers.length) {
+        addNotification({
+          id: "team.active",
+          severity: "green",
+          category: "team",
+          title: `${teamMembers.length} sub-user${teamMembers.length === 1 ? "" : "s"} configured`,
+          message: "Sub-user access is controlled by verified email login and workspace role permissions.",
+          actionLabel: "Open Sub-users",
+          targetSection: "workspace-team-access",
+          sourceType: "team_members",
+        });
+      }
+
+      if (!notifications.some((notification) => ["red", "amber"].includes(notification.severity))) {
+        addNotification({
+          id: "workspace.healthy",
+          severity: "green",
+          category: "workspace",
+          title: "Business workspace has no urgent operational alerts",
+          message: `Compliance pending: ${complianceSummary.pending || 0}. SMTP, gateway, approvals, team, and API status are available below.`,
+          actionLabel: "Open Audit Trail",
+          targetSection: "workspace-audit-trail",
+          sourceType: "computed",
+        });
+      }
+
+      const severityOrder = { red: 0, amber: 1, green: 2 };
+      return notifications
+        .sort((a, b) => (severityOrder[a.severity] ?? 3) - (severityOrder[b.severity] ?? 3) || String(b.createdAt).localeCompare(String(a.createdAt)))
+        .slice(0, 25);
+    },
+
     getBusinessComplianceDashboard(user, options = {}) {
       const access = this.requireBusinessWorkspaceAccess(user, options, "read");
       return store.getBusinessComplianceDashboard(access.owner, options.companyId || access.companyId || null);

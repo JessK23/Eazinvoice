@@ -176,6 +176,13 @@ const apiKeysList = document.getElementById("apiKeysList");
 const approvalRequestForm = document.getElementById("approvalRequestForm");
 const approvalRequestStatus = document.getElementById("approvalRequestStatus");
 const approvalRequestsList = document.getElementById("approvalRequestsList");
+const businessNotificationCount = document.getElementById("businessNotificationCount");
+const businessNotificationList = document.getElementById("businessNotificationList");
+const businessAuditCount = document.getElementById("businessAuditCount");
+const businessAuditList = document.getElementById("businessAuditList");
+const businessAuditFilterForm = document.getElementById("businessAuditFilterForm");
+const businessAuditClearFilters = document.getElementById("businessAuditClearFilters");
+const businessAuditFilterStatus = document.getElementById("businessAuditFilterStatus");
 const workspaceTargetLinks = document.querySelectorAll("[data-workspace-target]");
 const workspaceSectionSelect = document.getElementById("workspaceSectionSelect");
 const workspaceSectionHint = document.getElementById("workspaceSectionHint");
@@ -204,6 +211,8 @@ let dashboardApiKeys = [];
 let dashboardBusinessSettings = { emailSettings: {}, paymentSettings: {}, complianceProfile: {} };
 let dashboardBusinessCompliance = null;
 let dashboardBusinessWorkspaces = [];
+let dashboardBusinessAuditEvents = [];
+let dashboardBusinessNotifications = [];
 let selectedBusinessWorkspaceOwnerId = window.localStorage?.getItem("eazinvoice_business_workspace_owner") || "";
 let currentReportExport = { title: "Detailed Report", headers: [], rows: [] };
 let razorpayCheckoutPromise = null;
@@ -388,6 +397,18 @@ const WORKSPACE_SECTION_META = [
     description: "Review requests for invoices, PO, and WO records.",
     permission: "approvals",
   },
+  {
+    id: "workspace-notification-center",
+    title: "Notifications",
+    description: "Operational alerts from SMTP, gateway, compliance, approvals, team, API, and audit data.",
+    permission: "read",
+  },
+  {
+    id: "workspace-audit-trail",
+    title: "Audit Trail",
+    description: "Review workspace activity, security, delivery, payment, and gateway events.",
+    permission: "read",
+  },
 ];
 
 function businessWorkspaceSectionCards(enabled) {
@@ -421,6 +442,16 @@ function businessWorkspaceSectionCards(enabled) {
     "workspace-approval-queue": dashboardApprovalRequests.length
       ? { status: `${dashboardApprovalRequests.length} request${dashboardApprovalRequests.length === 1 ? "" : "s"}`, tone: "ready" }
       : { status: "Use when needed", tone: "neutral" },
+    "workspace-notification-center": dashboardBusinessNotifications.some((notification) => notification.severity === "red")
+      ? { status: "Critical alert", tone: "danger" }
+      : dashboardBusinessNotifications.some((notification) => notification.severity === "amber")
+        ? { status: `${dashboardBusinessNotifications.length} alert${dashboardBusinessNotifications.length === 1 ? "" : "s"}`, tone: "attention" }
+        : dashboardBusinessNotifications.length
+          ? { status: `${dashboardBusinessNotifications.length} healthy note${dashboardBusinessNotifications.length === 1 ? "" : "s"}`, tone: "ready" }
+          : { status: "No alerts", tone: "neutral" },
+    "workspace-audit-trail": dashboardBusinessAuditEvents.length
+      ? { status: `${dashboardBusinessAuditEvents.length} event${dashboardBusinessAuditEvents.length === 1 ? "" : "s"}`, tone: "ready" }
+      : { status: "No events yet", tone: "neutral" },
   };
   return WORKSPACE_SECTION_META.map((item) => {
     const allowed = enabled && workspaceCan(item.permission);
@@ -657,6 +688,96 @@ function renderBusinessWorkspaceStatusBoard(enabled) {
       <small>${escapeHtml(enabled ? card.detail : "Upgrade to Business to use this workspace tool.")}</small>
     </article>
   `).join("");
+}
+
+const AUDIT_ACTION_LABELS = {
+  "team.sub_user_created": "Sub-user Created",
+  "team.member_updated": "Sub-user Updated",
+  "approval.request_created": "Approval Requested",
+  "approval.request_decided": "Approval Decided",
+  "smtp.validate": "SMTP Validated",
+  "smtp.test_email": "SMTP Test Email",
+  "smtp.sub_user_access_email": "Sub-user Access Email",
+  "smtp.approval_notification": "Approval Notification Email",
+  "smtp.compliance_reminder": "Compliance Reminder Email",
+  "api_key.created": "API Key Created",
+  "api_key.revoked": "API Key Revoked",
+  "payment.invoice_recorded": "Invoice Payment Recorded",
+  "payment.purchase_order_recorded": "PO/WO Payment Recorded",
+  "gateway.invoice_payment_link_created": "Invoice Payment Link Created",
+  "gateway.invoice_payment_captured": "Gateway Payment Captured",
+  "gateway.subscription_activated": "Subscription Activated",
+  "settings.email_saved": "Email Settings Saved",
+  "settings.gateway_saved": "Gateway Settings Saved",
+  "compliance.task_updated": "Compliance Task Updated",
+};
+
+function auditActionLabel(action = "") {
+  const key = String(action || "").toLowerCase();
+  return AUDIT_ACTION_LABELS[key] || key.split(/[._:-]+/).filter(Boolean).map((part) => (
+    part.charAt(0).toUpperCase() + part.slice(1)
+  )).join(" ") || "Workspace Event";
+}
+
+function auditOutcomeTone(outcome = "") {
+  const normalized = String(outcome || "").toLowerCase();
+  if (["failed", "blocked"].includes(normalized)) return "gold";
+  if (normalized === "not_configured") return "gold";
+  if (["success", "sent"].includes(normalized)) return "blue";
+  return "gold";
+}
+
+function auditFilterOptions() {
+  if (!businessAuditFilterForm) return {};
+  const formData = new FormData(businessAuditFilterForm);
+  return {
+    category: formData.get("category") || "",
+    outcome: formData.get("outcome") || "",
+    actor: formData.get("actor") || "",
+    dateFrom: formData.get("dateFrom") || "",
+    dateTo: formData.get("dateTo") || "",
+  };
+}
+
+function auditFilterSummary() {
+  const options = auditFilterOptions();
+  const labels = [
+    options.category ? `category ${options.category}` : "",
+    options.outcome ? `outcome ${options.outcome}` : "",
+    options.actor ? `user ${options.actor}` : "",
+    options.dateFrom ? `from ${options.dateFrom}` : "",
+    options.dateTo ? `to ${options.dateTo}` : "",
+  ].filter(Boolean);
+  return labels.length ? `Filtered by ${labels.join(", ")}.` : "Showing latest workspace events.";
+}
+
+async function refreshBusinessAuditEvents() {
+  if (!canOpenBusinessWorkspace()) {
+    dashboardBusinessAuditEvents = [];
+    return;
+  }
+  dashboardBusinessAuditEvents = await apiClient.listBusinessAuditEvents(token, {
+    ...selectedWorkspaceOptions(),
+    ...auditFilterOptions(),
+    limit: 75,
+  }).catch(() => dashboardBusinessAuditEvents);
+}
+
+async function refreshBusinessNotifications() {
+  if (!canOpenBusinessWorkspace()) {
+    dashboardBusinessNotifications = [];
+    return;
+  }
+  dashboardBusinessNotifications = await apiClient.listBusinessNotifications(token, selectedWorkspaceOptions())
+    .catch(() => dashboardBusinessNotifications);
+}
+
+async function refreshBusinessAuditEventsAndRender() {
+  await Promise.all([
+    refreshBusinessAuditEvents(),
+    refreshBusinessNotifications(),
+  ]);
+  renderBusinessWorkspace();
 }
 
 function isUnlimitedLimit(value) {
@@ -3313,6 +3434,77 @@ function renderBusinessWorkspace() {
       : `<p>${enabled ? "No approval requests yet." : "Approval workflows unlock in Business."}</p>`;
   }
 
+  if (businessAuditCount) {
+    businessAuditCount.textContent = `${dashboardBusinessAuditEvents.length} ${dashboardBusinessAuditEvents.length === 1 ? "event" : "events"}`;
+  }
+  if (businessNotificationCount) {
+    const critical = dashboardBusinessNotifications.filter((notification) => notification.severity === "red").length;
+    const attention = dashboardBusinessNotifications.filter((notification) => notification.severity === "amber").length;
+    businessNotificationCount.textContent = critical
+      ? `${critical} critical`
+      : attention
+        ? `${attention} alert${attention === 1 ? "" : "s"}`
+        : `${dashboardBusinessNotifications.length} note${dashboardBusinessNotifications.length === 1 ? "" : "s"}`;
+    businessNotificationCount.className = `pill ${critical ? "red" : attention ? "gold" : "blue"}`;
+  }
+  if (businessNotificationList) {
+    const severityLabel = { red: "Critical", amber: "Attention", green: "Healthy" };
+    const severityTone = { red: "danger", amber: "attention", green: "ready" };
+    businessNotificationList.innerHTML = dashboardBusinessNotifications.length
+      ? dashboardBusinessNotifications.map((notification) => `
+        <div class="invoice-card business-notification-card" data-severity="${escapeHtml(severityTone[notification.severity] || "ready")}">
+          <div>
+            <strong>${escapeHtml(notification.title)}</strong>
+            <div class="hint">${escapeHtml(notification.message)}</div>
+            <div class="hint">${escapeHtml(notification.category || "workspace")} - ${escapeHtml(notification.sourceType || "computed")}</div>
+          </div>
+          <div class="row-actions">
+            <span class="pill ${notification.severity === "red" ? "red" : notification.severity === "amber" ? "gold" : "blue"}">${escapeHtml(severityLabel[notification.severity] || "Notice")}</span>
+            <button class="ghost small" type="button" data-notification-target="${escapeHtml(notification.targetSection || "workspace-audit-trail")}">
+              ${escapeHtml(notification.actionLabel || "Open")}
+            </button>
+          </div>
+        </div>
+      `).join("")
+      : `<p>${enabled ? "No operational notifications yet." : "Notification Center unlocks in Business."}</p>`;
+  }
+  if (businessAuditList) {
+    businessAuditList.innerHTML = dashboardBusinessAuditEvents.length
+      ? dashboardBusinessAuditEvents.map((event) => {
+        const tone = auditOutcomeTone(event.outcome);
+        const title = auditActionLabel(event.action);
+        const meta = [
+          event.category,
+          event.message,
+          event.actorName || event.actorEmail || "System",
+          formatAiDate(event.createdAt),
+        ].filter(Boolean).join(" - ");
+        const metadata = event.metadata && Object.keys(event.metadata).length
+          ? JSON.stringify(event.metadata, null, 2)
+          : "";
+        return `
+          <div class="invoice-card audit-event-card">
+            <div>
+              <strong>${escapeHtml(title)}</strong>
+              <div class="hint">${escapeHtml(meta)}</div>
+              ${event.targetLabel ? `<div class="hint">${escapeHtml(event.targetType || "target")}: ${escapeHtml(event.targetLabel)}</div>` : ""}
+              ${metadata ? `
+                <details>
+                  <summary>View event details</summary>
+                  <pre>${escapeHtml(metadata)}</pre>
+                </details>
+              ` : ""}
+            </div>
+            <span class="pill ${tone}">${escapeHtml(event.outcome || "info")}</span>
+          </div>
+        `;
+      }).join("")
+      : `<p>${enabled ? "No audit events recorded yet." : "Audit trail unlocks in Business."}</p>`;
+  }
+  if (businessAuditFilterStatus) {
+    businessAuditFilterStatus.textContent = `${auditFilterSummary()} ${dashboardBusinessAuditEvents.length} event${dashboardBusinessAuditEvents.length === 1 ? "" : "s"} shown.`;
+  }
+
   document.querySelectorAll("[data-remove-team]").forEach((button) => {
     button.addEventListener("click", async () => {
       try {
@@ -3321,7 +3513,7 @@ function renderBusinessWorkspace() {
           ...selectedWorkspaceOptions(),
         });
         dashboardTeamMembers = dashboardTeamMembers.map((item) => (item.id === member.id ? member : item));
-        renderBusinessWorkspace();
+        await refreshBusinessAuditEventsAndRender();
       } catch (error) {
         if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not update team member.";
       }
@@ -3333,7 +3525,7 @@ function renderBusinessWorkspace() {
       try {
         const key = await apiClient.revokeApiKey(token, button.getAttribute("data-revoke-key"), selectedWorkspaceOptions());
         dashboardApiKeys = dashboardApiKeys.map((item) => (item.id === key.id ? key : item));
-        renderBusinessWorkspace();
+        await refreshBusinessAuditEventsAndRender();
       } catch (error) {
         if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not revoke API key.";
       }
@@ -3348,7 +3540,7 @@ function renderBusinessWorkspace() {
           ...selectedWorkspaceOptions(),
         });
         dashboardApprovalRequests = dashboardApprovalRequests.map((item) => (item.id === request.id ? request : item));
-        renderBusinessWorkspace();
+        await refreshBusinessAuditEventsAndRender();
         setInlineStatus(
           approvalRequestStatus,
           request.notificationMessage || `Approval request ${request.status}.`,
@@ -3358,6 +3550,12 @@ function renderBusinessWorkspace() {
         if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not update approval request.";
         setInlineStatus(approvalRequestStatus, error.message || "Could not update approval request.", "error");
       }
+    });
+  });
+
+  document.querySelectorAll("[data-notification-target]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openWorkspaceGroup(button.getAttribute("data-notification-target"), true);
     });
   });
 }
@@ -3378,17 +3576,21 @@ async function loadBusinessWorkspace() {
     dashboardApiKeys = [];
     dashboardBusinessSettings = { emailSettings: {}, paymentSettings: {}, complianceProfile: {} };
     dashboardBusinessCompliance = null;
+    dashboardBusinessAuditEvents = [];
+    dashboardBusinessNotifications = [];
     renderBusinessWorkspace();
     return;
   }
   const workspaceOptions = selectedWorkspaceOptions();
-  const [members, approvals, apiKeys, settings, compliance, accountingGst] = await Promise.all([
+  const [members, approvals, apiKeys, settings, compliance, accountingGst, auditEvents, notifications] = await Promise.all([
     apiClient.listTeamMembers(token, workspaceOptions).catch(() => []),
     apiClient.listApprovalRequests(token, workspaceOptions).catch(() => []),
     apiClient.listApiKeys(token, workspaceOptions).catch(() => []),
     apiClient.getBusinessSettings(token, workspaceOptions).catch(() => ({ emailSettings: {}, paymentSettings: {}, complianceProfile: {} })),
     apiClient.getBusinessComplianceDashboard(token, workspaceOptions).catch(() => null),
     apiClient.getGstComplianceSummary(token, workspaceOptions).catch(() => null),
+    apiClient.listBusinessAuditEvents(token, { ...workspaceOptions, ...auditFilterOptions(), limit: 75 }).catch(() => []),
+    apiClient.listBusinessNotifications(token, workspaceOptions).catch(() => []),
   ]);
   dashboardTeamMembers = members;
   dashboardApprovalRequests = approvals;
@@ -3397,6 +3599,8 @@ async function loadBusinessWorkspace() {
   dashboardBusinessCompliance = compliance && accountingGst?.enabled
     ? { ...compliance, accountingGst }
     : compliance;
+  dashboardBusinessAuditEvents = auditEvents;
+  dashboardBusinessNotifications = notifications;
   renderBusinessWorkspace();
 }
 
@@ -3567,6 +3771,18 @@ attachFormValidityStatus(teamInviteForm, teamInviteStatus, "Please enter a valid
 attachFormValidityStatus(apiKeyForm, apiKeyStatus, "Please enter an API key label.");
 attachFormValidityStatus(approvalRequestForm, approvalRequestStatus, "Please enter a document number or draft name.");
 
+businessAuditFilterForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (businessAuditFilterStatus) businessAuditFilterStatus.textContent = "Applying audit filters...";
+  await refreshBusinessAuditEventsAndRender();
+});
+
+businessAuditClearFilters?.addEventListener("click", async () => {
+  businessAuditFilterForm?.reset();
+  if (businessAuditFilterStatus) businessAuditFilterStatus.textContent = "Clearing audit filters...";
+  await refreshBusinessAuditEventsAndRender();
+});
+
 teamInviteForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   setInlineStatus(teamInviteStatus, "Creating sub-user access...", "");
@@ -3587,7 +3803,7 @@ teamInviteForm?.addEventListener("submit", async (event) => {
       deliveryMessage,
       deliveryStatus === "failed" ? "error" : "success",
     );
-    renderBusinessWorkspace();
+    await refreshBusinessAuditEventsAndRender();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not create sub-user access.";
     setInlineStatus(teamInviteStatus, error.message || "Could not create sub-user access.", "error");
@@ -3617,7 +3833,7 @@ businessEmailSettingsForm?.addEventListener("submit", async (event) => {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = "Business email settings saved. SMTP password is hidden after saving.";
     setInlineStatus(businessEmailStatus, "Business email settings saved. SMTP password is hidden after saving.", "success");
     dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token, selectedWorkspaceOptions()).catch(() => dashboardBusinessCompliance);
-    renderBusinessWorkspace();
+    await refreshBusinessAuditEventsAndRender();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not save email settings.";
     setInlineStatus(businessEmailStatus, error.message || "Could not save email settings.", "error");
@@ -3664,7 +3880,7 @@ businessEmailTestButton?.addEventListener("click", async () => {
       status === "ready" ? "success" : "error",
     );
     dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token, selectedWorkspaceOptions()).catch(() => dashboardBusinessCompliance);
-    renderBusinessWorkspace();
+    await refreshBusinessAuditEventsAndRender();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not validate SMTP settings.";
     setInlineStatus(businessEmailStatus, error.message || "Could not validate SMTP settings.", "error");
@@ -3688,7 +3904,7 @@ businessPaymentSettingsForm?.addEventListener("submit", async (event) => {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = "Business Razorpay settings saved. Secrets are hidden after saving.";
     setInlineStatus(businessPaymentStatus, "Business Razorpay settings saved. Secrets are hidden after saving.", "success");
     dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token, selectedWorkspaceOptions()).catch(() => dashboardBusinessCompliance);
-    renderBusinessWorkspace();
+    await refreshBusinessAuditEventsAndRender();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not save payment gateway settings.";
     setInlineStatus(businessPaymentStatus, error.message || "Could not save payment gateway settings.", "error");
@@ -3726,7 +3942,7 @@ businessComplianceForm?.addEventListener("submit", async (event) => {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = "Compliance profile saved for reports, audit trails, and future GST exports.";
     setInlineStatus(businessComplianceStatus, "Compliance profile saved for reports, audit trails, and future GST exports.", "success");
     dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token, selectedWorkspaceOptions()).catch(() => dashboardBusinessCompliance);
-    renderBusinessWorkspace();
+    await refreshBusinessAuditEventsAndRender();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not save compliance profile.";
     setInlineStatus(businessComplianceStatus, error.message || "Could not save compliance profile.", "error");
@@ -3750,7 +3966,7 @@ complianceReadinessList?.addEventListener("click", async (event) => {
   try {
     const result = await apiClient.sendComplianceReminder(token, taskId, selectedWorkspaceOptions());
     dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token, selectedWorkspaceOptions()).catch(() => dashboardBusinessCompliance);
-    renderBusinessWorkspace();
+    await refreshBusinessAuditEventsAndRender();
     setInlineStatus(businessComplianceStatus, result.deliveryMessage || "Compliance reminder sent and logged on the task.", "success");
   } catch (error) {
     setInlineStatus(businessComplianceStatus, error.message || "Could not send compliance reminder.", "error");
@@ -3777,7 +3993,7 @@ complianceReadinessList?.addEventListener("submit", async (event) => {
       notes: formData.get("notes"),
     });
     dashboardBusinessCompliance = await apiClient.getBusinessComplianceDashboard(token, selectedWorkspaceOptions()).catch(() => dashboardBusinessCompliance);
-    renderBusinessWorkspace();
+    await refreshBusinessAuditEventsAndRender();
     setInlineStatus(businessComplianceStatus, "Compliance task saved. The dashboard now remembers this status and reminder.", "success");
   } catch (error) {
     setInlineStatus(businessComplianceStatus, error.message || "Could not save compliance task.", "error");
@@ -3793,7 +4009,7 @@ apiKeyForm?.addEventListener("submit", async (event) => {
     dashboardApiKeys = [key, ...dashboardApiKeys];
     apiKeyForm.reset();
     setInlineStatus(apiKeyStatus, "API key generated. Copy the secret now; it will be hidden after refresh.", "success");
-    renderBusinessWorkspace();
+    await refreshBusinessAuditEventsAndRender();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not create API key.";
     setInlineStatus(apiKeyStatus, error.message || "Could not create API key.", "error");
@@ -3818,7 +4034,7 @@ approvalRequestForm?.addEventListener("submit", async (event) => {
       request.notificationMessage || "Approval request created.",
       request.notificationStatus === "failed" ? "error" : "success",
     );
-    renderBusinessWorkspace();
+    await refreshBusinessAuditEventsAndRender();
   } catch (error) {
     if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not create approval request.";
     setInlineStatus(approvalRequestStatus, error.message || "Could not create approval request.", "error");
