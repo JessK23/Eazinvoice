@@ -20,6 +20,7 @@ const subscriptionTierAudit = document.getElementById("subscriptionTierAudit");
 const billingOrderAudit = document.getElementById("billingOrderAudit");
 const gatewayManagement = document.getElementById("gatewayManagement");
 const recurringSchedulerPanel = document.getElementById("recurringSchedulerPanel");
+const businessNotificationSchedulerPanel = document.getElementById("businessNotificationSchedulerPanel");
 const adminUsers = document.getElementById("adminUsers");
 const kycReviewQueue = document.getElementById("kycReviewQueue");
 const persistenceStatus = document.getElementById("persistenceStatus");
@@ -330,6 +331,96 @@ function renderRecurringScheduler(payload) {
   });
 }
 
+function renderBusinessNotificationScheduler(payload) {
+  if (!businessNotificationSchedulerPanel) return;
+  businessNotificationSchedulerPanel.innerHTML = `
+    <div class="invoice-card gateway-card">
+      <div>
+        <div class="panel-head compact">
+          <div>
+            <strong>Business Notification Delivery</strong>
+            <div class="hint">Runs SMTP notices for Business workspaces: compliance reminders, approval aging, team access notices, gateway attention, and optional workspace digest.</div>
+          </div>
+          ${badge(payload?.enabled ? "AUTO ENABLED" : "MANUAL MODE", payload?.enabled ? "blue" : "gold")}
+        </div>
+        <div class="metric-grid gateway-metrics">
+          <article class="metric-card"><span>Interval</span><strong>${escapeHtml(payload?.intervalHours ?? 24)} hours</strong></article>
+          <article class="metric-card"><span>Approval Age</span><strong>${escapeHtml(payload?.approvalAgeDays ?? 2)} days</strong></article>
+          <article class="metric-card"><span>Max per Workspace</span><strong>${escapeHtml(payload?.maxPerWorkspace ?? 8)}</strong></article>
+          <article class="metric-card"><span>Digest</span><strong>${payload?.digestEnabled ? "Enabled" : "Manual"}</strong></article>
+        </div>
+        <div class="notice compact">${escapeHtml(payload?.note || "Run manually to check due Business workspace notifications now.")}</div>
+        <form id="businessNotificationSchedulerForm" class="audit-filter-bar scheduler-control-form">
+          <label>
+            Target date
+            <input name="targetDate" type="date" value="${escapeHtml(new Date().toISOString().slice(0, 10))}" />
+          </label>
+          <label>
+            Approval age days
+            <input name="approvalAgeDays" type="number" min="0" value="${escapeHtml(payload?.approvalAgeDays ?? 2)}" />
+          </label>
+          <label>
+            Max per workspace
+            <input name="maxPerWorkspace" type="number" min="1" value="${escapeHtml(payload?.maxPerWorkspace ?? 8)}" />
+          </label>
+          <label class="checkbox-line">
+            <input name="includeDigest" type="checkbox" ${payload?.digestEnabled ? "checked" : ""} />
+            Include digest
+          </label>
+          <label class="checkbox-line">
+            <input name="force" type="checkbox" />
+            Force rerun today
+          </label>
+        </form>
+        <p id="businessNotificationSchedulerStatus" class="inline-status" hidden></p>
+      </div>
+      <div class="actions">
+        <button id="runBusinessNotificationScheduler" class="primary" type="button">Run Notifications</button>
+      </div>
+    </div>
+  `;
+
+  const form = businessNotificationSchedulerPanel.querySelector("#businessNotificationSchedulerForm");
+  const status = businessNotificationSchedulerPanel.querySelector("#businessNotificationSchedulerStatus");
+  const runButton = businessNotificationSchedulerPanel.querySelector("#runBusinessNotificationScheduler");
+  runButton?.addEventListener("click", async () => {
+    const formData = new FormData(form);
+    const body = {
+      targetDate: formData.get("targetDate") || new Date().toISOString().slice(0, 10),
+      approvalAgeDays: Number(formData.get("approvalAgeDays") || payload?.approvalAgeDays || 2),
+      maxPerWorkspace: Number(formData.get("maxPerWorkspace") || payload?.maxPerWorkspace || 8),
+      includeDigest: formData.get("includeDigest") === "on",
+      force: formData.get("force") === "on",
+    };
+    runButton.disabled = true;
+    if (status) {
+      status.hidden = false;
+      status.textContent = "Checking Business workspaces and SMTP delivery rules...";
+      status.dataset.tone = "";
+    }
+    try {
+      const result = await apiClient.runAdminBusinessNotificationScheduler(token, body);
+      if (status) {
+        status.textContent = [
+          `${result.sent || 0} sent`,
+          `${result.failed || 0} failed`,
+          `${result.notConfigured || 0} not configured`,
+          `${result.skipped || 0} skipped`,
+          `${result.eligibleWorkspaces || 0} Business workspace(s) checked`,
+        ].join(" - ");
+        status.dataset.tone = result.failed ? "error" : "success";
+      }
+    } catch (error) {
+      if (status) {
+        status.textContent = error.message || "Could not run Business notification automation.";
+        status.dataset.tone = "error";
+      }
+    } finally {
+      runButton.disabled = false;
+    }
+  });
+}
+
 Promise.all([
   apiClient.getAdminMoney(token),
   apiClient.getAdminSubscriptionAudit(token),
@@ -338,7 +429,8 @@ Promise.all([
   apiClient.getAdminGateway(token),
   apiClient.getAdminPersistence(token),
   apiClient.getAdminRecurringStatus(token),
-]).then(([payload, subscriptionAuditPayload, usersPayload, kycPayload, gatewayPayload, persistencePayload, recurringPayload]) => {
+  apiClient.getAdminBusinessNotificationStatus(token),
+]).then(([payload, subscriptionAuditPayload, usersPayload, kycPayload, gatewayPayload, persistencePayload, recurringPayload, businessNotificationPayload]) => {
   const summary = payload.summary;
   if (adminTotal) adminTotal.textContent = money(summary.totalAmount);
   if (adminCount) adminCount.textContent = String(summary.count);
@@ -349,6 +441,7 @@ Promise.all([
   renderBillingOrderAudit(payload.billingOrders || []);
   renderGatewayManagement(gatewayPayload);
   renderRecurringScheduler(recurringPayload);
+  renderBusinessNotificationScheduler(businessNotificationPayload);
   renderPersistenceStatus(persistencePayload);
   renderUserControls(usersPayload.users || []);
   renderKycQueue(kycPayload.companies || []);

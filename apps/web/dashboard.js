@@ -699,6 +699,11 @@ const AUDIT_ACTION_LABELS = {
   "smtp.test_email": "SMTP Test Email",
   "smtp.sub_user_access_email": "Sub-user Access Email",
   "smtp.approval_notification": "Approval Notification Email",
+  "smtp.scheduled_compliance_reminder": "Scheduled Compliance Reminder",
+  "smtp.scheduled_approval_aging": "Scheduled Approval Reminder",
+  "smtp.scheduled_team_access_notice": "Scheduled Team Access Notice",
+  "smtp.scheduled_gateway_attention": "Scheduled Gateway Attention Notice",
+  "smtp.scheduled_business_digest": "Scheduled Business Digest",
   "smtp.compliance_reminder": "Compliance Reminder Email",
   "api_key.created": "API Key Created",
   "api_key.revoked": "API Key Revoked",
@@ -3460,6 +3465,13 @@ function renderBusinessWorkspace() {
           </div>
           <div class="row-actions">
             <span class="pill ${notification.severity === "red" ? "red" : notification.severity === "amber" ? "gold" : "blue"}">${escapeHtml(severityLabel[notification.severity] || "Notice")}</span>
+            ${notification.retryType && notification.retryTargetId ? `
+              <button class="ghost small" type="button"
+                data-notification-retry-type="${escapeHtml(notification.retryType)}"
+                data-notification-retry-target="${escapeHtml(notification.retryTargetId)}">
+                ${escapeHtml(notification.retryLabel || "Retry Email")}
+              </button>
+            ` : ""}
             <button class="ghost small" type="button" data-notification-target="${escapeHtml(notification.targetSection || "workspace-audit-trail")}">
               ${escapeHtml(notification.actionLabel || "Open")}
             </button>
@@ -3556,6 +3568,33 @@ function renderBusinessWorkspace() {
   document.querySelectorAll("[data-notification-target]").forEach((button) => {
     button.addEventListener("click", () => {
       openWorkspaceGroup(button.getAttribute("data-notification-target"), true);
+    });
+  });
+  document.querySelectorAll("[data-notification-retry-type]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const retryType = button.getAttribute("data-notification-retry-type");
+      const targetId = button.getAttribute("data-notification-retry-target");
+      const previousText = button.textContent;
+      button.disabled = true;
+      button.textContent = "Sending...";
+      try {
+        const result = await apiClient.retryBusinessNotification(token, {
+          ...selectedWorkspaceOptions(),
+          type: retryType,
+          targetId,
+        });
+        if (businessWorkspaceNotice) {
+          businessWorkspaceNotice.textContent = result.deliveryMessage || "Notification delivery updated.";
+        }
+        showToast(result.deliveryMessage || "Notification delivery updated.", result.deliveryStatus === "sent" ? "success" : "error");
+        await loadBusinessWorkspace();
+      } catch (error) {
+        if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not retry notification delivery.";
+        showToast(error.message || "Could not retry notification delivery.", "error");
+      } finally {
+        button.disabled = false;
+        button.textContent = previousText;
+      }
     });
   });
 }

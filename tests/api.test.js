@@ -3097,6 +3097,254 @@ test("business workspace endpoints honor plan preview and gating", async () => {
   }
 });
 
+test("business notification retry sends emails and records audit outcomes", async () => {
+  const restoreAdminEmail = useTestAdminEmail();
+  const sentMessages = [];
+  const server = createServer({
+    persist: false,
+    useSupabaseEmailOtp: false,
+    businessSmtpSender: async (settings, message) => {
+      sentMessages.push({ settings, message });
+      return { ok: true };
+    },
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body, previewPlan } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(previewPlan ? { "X-Eazinvoice-Plan-Preview": previewPlan } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  try {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email: TEST_ADMIN_EMAIL, phone: "9999999999" },
+    });
+    const signup = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "Business Owner",
+        email: TEST_ADMIN_EMAIL,
+        password: "OwnerSecure123",
+        phone: "9999999999",
+        otp: otp.payload.devOtp,
+      },
+    });
+    const token = signup.payload.token;
+    await request("/business/settings", {
+      method: "PATCH",
+      token,
+      previewPlan: "business",
+      body: {
+        emailSettings: {
+          senderName: "Owner Co",
+          smtpHost: "mail.privateemail.com",
+          smtpPort: "465",
+          smtpUser: "owner@example.com",
+          smtpPass: "smtp-password",
+          fromEmail: "owner@example.com",
+          replyToEmail: "owner@example.com",
+          smtpSecure: true,
+        },
+      },
+    });
+
+    const team = await request("/business/team", {
+      method: "POST",
+      token,
+      previewPlan: "business",
+      body: { name: "Accountant", email: "accountant@example.com", role: "accountant" },
+    });
+    assert.equal(team.response.status, 201);
+    assert.equal(team.payload.inviteDeliveryStatus, "sent");
+
+    const teamRetry = await request("/business/notifications/retry", {
+      method: "POST",
+      token,
+      previewPlan: "business",
+      body: { type: "team_access", targetId: team.payload.id },
+    });
+    assert.equal(teamRetry.response.status, 200);
+    assert.equal(teamRetry.payload.deliveryStatus, "sent");
+
+    const approval = await request("/business/approvals", {
+      method: "POST",
+      token,
+      previewPlan: "business",
+      body: { documentType: "invoice", documentNumber: "OWN/2026/001", notes: "Review." },
+    });
+    assert.equal(approval.response.status, 201);
+
+    const approvalRetry = await request("/business/notifications/retry", {
+      method: "POST",
+      token,
+      previewPlan: "business",
+      body: { type: "approval", targetId: approval.payload.id },
+    });
+    assert.equal(approvalRetry.response.status, 200);
+    assert.equal(approvalRetry.payload.deliveryStatus, "sent");
+
+    const gatewayRetry = await request("/business/notifications/retry", {
+      method: "POST",
+      token,
+      previewPlan: "business",
+      body: { type: "gateway", reason: "Gateway validation failed during setup." },
+    });
+    assert.equal(gatewayRetry.response.status, 200);
+    assert.equal(gatewayRetry.payload.deliveryStatus, "sent");
+
+    const audit = await request("/business/audit-events?category=smtp", {
+      token,
+      previewPlan: "business",
+    });
+    const actions = audit.payload.map((event) => event.action);
+    assert.ok(actions.includes("smtp.sub_user_access_email_retry"));
+    assert.ok(actions.includes("smtp.approval_notification_retry"));
+    assert.ok(actions.includes("smtp.gateway_attention"));
+    assert.ok(sentMessages.length >= 4);
+    assert.equal(JSON.stringify(audit.payload).includes("smtp-password"), false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    restoreAdminEmail();
+  }
+});
+
+test("admin business notification automation sends due notices once per day", async () => {
+  const restoreAdminEmail = useTestAdminEmail();
+  const sentMessages = [];
+  const server = createServer({
+    persist: false,
+    useSupabaseEmailOtp: false,
+    businessSmtpSender: async (settings, message) => {
+      sentMessages.push({ settings, message });
+      return { ok: true };
+    },
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body, previewPlan } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(previewPlan ? { "X-Eazinvoice-Plan-Preview": previewPlan } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  try {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email: TEST_ADMIN_EMAIL, phone: "9999999999" },
+    });
+    const signup = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "Business Owner",
+        email: TEST_ADMIN_EMAIL,
+        password: "OwnerSecure123",
+        phone: "9999999999",
+        otp: otp.payload.devOtp,
+      },
+    });
+    const token = signup.payload.token;
+
+    await request("/business/settings", {
+      method: "PATCH",
+      token,
+      previewPlan: "business",
+      body: {
+        emailSettings: {
+          senderName: "Owner Co",
+          smtpHost: "mail.privateemail.com",
+          smtpPort: "465",
+          smtpUser: "owner@example.com",
+          smtpPass: "smtp-password",
+          fromEmail: "owner@example.com",
+          replyToEmail: "owner@example.com",
+          smtpSecure: true,
+        },
+        paymentSettings: {
+          paymentLinkEnabled: true,
+        },
+        complianceProfile: {
+          legalName: "Owner Co",
+          entityType: "company",
+          pan: "ABCDE1234F",
+          state: "Maharashtra",
+          address: "Pune",
+          placeOfBusiness: "Pune",
+          invoicePrefix: "OC",
+          gstRegistered: true,
+          gstin: "27ABCDE1234F1Z5",
+          complianceYear: "2026",
+        },
+      },
+    });
+
+    const approval = await request("/business/approvals", {
+      method: "POST",
+      token,
+      previewPlan: "business",
+      body: { documentType: "invoice", documentNumber: "OC/2026/001", notes: "Pending owner approval." },
+    });
+    assert.equal(approval.response.status, 201);
+
+    const status = await request("/admin/business-notifications/status", { token });
+    assert.equal(status.response.status, 200);
+    assert.equal(status.payload.enabled, false);
+
+    const firstRun = await request("/admin/business-notifications/run", {
+      method: "POST",
+      token,
+      body: { previewPlan: "business", approvalAgeDays: 0, includeDigest: true },
+    });
+    assert.equal(firstRun.response.status, 201);
+    assert.ok(firstRun.payload.sent >= 3);
+    const actions = firstRun.payload.notices.map((notice) => notice.deliveryAction);
+    assert.ok(actions.includes("scheduled_compliance_reminder"));
+    assert.ok(actions.includes("scheduled_approval_aging"));
+    assert.ok(actions.includes("scheduled_gateway_attention"));
+    assert.ok(actions.includes("scheduled_business_digest"));
+
+    const secondRun = await request("/admin/business-notifications/run", {
+      method: "POST",
+      token,
+      body: { previewPlan: "business", approvalAgeDays: 0, includeDigest: true },
+    });
+    assert.equal(secondRun.response.status, 201);
+    assert.equal(secondRun.payload.sent, 0);
+    assert.ok(secondRun.payload.skipped >= firstRun.payload.notices.length);
+
+    const audit = await request("/business/audit-events?category=smtp", {
+      token,
+      previewPlan: "business",
+    });
+    const auditActions = audit.payload.map((event) => event.action);
+    assert.ok(auditActions.includes("smtp.scheduled_compliance_reminder"));
+    assert.ok(auditActions.includes("smtp.scheduled_approval_aging"));
+    assert.ok(auditActions.includes("smtp.scheduled_gateway_attention"));
+    assert.equal(JSON.stringify(audit.payload).includes("smtp-password"), false);
+    assert.ok(sentMessages.length >= firstRun.payload.notices.length);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    restoreAdminEmail();
+  }
+});
+
 test("business workspace invite routes enforce owner accountant and viewer permissions", async () => {
   const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
   const api = createApi({ store });

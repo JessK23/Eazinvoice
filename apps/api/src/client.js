@@ -199,6 +199,12 @@ export const apiClient = {
   runAdminRecurringScheduler(token, body = {}) {
     return request("/admin/recurring/run", { method: "POST", token, body });
   },
+  getAdminBusinessNotificationStatus(token) {
+    return request("/admin/business-notifications/status", { token });
+  },
+  runAdminBusinessNotificationScheduler(token, body = {}) {
+    return request("/admin/business-notifications/run", { method: "POST", token, body });
+  },
   listAdminUsers(token) {
     return request("/admin/users", { token });
   },
@@ -316,5 +322,8 @@ export const apiClient = {
   },
   listBusinessNotifications(token, options = {}) {
     return request(`/business/notifications${queryString(options)}`, { token });
+  },
+  retryBusinessNotification(token, body = {}) {
+    return request("/business/notifications/retry", { method: "POST", token, body });
   },
 };

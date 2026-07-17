@@ -1585,6 +1585,22 @@ input, textarea, select {
 .inline-status[data-tone="error"] {
   color: #b42318;
 }
+.scheduler-control-form {
+  margin-top: 14px;
+}
+.scheduler-control-form label {
+  min-width: 150px;
+}
+.checkbox-line {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  min-height: 46px;
+}
+.checkbox-line input {
+  width: auto;
+}
 .workflow-item-row {
   display: grid;
   grid-template-columns: minmax(180px, 1.5fr) minmax(90px, .75fr) minmax(72px, .55fr) minmax(96px, .7fr) minmax(96px, .7fr) minmax(82px, .6fr) minmax(110px, .75fr) auto;

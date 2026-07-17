@@ -186,7 +186,7 @@ function buildApprovalNotificationMessage(emailSettings = {}, approval = {}, act
   };
 }
 
-async function sendBusinessApprovalNotification(api, user, approval, body = {}, options = {}, action = "created") {
+async function sendBusinessApprovalNotification(api, user, approval, body = {}, options = {}, action = "created", smtpSender = sendSmtpMail) {
   const deliverySettings = api.getBusinessEmailDeliverySettings(user, {
     previewPlan: options.previewPlan,
     workspaceOwnerUserId: body.workspaceOwnerUserId || approval.ownerUserId || null,
@@ -223,7 +223,7 @@ async function sendBusinessApprovalNotification(api, user, approval, body = {}, 
     || "",
   ).trim();
   try {
-    await sendSmtpMail(deliverySettings, {
+    await smtpSender(deliverySettings, {
       to: recipient,
       ...buildApprovalNotificationMessage(deliverySettings, approval, action, user),
     });
@@ -255,6 +255,214 @@ async function sendBusinessApprovalNotification(api, user, approval, body = {}, 
       return result;
     }
   }
+}
+
+function buildGatewayAttentionMessage(emailSettings = {}, user = {}, reason = "") {
+  const businessName = emailSettings.senderName || user.name || "EazInvoice workspace";
+  return {
+    subject: "EazInvoice payment gateway needs attention",
+    text: [
+      "Hi,",
+      "",
+      `The payment gateway settings for ${businessName} need attention.`,
+      "",
+      reason || "Razorpay payment links are not fully ready. Check the key, secret, webhook secret, and payment link setting.",
+      "",
+      "Open Business Workspace > Business Razorpay Gateway to review the configuration.",
+      "",
+      "EazInvoice",
+    ].join("\n"),
+  };
+}
+
+function buildTeamActionMessage(emailSettings = {}, member = {}, action = "updated") {
+  const businessName = emailSettings.senderName || "EazInvoice workspace";
+  return {
+    to: member.email,
+    subject: `EazInvoice workspace access ${action}`,
+    text: [
+      "Hi,",
+      "",
+      `Your ${businessName} workspace access was ${action}.`,
+      "",
+      `Role: ${member.role || "viewer"}`,
+      `Status: ${member.status || "active"}`,
+      "",
+      "Please log in with this same email address to continue.",
+      "",
+      "EazInvoice",
+    ].join("\n"),
+  };
+}
+
+async function sendBusinessOperationalEmail(api, user, body = {}, options = {}, smtpSender = sendSmtpMail, config = {}) {
+  const deliverySettings = api.getBusinessEmailDeliverySettings(user, {
+    previewPlan: options.previewPlan,
+    workspaceOwnerUserId: body.workspaceOwnerUserId || config.ownerUserId || null,
+    companyId: body.companyId || config.companyId || null,
+  });
+  const recipient = String(
+    config.recipient
+    || body.recipient
+    || deliverySettings.replyToEmail
+    || deliverySettings.fromEmail
+    || user.email
+    || "",
+  ).trim();
+  const deliveryAction = config.deliveryAction || "business_notification";
+  const targetType = config.targetType || "business_settings";
+  const targetId = config.targetId || "";
+  const targetLabel = config.targetLabel || recipient;
+  const actionPhrase = config.actionPhrase || "send business notification";
+  if (!businessSmtpReady(deliverySettings)) {
+    const message = smtpNotConfiguredMessage(actionPhrase);
+    try {
+      api.recordBusinessEmailDelivery(user, {
+        workspaceOwnerUserId: body.workspaceOwnerUserId || config.ownerUserId || null,
+        companyId: body.companyId || config.companyId || null,
+        status: "not_configured",
+        message,
+        recipient,
+        action: deliveryAction,
+      }, { previewPlan: options.previewPlan });
+    } catch {}
+    if (typeof config.auditRecorder === "function") await config.auditRecorder(user, {
+      ownerUserId: body.workspaceOwnerUserId || config.ownerUserId || user.id,
+      companyId: body.companyId || config.companyId || null,
+      category: "smtp",
+      action: `smtp.${deliveryAction}`,
+      outcome: "not_configured",
+      targetType,
+      targetId,
+      targetLabel,
+      message,
+      metadata: { recipient, deliveryAction },
+    }, { previewPlan: options.previewPlan }, `business-${deliveryAction}-not-configured-audit`);
+    return { deliveryStatus: "not_configured", deliveryMessage: message, deliveryRecipient: recipient };
+  }
+  try {
+    const message = typeof config.messageBuilder === "function"
+      ? config.messageBuilder(deliverySettings, recipient)
+      : config.message;
+    await smtpSender(deliverySettings, {
+      to: recipient,
+      ...(message || { subject: "EazInvoice business notification", text: "Business notification from EazInvoice." }),
+    });
+    const deliveryMessage = config.successMessage || `Business notification sent to ${recipient}`;
+    try {
+      api.recordBusinessEmailDelivery(user, {
+        workspaceOwnerUserId: body.workspaceOwnerUserId || config.ownerUserId || null,
+        companyId: body.companyId || config.companyId || null,
+        status: "sent",
+        message: deliveryMessage,
+        recipient,
+        action: deliveryAction,
+      }, { previewPlan: options.previewPlan });
+    } catch {}
+    if (typeof config.auditRecorder === "function") await config.auditRecorder(user, {
+      ownerUserId: body.workspaceOwnerUserId || config.ownerUserId || user.id,
+      companyId: body.companyId || config.companyId || null,
+      category: "smtp",
+      action: `smtp.${deliveryAction}`,
+      outcome: "sent",
+      targetType,
+      targetId,
+      targetLabel,
+      message: deliveryMessage,
+      metadata: { recipient, deliveryAction },
+    }, { previewPlan: options.previewPlan }, `business-${deliveryAction}-sent-audit`);
+    return { deliveryStatus: "sent", deliveryMessage, deliveryRecipient: recipient };
+  } catch (error) {
+    const deliveryMessage = publicSmtpErrorMessage(error, actionPhrase);
+    try {
+      api.recordBusinessEmailDelivery(user, {
+        workspaceOwnerUserId: body.workspaceOwnerUserId || config.ownerUserId || null,
+        companyId: body.companyId || config.companyId || null,
+        status: "failed",
+        message: deliveryMessage,
+        recipient,
+        action: deliveryAction,
+      }, { previewPlan: options.previewPlan });
+    } catch {}
+    if (typeof config.auditRecorder === "function") await config.auditRecorder(user, {
+      ownerUserId: body.workspaceOwnerUserId || config.ownerUserId || user.id,
+      companyId: body.companyId || config.companyId || null,
+      category: "smtp",
+      action: `smtp.${deliveryAction}`,
+      outcome: "failed",
+      targetType,
+      targetId,
+      targetLabel,
+      message: deliveryMessage,
+      metadata: { recipient, deliveryAction },
+    }, { previewPlan: options.previewPlan }, `business-${deliveryAction}-failed-audit`);
+    return { deliveryStatus: "failed", deliveryMessage, deliveryRecipient: recipient };
+  }
+}
+
+function dateOnly(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return new Date().toISOString().slice(0, 10);
+  return date.toISOString().slice(0, 10);
+}
+
+function daysBetween(fromDate, toDate) {
+  const from = new Date(`${dateOnly(fromDate)}T00:00:00.000Z`);
+  const to = new Date(`${dateOnly(toDate)}T00:00:00.000Z`);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return 0;
+  return Math.floor((to.getTime() - from.getTime()) / 86400000);
+}
+
+function hasBusinessNotificationRunToday(auditEvents = [], action, targetId, today) {
+  const prefix = `smtp.${action}`;
+  return auditEvents.some((event) => (
+    String(event.action || "") === prefix
+    && String(event.targetId || "") === String(targetId || "")
+    && String(event.createdAt || "").startsWith(today)
+  ));
+}
+
+function buildApprovalAgingMessage(emailSettings = {}, approval = {}, ageDays = 0) {
+  const businessName = emailSettings.senderName || "EazInvoice workspace";
+  return {
+    subject: `Pending approval reminder: ${approval.documentNumber || "document"}`,
+    text: [
+      "Hi,",
+      "",
+      `This approval request in ${businessName} is still pending.`,
+      "",
+      `Document: ${approval.documentNumber || "Draft document"}`,
+      `Type: ${String(approval.documentType || "invoice").replace(/_/g, " ")}`,
+      `Pending for: ${ageDays} day${ageDays === 1 ? "" : "s"}`,
+      approval.notes ? `Notes: ${approval.notes}` : "",
+      "",
+      "Please approve or reject it in Business Workspace.",
+      "",
+      "EazInvoice",
+    ].filter((line) => line !== "").join("\n"),
+  };
+}
+
+function buildBusinessDigestMessage(emailSettings = {}, digest = {}) {
+  const businessName = emailSettings.senderName || "EazInvoice workspace";
+  return {
+    subject: `EazInvoice Business digest: ${digest.today}`,
+    text: [
+      "Hi,",
+      "",
+      `Here is the Business workspace digest for ${businessName}.`,
+      "",
+      `Compliance overdue: ${digest.complianceOverdue || 0}`,
+      `Compliance upcoming: ${digest.complianceUpcoming || 0}`,
+      `Pending approvals: ${digest.pendingApprovals || 0}`,
+      `Gateway status: ${digest.gatewayStatus || "not configured"}`,
+      `Team notices needing follow-up: ${digest.teamFollowUps || 0}`,
+      "",
+      "Open Business Workspace in EazInvoice for details.",
+      "",
+      "EazInvoice",
+    ].join("\n"),
+  };
 }
 
 function securityHeaders(extra = {}) {
@@ -950,6 +1158,7 @@ export function createServer(options = {}) {
   const supabaseEmailOtpRequester = options.supabaseEmailOtpRequester ?? requestSupabaseEmailOtp;
   const supabaseEmailOtpVerifier = options.supabaseEmailOtpVerifier ?? verifySupabaseEmailOtp;
   const authEmailOtpSender = options.authEmailOtpSender ?? sendSmtpMail;
+  const businessSmtpSender = options.businessSmtpSender ?? sendSmtpMail;
   const rateBuckets = new Map();
 
   function isRateLimited(req, url) {
@@ -1107,6 +1316,187 @@ export function createServer(options = {}) {
       console.warn("Business audit event skipped:", error.message);
       return null;
     }
+  }
+
+  async function runBusinessNotificationAutomation(runOptions = {}) {
+    const today = dateOnly(runOptions.targetDate || new Date());
+    const approvalAgeDays = Math.max(0, Number(runOptions.approvalAgeDays ?? process.env.BUSINESS_NOTIFICATION_APPROVAL_AGE_DAYS ?? 2));
+    const maxPerWorkspace = Math.max(1, Number(runOptions.maxPerWorkspace || process.env.BUSINESS_NOTIFICATION_MAX_PER_WORKSPACE || 8));
+    const force = Boolean(runOptions.force);
+    const previewPlan = runOptions.previewPlan || "";
+    const users = api.listUsers().filter((entry) => String(entry.accountStatus || "active").toLowerCase() !== "restricted");
+    const result = {
+      targetDate: today,
+      checkedUsers: users.length,
+      eligibleWorkspaces: 0,
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+      notConfigured: 0,
+      notices: [],
+    };
+
+    for (const owner of users) {
+      const plan = api.getFreePlanSummary(owner, { previewPlan }).plan;
+      if (plan !== "business") {
+        result.skipped += 1;
+        continue;
+      }
+      result.eligibleWorkspaces += 1;
+      const settings = api.getBusinessSettings(owner, { previewPlan });
+      const emailSettings = api.getBusinessEmailDeliverySettings(owner, { previewPlan });
+      const compliance = api.getBusinessComplianceDashboard(owner, { previewPlan });
+      const approvals = api.listApprovalRequests(owner, { previewPlan });
+      const auditEvents = api.listBusinessAuditEvents(owner, { previewPlan, limit: 200 });
+      const teamMembers = api.listTeamMembers(owner, { previewPlan });
+      const paymentSettings = settings.paymentSettings || {};
+      let workspaceNoticeCount = 0;
+
+      const sendScheduledNotice = async ({
+        deliveryAction,
+        targetType,
+        targetId,
+        targetLabel,
+        recipient,
+        actionPhrase,
+        messageBuilder,
+        successMessage,
+      }) => {
+        if (!force && hasBusinessNotificationRunToday(auditEvents, deliveryAction, targetId, today)) {
+          result.skipped += 1;
+          return null;
+        }
+        if (workspaceNoticeCount >= maxPerWorkspace) {
+          result.skipped += 1;
+          return null;
+        }
+        workspaceNoticeCount += 1;
+        const notice = await sendBusinessOperationalEmail(api, owner, {}, { previewPlan }, businessSmtpSender, {
+          recipient,
+          deliveryAction,
+          targetType,
+          targetId,
+          targetLabel,
+          actionPhrase,
+          messageBuilder,
+          successMessage,
+          auditRecorder: recordBusinessAudit,
+        });
+        if (notice.deliveryStatus === "sent") result.sent += 1;
+        else if (notice.deliveryStatus === "not_configured") result.notConfigured += 1;
+        else result.failed += 1;
+        result.notices.push({
+          ownerUserId: owner.id,
+          ownerEmail: owner.email,
+          deliveryAction,
+          targetType,
+          targetId,
+          status: notice.deliveryStatus,
+          recipient: notice.deliveryRecipient,
+          message: notice.deliveryMessage,
+        });
+        return notice;
+      };
+
+      const reminderDigest = compliance?.complianceEngine?.reminders || {};
+      const complianceTasks = [
+        ...(reminderDigest.overdue || []),
+        ...(reminderDigest.dueThisMonth || []),
+        ...(reminderDigest.upcoming || []),
+      ].filter((task, index, array) => array.findIndex((entry) => entry.id === task.id) === index);
+      for (const task of complianceTasks.slice(0, 3)) {
+        await sendScheduledNotice({
+          deliveryAction: "scheduled_compliance_reminder",
+          targetType: "compliance_task",
+          targetId: task.id,
+          targetLabel: task.complianceName || task.id,
+          recipient: emailSettings.replyToEmail || emailSettings.fromEmail || owner.email,
+          actionPhrase: "send scheduled compliance reminder",
+          messageBuilder: (deliverySettings, recipient) => buildComplianceReminderMessage(deliverySettings, task, recipient),
+          successMessage: `Scheduled compliance reminder sent for ${task.complianceName || task.id}.`,
+        });
+      }
+
+      const pendingApprovals = approvals
+        .filter((approval) => String(approval.status || "pending").toLowerCase() === "pending")
+        .map((approval) => ({
+          ...approval,
+          ageDays: daysBetween(approval.createdAt || today, today),
+        }))
+        .filter((approval) => approval.ageDays >= approvalAgeDays);
+      for (const approval of pendingApprovals.slice(0, 3)) {
+        await sendScheduledNotice({
+          deliveryAction: "scheduled_approval_aging",
+          targetType: "approval_request",
+          targetId: approval.id,
+          targetLabel: approval.documentNumber || approval.id,
+          recipient: emailSettings.replyToEmail || emailSettings.fromEmail || owner.email,
+          actionPhrase: "send approval aging reminder",
+          messageBuilder: (deliverySettings) => buildApprovalAgingMessage(deliverySettings, approval, approval.ageDays),
+          successMessage: `Approval aging reminder sent for ${approval.documentNumber || approval.id}.`,
+        });
+      }
+
+      const teamFollowUps = teamMembers.filter((member) => (
+        ["queued", "failed", "not_configured"].includes(String(member.inviteDeliveryStatus || "").toLowerCase())
+        && String(member.status || "active").toLowerCase() !== "removed"
+      ));
+      for (const member of teamFollowUps.slice(0, 2)) {
+        await sendScheduledNotice({
+          deliveryAction: "scheduled_team_access_notice",
+          targetType: "team_member",
+          targetId: member.id,
+          targetLabel: member.email,
+          recipient: member.email,
+          actionPhrase: "send scheduled team access notice",
+          messageBuilder: (deliverySettings) => buildTeamInviteMessage(deliverySettings, member, owner),
+          successMessage: `Scheduled team access notice sent to ${member.email}.`,
+        });
+      }
+
+      const gatewayReady = Boolean(
+        paymentSettings.keyId
+        && paymentSettings.keySecretConfigured
+        && paymentSettings.webhookSecretConfigured
+        && paymentSettings.paymentLinkEnabled
+      );
+      if (!gatewayReady && paymentSettings.paymentLinkEnabled) {
+        await sendScheduledNotice({
+          deliveryAction: "scheduled_gateway_attention",
+          targetType: "payment_gateway",
+          targetId: settings.id || owner.id,
+          targetLabel: "Razorpay gateway",
+          recipient: emailSettings.replyToEmail || emailSettings.fromEmail || owner.email,
+          actionPhrase: "send scheduled gateway attention notice",
+          messageBuilder: (deliverySettings) => buildGatewayAttentionMessage(deliverySettings, owner, "Payment links are enabled, but Razorpay gateway settings are incomplete."),
+          successMessage: "Scheduled gateway attention notice sent.",
+        });
+      }
+
+      const shouldSendDigest = Boolean(runOptions.includeDigest || process.env.BUSINESS_NOTIFICATION_DIGEST_ENABLED === "true");
+      if (shouldSendDigest) {
+        await sendScheduledNotice({
+          deliveryAction: "scheduled_business_digest",
+          targetType: "business_workspace",
+          targetId: settings.id || owner.id,
+          targetLabel: "Business workspace digest",
+          recipient: emailSettings.replyToEmail || emailSettings.fromEmail || owner.email,
+          actionPhrase: "send Business workspace digest",
+          messageBuilder: (deliverySettings) => buildBusinessDigestMessage(deliverySettings, {
+            today,
+            complianceOverdue: reminderDigest.counts?.overdue || 0,
+            complianceUpcoming: reminderDigest.counts?.upcoming || 0,
+            pendingApprovals: approvals.filter((approval) => String(approval.status || "pending").toLowerCase() === "pending").length,
+            gatewayStatus: gatewayReady ? "ready" : "needs attention",
+            teamFollowUps: teamFollowUps.length,
+          }),
+          successMessage: "Business workspace digest sent.",
+        });
+      }
+    }
+
+    const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-notification-automation");
+    return { ...result, businessWorkspaceSync };
   }
 
   async function activateVerifiedRazorpayOrder(orderMeta, paymentId, orderId) {
@@ -2536,6 +2926,165 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/business/notifications/retry" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        const retryType = String(body.type || body.retryType || "").trim().toLowerCase();
+        const targetId = String(body.targetId || body.sourceId || "").trim();
+        const workspaceOptions = {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          companyId: body.companyId || null,
+        };
+        let result = null;
+
+        if (retryType === "team_access") {
+          api.requireBusinessWorkspaceAccess(user, workspaceOptions, "manageTeam");
+          let member = api.listTeamMembers(user, workspaceOptions).find((entry) => entry.id === targetId);
+          if (!member) {
+            sendJson(res, 404, { error: "Team member not found" });
+            return;
+          }
+          const deliverySettings = api.getBusinessEmailDeliverySettings(user, workspaceOptions);
+          let deliveryStatus = "not_configured";
+          let deliveryMessage = smtpNotConfiguredMessage("send the sub-user access email");
+          if (businessSmtpReady(deliverySettings)) {
+            try {
+              await businessSmtpSender(deliverySettings, buildTeamInviteMessage(deliverySettings, member, user, req));
+              deliveryStatus = "sent";
+              deliveryMessage = `Sub-user access email sent to ${member.email}. They must log in with this same email address.`;
+            } catch (deliveryError) {
+              deliveryStatus = "failed";
+              deliveryMessage = publicSmtpErrorMessage(deliveryError, "send sub-user access email");
+            }
+          }
+          member = api.updateTeamMember(user, member.id, {
+            workspaceOwnerUserId: body.workspaceOwnerUserId || member.ownerUserId || null,
+            inviteDeliveryStatus: deliveryStatus,
+            inviteDeliveryMessage: deliveryMessage,
+            inviteSentAt: deliveryStatus === "sent" ? new Date().toISOString() : member.inviteSentAt,
+          }, { previewPlan });
+          await recordBusinessAudit(user, {
+            ownerUserId: body.workspaceOwnerUserId || member.ownerUserId || user.id,
+            companyId: body.companyId || member.companyId || null,
+            category: "smtp",
+            action: "smtp.sub_user_access_email_retry",
+            outcome: deliveryStatus,
+            targetType: "team_member",
+            targetId: member.id,
+            targetLabel: member.email,
+            message: deliveryMessage,
+            metadata: { recipient: member.email, deliveryStatus },
+          }, { previewPlan }, "business-team-delivery-retry-audit");
+          result = {
+            ...member,
+            deliveryStatus,
+            deliveryMessage,
+            deliveryRecipient: member.email,
+          };
+        } else if (retryType === "approval") {
+          api.requireBusinessWorkspaceAccess(user, workspaceOptions, "approvals");
+          const approval = api.listApprovalRequests(user, workspaceOptions).find((entry) => entry.id === targetId);
+          if (!approval) {
+            sendJson(res, 404, { error: "Approval request not found" });
+            return;
+          }
+          const notification = await sendBusinessApprovalNotification(api, user, approval, body, { previewPlan }, body.action || "created", businessSmtpSender);
+          await recordBusinessAudit(user, {
+            ownerUserId: body.workspaceOwnerUserId || approval.ownerUserId || user.id,
+            companyId: body.companyId || approval.companyId || null,
+            category: "smtp",
+            action: "smtp.approval_notification_retry",
+            outcome: notification.notificationStatus || "not_configured",
+            targetType: "approval_request",
+            targetId: approval.id,
+            targetLabel: approval.documentNumber,
+            message: notification.notificationMessage || "",
+            metadata: { recipient: notification.notificationRecipient || "" },
+          }, { previewPlan }, "business-approval-notification-retry-audit");
+          result = {
+            ...notification,
+            deliveryStatus: notification.notificationStatus,
+            deliveryMessage: notification.notificationMessage,
+            deliveryRecipient: notification.notificationRecipient,
+          };
+        } else if (retryType === "compliance") {
+          api.requireBusinessWorkspaceAccess(user, workspaceOptions, "compliance");
+          const compliance = api.getBusinessComplianceDashboard(user, workspaceOptions);
+          const task = (compliance.complianceTasks || []).find((entry) => entry.id === targetId);
+          if (!task) {
+            sendJson(res, 404, { error: "Compliance task not found" });
+            return;
+          }
+          const deliverySettings = api.getBusinessEmailDeliverySettings(user, workspaceOptions);
+          const recipient = String(body.recipient || deliverySettings.replyToEmail || deliverySettings.fromEmail || user.email || "").trim();
+          let deliveryStatus = "not_configured";
+          let deliveryMessage = smtpNotConfiguredMessage("send compliance reminders");
+          if (businessSmtpReady(deliverySettings)) {
+            try {
+              await businessSmtpSender(deliverySettings, buildComplianceReminderMessage(deliverySettings, task, recipient));
+              deliveryStatus = "sent";
+              deliveryMessage = `Compliance reminder sent to ${recipient}`;
+            } catch (deliveryError) {
+              deliveryStatus = "failed";
+              deliveryMessage = publicSmtpErrorMessage(deliveryError, "send compliance reminder");
+            }
+          }
+          const updatedTask = api.recordComplianceReminderDelivery(user, task.id, {
+            companyId: body.companyId || null,
+            workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+            to: recipient,
+            status: deliveryStatus,
+            message: deliveryMessage,
+          }, { previewPlan });
+          await recordBusinessAudit(user, {
+            ownerUserId: body.workspaceOwnerUserId || user.id,
+            companyId: body.companyId || null,
+            category: "smtp",
+            action: "smtp.compliance_reminder_retry",
+            outcome: deliveryStatus,
+            targetType: "compliance_task",
+            targetId: task.id,
+            targetLabel: task.complianceName || task.id,
+            message: deliveryMessage,
+            metadata: { recipient },
+          }, { previewPlan }, "business-compliance-reminder-retry-audit");
+          result = {
+            ...updatedTask,
+            deliveryStatus,
+            deliveryMessage,
+            deliveryRecipient: recipient,
+          };
+        } else if (retryType === "gateway") {
+          api.requireBusinessWorkspaceAccess(user, workspaceOptions, "manageSettings");
+          result = await sendBusinessOperationalEmail(api, user, body, { previewPlan }, businessSmtpSender, {
+            auditRecorder: recordBusinessAudit,
+            deliveryAction: "gateway_attention",
+            actionPhrase: "send gateway attention notice",
+            targetType: "business_settings",
+            targetId: targetId || "",
+            targetLabel: "Business Razorpay Gateway",
+            messageBuilder: (deliverySettings) => buildGatewayAttentionMessage(deliverySettings, user, body.reason || ""),
+            successMessage: "Gateway attention notice sent.",
+          });
+        } else {
+          sendJson(res, 400, { error: "Choose a valid notification retry type." });
+          return;
+        }
+
+        const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-notification-retry");
+        sendJson(res, result?.deliveryStatus === "failed" ? 400 : 200, {
+          ...result,
+          retryType,
+          targetId,
+          businessWorkspaceSync,
+        });
+      } catch (error) {
+        sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
+      }
+      return;
+    }
+
     if (url.pathname === "/business/settings" && req.method === "GET") {
       try {
         sendJson(res, 200, api.getBusinessSettings(user, {
@@ -2617,7 +3166,7 @@ export function createServer(options = {}) {
             || "",
           ).trim();
           try {
-            await sendSmtpMail(deliverySettings, {
+            await businessSmtpSender(deliverySettings, {
               to: recipient,
               subject: "EazInvoice SMTP test email",
               text: `Hi,\n\nThis is a test email from EazInvoice Business Workspace for ${deliverySettings.senderName || user.name || "your business"}.\n\nIf you received this, SMTP delivery is working.\n\nEazInvoice`,
@@ -2765,7 +3314,7 @@ export function createServer(options = {}) {
           return;
         }
         try {
-          await sendSmtpMail(deliverySettings, buildComplianceReminderMessage(deliverySettings, task, recipient));
+          await businessSmtpSender(deliverySettings, buildComplianceReminderMessage(deliverySettings, task, recipient));
           const updatedTask = api.recordComplianceReminderDelivery(user, taskId, {
             companyId: body.companyId || null,
             workspaceOwnerUserId: body.workspaceOwnerUserId || null,
@@ -2865,7 +3414,7 @@ export function createServer(options = {}) {
             companyId: body.companyId || null,
           });
           if (businessSmtpReady(deliverySettings)) {
-            await sendSmtpMail(deliverySettings, buildTeamInviteMessage(deliverySettings, member, user, req));
+            await businessSmtpSender(deliverySettings, buildTeamInviteMessage(deliverySettings, member, user, req));
             deliveryStatus = "sent";
             deliveryMessage = `Sub-user access email sent to ${member.email}. They must log in with this same email address.`;
             member = api.updateTeamMember(user, member.id, {
@@ -2942,6 +3491,23 @@ export function createServer(options = {}) {
           message: `Sub-user access updated for ${member.email}.`,
           metadata: { role: member.role, status: member.status },
         }, { previewPlan }, "business-team-update-audit");
+        if (body.role || body.status) {
+          const notice = await sendBusinessOperationalEmail(api, user, body, { previewPlan }, businessSmtpSender, {
+            auditRecorder: recordBusinessAudit,
+            deliveryAction: "team_action_notice",
+            actionPhrase: "send team action notice",
+            recipient: member.email,
+            ownerUserId: member.ownerUserId,
+            companyId: member.companyId || body.companyId || null,
+            targetType: "team_member",
+            targetId: member.id,
+            targetLabel: member.email,
+            messageBuilder: (deliverySettings) => buildTeamActionMessage(deliverySettings, member, "updated"),
+            successMessage: `Team action notice sent to ${member.email}.`,
+          });
+          member.lastActionNoticeStatus = notice.deliveryStatus;
+          member.lastActionNoticeMessage = notice.deliveryMessage;
+        }
         const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-team-update");
         sendJson(res, 200, { ...member, businessWorkspaceSync });
       } catch (error) {
@@ -2973,7 +3539,7 @@ export function createServer(options = {}) {
       try {
         const body = await readBody(req);
         const approval = api.createApprovalRequest(user, body, { previewPlan });
-        const notification = await sendBusinessApprovalNotification(api, user, approval, body, { previewPlan }, "created");
+        const notification = await sendBusinessApprovalNotification(api, user, approval, body, { previewPlan }, "created", businessSmtpSender);
         await recordBusinessAudit(user, {
           ownerUserId: body.workspaceOwnerUserId || approval.ownerUserId || user.id,
           companyId: body.companyId || approval.companyId || null,
@@ -3011,7 +3577,7 @@ export function createServer(options = {}) {
         const id = url.pathname.split("/")[3];
         const body = await readBody(req);
         const approval = api.decideApprovalRequest(user, id, body, { previewPlan });
-        const notification = await sendBusinessApprovalNotification(api, user, approval, body, { previewPlan }, "decision");
+        const notification = await sendBusinessApprovalNotification(api, user, approval, body, { previewPlan }, "decision", businessSmtpSender);
         await recordBusinessAudit(user, {
           ownerUserId: body.workspaceOwnerUserId || approval.ownerUserId || user.id,
           companyId: body.companyId || approval.companyId || null,
@@ -3174,6 +3740,41 @@ export function createServer(options = {}) {
         maxPerTemplate: Number(process.env.RECURRING_SCHEDULER_MAX_PER_TEMPLATE || 12),
         timezone: "UTC date-only",
         note: "Recurring draft generation is idempotent and only processes active paid users whose plan includes recurringInvoices.",
+      });
+      return;
+    }
+
+    if (url.pathname === "/admin/business-notifications/run" && req.method === "POST") {
+      if (!isConfiguredAdminUser(user)) {
+        sendJson(res, 403, { error: "Forbidden" });
+        return;
+      }
+      const body = await readBody(req).catch(() => ({}));
+      const result = await runBusinessNotificationAutomation({
+        targetDate: body.targetDate,
+        approvalAgeDays: body.approvalAgeDays,
+        maxPerWorkspace: body.maxPerWorkspace,
+        includeDigest: body.includeDigest,
+        force: body.force,
+        previewPlan: body.previewPlan || "",
+      });
+      sendJson(res, 201, result);
+      return;
+    }
+
+    if (url.pathname === "/admin/business-notifications/status" && req.method === "GET") {
+      if (!isConfiguredAdminUser(user)) {
+        sendJson(res, 403, { error: "Forbidden" });
+        return;
+      }
+      sendJson(res, 200, {
+        enabled: String(process.env.BUSINESS_NOTIFICATION_SCHEDULER_ENABLED || "").toLowerCase() === "true",
+        intervalHours: Math.max(1, Number(process.env.BUSINESS_NOTIFICATION_SCHEDULER_INTERVAL_HOURS || 24)),
+        approvalAgeDays: Math.max(0, Number(process.env.BUSINESS_NOTIFICATION_APPROVAL_AGE_DAYS || 2)),
+        maxPerWorkspace: Math.max(1, Number(process.env.BUSINESS_NOTIFICATION_MAX_PER_WORKSPACE || 8)),
+        digestEnabled: String(process.env.BUSINESS_NOTIFICATION_DIGEST_ENABLED || "").toLowerCase() === "true",
+        timezone: "UTC date-only",
+        note: "Business notification automation is idempotent per workspace, notice type, target, and date.",
       });
       return;
     }
@@ -3362,6 +3963,18 @@ export function createServer(options = {}) {
         const reportSync = await syncInvoiceReportRows(invoice, "invoice-payment-link");
         sendJson(res, 201, { ...invoice, reportSync });
       } catch (error) {
+        await sendBusinessOperationalEmail(api, user, body, { previewPlan }, businessSmtpSender, {
+          auditRecorder: recordBusinessAudit,
+          deliveryAction: "gateway_failure",
+          actionPhrase: "send gateway failure notice",
+          ownerUserId: body.workspaceOwnerUserId || existing.ownerUserId || user.id,
+          companyId: existing.companyId || null,
+          targetType: "invoice",
+          targetId: existing.id,
+          targetLabel: existing.invoiceNumber || existing.id,
+          messageBuilder: (deliverySettings) => buildGatewayAttentionMessage(deliverySettings, user, `Payment link creation failed for invoice ${existing.invoiceNumber || existing.id}: ${error.message}`),
+          successMessage: `Gateway failure notice sent for invoice ${existing.invoiceNumber || existing.id}.`,
+        });
         sendJson(res, 400, { error: error.message });
       }
       return;
@@ -3571,6 +4184,7 @@ export function createServer(options = {}) {
     }
   });
   server.eazinvoiceApi = api;
+  server.eazinvoiceRunBusinessNotifications = runBusinessNotificationAutomation;
   return server;
 }
 
@@ -3605,6 +4219,34 @@ function setupRecurringScheduler(server) {
   }
 }
 
+function setupBusinessNotificationScheduler(server) {
+  const enabled = String(process.env.BUSINESS_NOTIFICATION_SCHEDULER_ENABLED || "").toLowerCase() === "true";
+  if (!enabled) return;
+  const intervalHours = Math.max(1, Number(process.env.BUSINESS_NOTIFICATION_SCHEDULER_INTERVAL_HOURS || 24));
+  const intervalMs = intervalHours * 60 * 60 * 1000;
+  const run = async () => {
+    try {
+      if (typeof server.eazinvoiceRunBusinessNotifications !== "function") return;
+      const result = await server.eazinvoiceRunBusinessNotifications({
+        targetDate: new Date().toISOString().slice(0, 10),
+        includeDigest: String(process.env.BUSINESS_NOTIFICATION_DIGEST_ENABLED || "").toLowerCase() === "true",
+      });
+      if ((result.sent || 0) + (result.failed || 0) + (result.notConfigured || 0) > 0) {
+        console.log(`Eazinvoice Business notification scheduler processed ${result.notices.length} notice(s).`);
+      }
+    } catch (error) {
+      console.error("Eazinvoice Business notification scheduler failed:", error.message);
+    }
+  };
+  const startupDelayMs = Math.min(60000, Math.max(1000, Number(process.env.BUSINESS_NOTIFICATION_STARTUP_DELAY_MS || 15000)));
+  const startupTimer = setTimeout(run, startupDelayMs);
+  const intervalTimer = setInterval(run, intervalMs);
+  server.on("close", () => {
+    clearTimeout(startupTimer);
+    clearInterval(intervalTimer);
+  });
+}
+
 export async function createServerAsync(options = {}) {
   if (!options.store && options.persist !== false && wantsPostgresStorage(options)) {
     const persistenceAdapter = await createPostgresPersistenceAdapter();
@@ -3620,6 +4262,7 @@ export function startServer(port = 3001) {
   const server = createServer();
   server.listen(port);
   setupRecurringScheduler(server);
+  setupBusinessNotificationScheduler(server);
   return server;
 }
 
@@ -3627,6 +4270,7 @@ export async function startServerAsync(port = 3001) {
   const server = await createServerAsync();
   server.listen(port);
   setupRecurringScheduler(server);
+  setupBusinessNotificationScheduler(server);
   return server;
 }
 

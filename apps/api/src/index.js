@@ -589,6 +589,9 @@ export function createApi(deps = {}) {
           targetSection: notification.targetSection || "workspace-audit-trail",
           sourceType: notification.sourceType || "computed",
           sourceId: notification.sourceId || "",
+          retryType: notification.retryType || "",
+          retryTargetId: notification.retryTargetId || "",
+          retryLabel: notification.retryLabel || "",
           createdAt: notification.createdAt || new Date().toISOString(),
         });
       };
@@ -618,6 +621,9 @@ export function createApi(deps = {}) {
           targetSection: "workspace-email-settings",
           sourceType: "business_settings",
           sourceId: settings.id || "",
+          retryType: emailSettings.lastDeliveryAction === "gateway_attention" ? "gateway" : "",
+          retryTargetId: settings.id || "",
+          retryLabel: emailSettings.lastDeliveryAction === "gateway_attention" ? "Retry Email" : "",
         });
       }
 
@@ -633,9 +639,15 @@ export function createApi(deps = {}) {
           targetSection: "workspace-gateway-settings",
           sourceType: "business_settings",
           sourceId: settings.id || "",
+          retryType: "gateway",
+          retryTargetId: settings.id || "",
+          retryLabel: "Email Notice",
         });
       }
 
+      const complianceTasks = compliance?.complianceTasks || [];
+      const firstActionableComplianceTask = complianceTasks.find((task) => ["overdue", "due_this_month", "upcoming"].includes(String(task.reminderStatus || "").toLowerCase()))
+        || complianceTasks.find((task) => String(task.status || "").toLowerCase() !== "completed");
       if (Number(reminderCounts.overdue || 0) > 0) {
         addNotification({
           id: "compliance.overdue",
@@ -646,6 +658,9 @@ export function createApi(deps = {}) {
           actionLabel: "Open Compliance",
           targetSection: "workspace-compliance-profile",
           sourceType: "compliance_dashboard",
+          retryType: firstActionableComplianceTask?.id ? "compliance" : "",
+          retryTargetId: firstActionableComplianceTask?.id || "",
+          retryLabel: firstActionableComplianceTask?.id ? "Send Reminder" : "",
         });
       } else if (Number(reminderCounts.actionable || reminderCounts.dueThisMonth || 0) > 0) {
         addNotification({
@@ -657,6 +672,9 @@ export function createApi(deps = {}) {
           actionLabel: "Open Compliance",
           targetSection: "workspace-compliance-profile",
           sourceType: "compliance_dashboard",
+          retryType: firstActionableComplianceTask?.id ? "compliance" : "",
+          retryTargetId: firstActionableComplianceTask?.id || "",
+          retryLabel: firstActionableComplianceTask?.id ? "Send Reminder" : "",
         });
       } else if (Number(complianceSummary.pending || 0) > 0) {
         addNotification({
@@ -682,6 +700,9 @@ export function createApi(deps = {}) {
           actionLabel: "Open Approvals",
           targetSection: "workspace-approval-queue",
           sourceType: "approval_requests",
+          retryType: pendingApprovals[0]?.id ? "approval" : "",
+          retryTargetId: pendingApprovals[0]?.id || "",
+          retryLabel: pendingApprovals[0]?.id ? "Retry Email" : "",
         });
       }
 
@@ -697,6 +718,17 @@ export function createApi(deps = {}) {
           targetSection: "workspace-audit-trail",
           sourceType: "business_audit_event",
           sourceId: event.id,
+          retryType: event.targetType === "team_member"
+            ? "team_access"
+            : event.targetType === "approval_request"
+              ? "approval"
+              : event.targetType === "compliance_task"
+                ? "compliance"
+                : event.category === "gateway"
+                  ? "gateway"
+                  : "",
+          retryTargetId: ["team_member", "approval_request", "compliance_task"].includes(event.targetType) ? event.targetId : settings.id || "",
+          retryLabel: ["team_member", "approval_request", "compliance_task"].includes(event.targetType) || event.category === "gateway" ? "Retry Email" : "",
           createdAt: event.createdAt,
         });
       });
