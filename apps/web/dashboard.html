@@ -940,6 +940,39 @@
               These alerts are generated from existing workspace records. No separate notification data is created, so the status always reflects the current workspace state.
             </div>
             <div id="businessNotificationList" class="list"></div>
+            <div class="notification-delivery-board">
+              <div class="panel-head compact">
+                <div>
+                  <h4>Delivery History</h4>
+                  <p class="hint">SMTP delivery attempts for invites, approvals, compliance reminders, gateway alerts, and scheduled Business notices.</p>
+                </div>
+                <span class="pill blue">SMTP log</span>
+              </div>
+              <div id="businessDeliverySummary" class="metric-grid gateway-metrics"></div>
+              <form id="businessDeliveryFilterForm" class="audit-filter-bar delivery-filter-bar">
+                <select name="outcome" aria-label="Delivery outcome">
+                  <option value="">All delivery outcomes</option>
+                  <option value="sent">Sent</option>
+                  <option value="failed">Failed</option>
+                  <option value="not_configured">Not configured</option>
+                  <option value="blocked">Blocked</option>
+                </select>
+                <select name="action" aria-label="Delivery type">
+                  <option value="">All delivery types</option>
+                  <option value="approval">Approval notices</option>
+                  <option value="compliance">Compliance reminders</option>
+                  <option value="team">Team access notices</option>
+                  <option value="gateway">Gateway notices</option>
+                  <option value="digest">Business digests</option>
+                </select>
+                <input name="dateFrom" type="date" aria-label="Delivery date from" />
+                <input name="dateTo" type="date" aria-label="Delivery date to" />
+                <button class="ghost small" type="submit">Apply</button>
+                <button id="businessDeliveryClearFilters" class="ghost small" type="button">Clear</button>
+              </form>
+              <p id="businessDeliveryFilterStatus" class="hint"></p>
+              <div id="businessDeliveryHistory" class="list"></div>
+            </div>
           </div>
         </details>
 

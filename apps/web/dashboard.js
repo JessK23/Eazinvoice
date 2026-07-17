@@ -178,6 +178,11 @@ const approvalRequestStatus = document.getElementById("approvalRequestStatus");
 const approvalRequestsList = document.getElementById("approvalRequestsList");
 const businessNotificationCount = document.getElementById("businessNotificationCount");
 const businessNotificationList = document.getElementById("businessNotificationList");
+const businessDeliverySummary = document.getElementById("businessDeliverySummary");
+const businessDeliveryFilterForm = document.getElementById("businessDeliveryFilterForm");
+const businessDeliveryClearFilters = document.getElementById("businessDeliveryClearFilters");
+const businessDeliveryFilterStatus = document.getElementById("businessDeliveryFilterStatus");
+const businessDeliveryHistory = document.getElementById("businessDeliveryHistory");
 const businessAuditCount = document.getElementById("businessAuditCount");
 const businessAuditList = document.getElementById("businessAuditList");
 const businessAuditFilterForm = document.getElementById("businessAuditFilterForm");
@@ -213,6 +218,7 @@ let dashboardBusinessCompliance = null;
 let dashboardBusinessWorkspaces = [];
 let dashboardBusinessAuditEvents = [];
 let dashboardBusinessNotifications = [];
+let dashboardBusinessDeliveryEvents = [];
 let selectedBusinessWorkspaceOwnerId = window.localStorage?.getItem("eazinvoice_business_workspace_owner") || "";
 let currentReportExport = { title: "Detailed Report", headers: [], rows: [] };
 let razorpayCheckoutPromise = null;
@@ -756,6 +762,86 @@ function auditFilterSummary() {
   return labels.length ? `Filtered by ${labels.join(", ")}.` : "Showing latest workspace events.";
 }
 
+function deliveryFilterOptions() {
+  if (!businessDeliveryFilterForm) return {};
+  const formData = new FormData(businessDeliveryFilterForm);
+  return {
+    category: "smtp",
+    outcome: formData.get("outcome") || "",
+    action: String(formData.get("action") || "").trim(),
+    dateFrom: formData.get("dateFrom") || "",
+    dateTo: formData.get("dateTo") || "",
+  };
+}
+
+function deliveryFilterSummary() {
+  const options = deliveryFilterOptions();
+  const labels = [
+    options.outcome ? `outcome ${options.outcome}` : "",
+    options.action ? `type ${options.action}` : "",
+    options.dateFrom ? `from ${options.dateFrom}` : "",
+    options.dateTo ? `to ${options.dateTo}` : "",
+  ].filter(Boolean);
+  return labels.length ? `Filtered by ${labels.join(", ")}.` : "Showing latest SMTP delivery attempts.";
+}
+
+function deliveryActionMatches(event, filter = "") {
+  if (!filter) return true;
+  const needle = String(filter || "").toLowerCase();
+  const action = String(event.action || "").toLowerCase();
+  const targetType = String(event.targetType || "").toLowerCase();
+  const targetLabel = String(event.targetLabel || "").toLowerCase();
+  return action.includes(needle) || targetType.includes(needle) || targetLabel.includes(needle);
+}
+
+function filteredDeliveryEvents() {
+  const options = deliveryFilterOptions();
+  return dashboardBusinessDeliveryEvents.filter((event) => deliveryActionMatches(event, options.action));
+}
+
+function renderBusinessDeliveryHistory(enabled) {
+  if (!businessDeliverySummary && !businessDeliveryHistory) return;
+  const events = filteredDeliveryEvents();
+  const sent = events.filter((event) => String(event.outcome || "").toLowerCase() === "sent").length;
+  const failed = events.filter((event) => String(event.outcome || "").toLowerCase() === "failed").length;
+  const notConfigured = events.filter((event) => String(event.outcome || "").toLowerCase() === "not_configured").length;
+  const blocked = events.filter((event) => String(event.outcome || "").toLowerCase() === "blocked").length;
+  if (businessDeliverySummary) {
+    businessDeliverySummary.innerHTML = enabled
+      ? `
+        <article class="metric-card"><span>Sent</span><strong>${sent}</strong></article>
+        <article class="metric-card"><span>Failed</span><strong>${failed}</strong></article>
+        <article class="metric-card"><span>Not configured</span><strong>${notConfigured}</strong></article>
+        <article class="metric-card"><span>Blocked</span><strong>${blocked}</strong></article>
+      `
+      : `
+        <article class="metric-card"><span>Delivery history</span><strong>Business required</strong></article>
+      `;
+  }
+  if (businessDeliveryFilterStatus) {
+    businessDeliveryFilterStatus.textContent = `${deliveryFilterSummary()} ${events.length} delivery event${events.length === 1 ? "" : "s"} shown.`;
+  }
+  if (businessDeliveryHistory) {
+    businessDeliveryHistory.innerHTML = events.length
+      ? events.map((event) => {
+        const outcome = String(event.outcome || "info").toLowerCase();
+        const tone = outcome === "sent" ? "blue" : outcome === "failed" ? "red" : "gold";
+        const recipient = event.metadata?.recipient || event.targetLabel || "";
+        return `
+          <div class="invoice-card delivery-event-card">
+            <div>
+              <strong>${escapeHtml(auditActionLabel(event.action))}</strong>
+              <div class="hint">${escapeHtml(event.message || "Delivery attempt recorded.")}</div>
+              <div class="hint">${escapeHtml(recipient ? `Recipient: ${recipient}` : "Recipient not recorded")} - ${escapeHtml(formatAiDate(event.createdAt))}</div>
+            </div>
+            <span class="pill ${tone}">${escapeHtml(event.outcome || "info")}</span>
+          </div>
+        `;
+      }).join("")
+      : `<p>${enabled ? "No SMTP delivery attempts match the current filters." : "Delivery history unlocks in Business."}</p>`;
+  }
+}
+
 async function refreshBusinessAuditEvents() {
   if (!canOpenBusinessWorkspace()) {
     dashboardBusinessAuditEvents = [];
@@ -766,6 +852,19 @@ async function refreshBusinessAuditEvents() {
     ...auditFilterOptions(),
     limit: 75,
   }).catch(() => dashboardBusinessAuditEvents);
+}
+
+async function refreshBusinessDeliveryEvents() {
+  if (!canOpenBusinessWorkspace()) {
+    dashboardBusinessDeliveryEvents = [];
+    return;
+  }
+  const { action, ...queryOptions } = deliveryFilterOptions();
+  dashboardBusinessDeliveryEvents = await apiClient.listBusinessAuditEvents(token, {
+    ...selectedWorkspaceOptions(),
+    ...queryOptions,
+    limit: 50,
+  }).catch(() => dashboardBusinessDeliveryEvents);
 }
 
 async function refreshBusinessNotifications() {
@@ -780,8 +879,14 @@ async function refreshBusinessNotifications() {
 async function refreshBusinessAuditEventsAndRender() {
   await Promise.all([
     refreshBusinessAuditEvents(),
+    refreshBusinessDeliveryEvents(),
     refreshBusinessNotifications(),
   ]);
+  renderBusinessWorkspace();
+}
+
+async function refreshBusinessDeliveryEventsAndRender() {
+  await refreshBusinessDeliveryEvents();
   renderBusinessWorkspace();
 }
 
@@ -3480,6 +3585,7 @@ function renderBusinessWorkspace() {
       `).join("")
       : `<p>${enabled ? "No operational notifications yet." : "Notification Center unlocks in Business."}</p>`;
   }
+  renderBusinessDeliveryHistory(enabled);
   if (businessAuditList) {
     businessAuditList.innerHTML = dashboardBusinessAuditEvents.length
       ? dashboardBusinessAuditEvents.map((event) => {
@@ -3617,11 +3723,13 @@ async function loadBusinessWorkspace() {
     dashboardBusinessCompliance = null;
     dashboardBusinessAuditEvents = [];
     dashboardBusinessNotifications = [];
+    dashboardBusinessDeliveryEvents = [];
     renderBusinessWorkspace();
     return;
   }
   const workspaceOptions = selectedWorkspaceOptions();
-  const [members, approvals, apiKeys, settings, compliance, accountingGst, auditEvents, notifications] = await Promise.all([
+  const { action, ...deliveryQueryOptions } = deliveryFilterOptions();
+  const [members, approvals, apiKeys, settings, compliance, accountingGst, auditEvents, notifications, deliveryEvents] = await Promise.all([
     apiClient.listTeamMembers(token, workspaceOptions).catch(() => []),
     apiClient.listApprovalRequests(token, workspaceOptions).catch(() => []),
     apiClient.listApiKeys(token, workspaceOptions).catch(() => []),
@@ -3630,6 +3738,7 @@ async function loadBusinessWorkspace() {
     apiClient.getGstComplianceSummary(token, workspaceOptions).catch(() => null),
     apiClient.listBusinessAuditEvents(token, { ...workspaceOptions, ...auditFilterOptions(), limit: 75 }).catch(() => []),
     apiClient.listBusinessNotifications(token, workspaceOptions).catch(() => []),
+    apiClient.listBusinessAuditEvents(token, { ...workspaceOptions, ...deliveryQueryOptions, limit: 50 }).catch(() => []),
   ]);
   dashboardTeamMembers = members;
   dashboardApprovalRequests = approvals;
@@ -3640,6 +3749,7 @@ async function loadBusinessWorkspace() {
     : compliance;
   dashboardBusinessAuditEvents = auditEvents;
   dashboardBusinessNotifications = notifications;
+  dashboardBusinessDeliveryEvents = deliveryEvents;
   renderBusinessWorkspace();
 }
 
@@ -3820,6 +3930,18 @@ businessAuditClearFilters?.addEventListener("click", async () => {
   businessAuditFilterForm?.reset();
   if (businessAuditFilterStatus) businessAuditFilterStatus.textContent = "Clearing audit filters...";
   await refreshBusinessAuditEventsAndRender();
+});
+
+businessDeliveryFilterForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (businessDeliveryFilterStatus) businessDeliveryFilterStatus.textContent = "Applying delivery filters...";
+  await refreshBusinessDeliveryEventsAndRender();
+});
+
+businessDeliveryClearFilters?.addEventListener("click", async () => {
+  businessDeliveryFilterForm?.reset();
+  if (businessDeliveryFilterStatus) businessDeliveryFilterStatus.textContent = "Clearing delivery filters...";
+  await refreshBusinessDeliveryEventsAndRender();
 });
 
 teamInviteForm?.addEventListener("submit", async (event) => {
