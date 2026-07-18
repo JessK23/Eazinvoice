@@ -3212,6 +3212,15 @@ test("business notification retry sends emails and records audit outcomes", asyn
     assert.ok(actions.includes("smtp.gateway_attention"));
     assert.ok(sentMessages.length >= 4);
     assert.equal(JSON.stringify(audit.payload).includes("smtp-password"), false);
+
+    const settings = await request("/business/settings", {
+      token,
+      previewPlan: "business",
+    });
+    assert.equal(settings.response.status, 200);
+    assert.ok(settings.payload.emailSettings.deliveryAttempts >= 4);
+    assert.ok(settings.payload.emailSettings.deliveryHistory.some((entry) => entry.action === "gateway_attention"));
+    assert.equal(JSON.stringify(settings.payload.emailSettings.deliveryHistory).includes("smtp-password"), false);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     restoreAdminEmail();
@@ -3411,6 +3420,21 @@ test("business workspace invite routes enforce owner accountant and viewer permi
     });
     assert.equal(adminAsSubUser.response.status, 400);
     assert.match(adminAsSubUser.payload.error, /Admin email addresses cannot be added/i);
+    const ownerRoleSubUser = await request("/business/team", {
+      method: "POST",
+      token: owner.token,
+      body: { name: "Owner Role", email: "workspace-owner-role@example.com", role: "owner" },
+    });
+    assert.equal(ownerRoleSubUser.response.status, 400);
+    assert.match(ownerRoleSubUser.payload.error, /Accountant or Viewer/i);
+
+    const adminRoleSubUser = await request("/business/team", {
+      method: "POST",
+      token: owner.token,
+      body: { name: "Admin Role", email: "workspace-admin-role@example.com", role: "admin" },
+    });
+    assert.equal(adminRoleSubUser.response.status, 400);
+    assert.match(adminRoleSubUser.payload.error, /Accountant or Viewer/i);
     const accountantInvite = await request("/business/team", {
       method: "POST",
       token: owner.token,
@@ -3530,6 +3554,14 @@ test("business workspace invite routes enforce owner accountant and viewer permi
       body: { name: "Viewer User", email: "workspace-viewer@example.com", role: "viewer" },
     });
     assert.equal(viewerInvite.response.status, 201);
+
+    const ownerEscalationDenied = await request(`/business/team/${viewerInvite.payload.id}`, {
+      method: "PATCH",
+      token: owner.token,
+      body: { role: "owner" },
+    });
+    assert.equal(ownerEscalationDenied.response.status, 400);
+    assert.match(ownerEscalationDenied.payload.error, /Accountant or Viewer/i);
 
     const viewer = await signup("Viewer User", "workspace-viewer@example.com", "9000000003");
     assert.equal(viewerInvite.payload.status, "active");

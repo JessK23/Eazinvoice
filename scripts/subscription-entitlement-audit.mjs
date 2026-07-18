@@ -194,7 +194,23 @@ async function assertPaidPlanFlow(baseUrl, planId, expected, capturedOrders) {
     assert.equal(paidPlan.payload.active.features[feature], enabled, `${planId} feature ${feature}`);
   });
 
-  return user;
+  const duplicateVerification = await request(baseUrl, "/billing/razorpay/verify", {
+    method: "POST",
+    token: user.token,
+    body: {
+      razorpay_order_id: order.payload.order.id,
+      razorpay_payment_id: `pay_audit_${planId}`,
+      razorpay_signature: signature,
+    },
+  });
+  assert.equal(duplicateVerification.response.status, 200, `${planId} duplicate verification response`);
+  assert.equal(duplicateVerification.payload.duplicate, true, `${planId} duplicate verification is idempotent`);
+  assert.equal(duplicateVerification.payload.subscription.id, verified.payload.subscription.id, `${planId} duplicate keeps subscription`);
+
+  return {
+    ...user,
+    subscription: verified.payload.subscription,
+  };
 }
 
 async function assertAdminPreview(baseUrl) {
@@ -226,6 +242,66 @@ async function assertAdminPreview(baseUrl) {
   assert.equal(userPreview.payload.active.plan, "free", "non-admin cannot preview paid plan");
   assert.equal(userPreview.payload.active.preview.enabled, false, "non-admin preview disabled");
   assert.equal(userPreview.payload.active.features.teamAccess, false, "non-admin paid feature remains locked");
+
+  const audit = await request(baseUrl, "/admin/subscription-audit", { token: admin.token });
+  assert.equal(audit.response.status, 200, "admin subscription audit response");
+  const catalog = Object.fromEntries(audit.payload.catalog.map((plan) => [plan.plan, plan]));
+  Object.entries(EXPECTED_PAID_PLANS).forEach(([planId, expected]) => {
+    assert.equal(catalog[planId].monthlyAmount, expected.monthlyAmount, `${planId} audit monthly amount`);
+    assert.equal(catalog[planId].annualAmount, expected.annualAmount, `${planId} audit annual amount`);
+    assert.equal(catalog[planId].razorpayAmountPaise, expected.paise, `${planId} audit Razorpay paise`);
+    assert.equal(catalog[planId].billingCycle, "yearly", `${planId} audit billing cycle`);
+  });
+}
+
+async function assertSubscriptionLifecycleEndpoints(baseUrl, user) {
+  const cancelled = await request(baseUrl, `/subscriptions/${user.subscription.id}/cancel`, {
+    method: "POST",
+    token: user.token,
+    body: { reason: "audit cancellation" },
+  });
+  assert.equal(cancelled.response.status, 200, "subscription cancellation response");
+  assert.equal(cancelled.payload.status, "cancelled", "subscription cancelled status");
+  assert.equal(typeof cancelled.payload.entitlementSync.synced, "boolean", "cancel sync reports entitlement state");
+  const afterCancel = await request(baseUrl, "/plans", { token: user.token });
+  assert.equal(afterCancel.payload.active.plan, "free", "cancelled subscription locks paid features");
+
+  const renewed = await request(baseUrl, `/subscriptions/${user.subscription.id}/renew`, {
+    method: "POST",
+    token: user.token,
+    body: {
+      gateway: "razorpay",
+      gatewayPaymentId: "pay_audit_lifecycle_renewal",
+    },
+  });
+  assert.equal(renewed.response.status, 200, "subscription renewal response");
+  assert.equal(renewed.payload.status, "active", "renewed subscription active");
+  assert.equal(renewed.payload.billingCycle, "yearly", "renewed subscription remains yearly");
+  assert.equal(renewed.payload.renewalCount, 1, "renewal count increments");
+  const afterRenew = await request(baseUrl, "/plans", { token: user.token });
+  assert.equal(afterRenew.payload.active.plan, user.subscription.plan, "renewal unlocks original plan");
+
+  const downgraded = await request(baseUrl, `/subscriptions/${user.subscription.id}/downgrade`, {
+    method: "POST",
+    token: user.token,
+    body: { plan: "free", gateway: "manual" },
+  });
+  assert.equal(downgraded.response.status, 201, "subscription downgrade response");
+  assert.equal(downgraded.payload.plan, "free", "downgrade creates free entitlement");
+  assert.equal(downgraded.payload.previousSubscriptionId, user.subscription.id, "downgrade keeps previous subscription reference");
+  const afterDowngrade = await request(baseUrl, "/plans", { token: user.token });
+  assert.equal(afterDowngrade.payload.active.plan, "free", "downgrade locks paid features");
+
+  return downgraded.payload;
+}
+
+async function assertSubscriptionExpiryEndpoint(baseUrl, user) {
+  const expired = await request(baseUrl, "/subscriptions/expire", {
+    method: "POST",
+    token: user.token,
+    body: { now: "2099-01-01T00:00:00.000Z" },
+  });
+  assert.equal(expired.response.status, 403, "non-admin cannot run subscription expiry");
 }
 
 async function runEndpointAudit() {
@@ -259,9 +335,13 @@ async function runEndpointAudit() {
 
   const { server, baseUrl } = await startAuditServer();
   try {
+    let lifecycleUser = null;
     for (const [planId, expected] of Object.entries(EXPECTED_PAID_PLANS)) {
-      await assertPaidPlanFlow(baseUrl, planId, expected, capturedOrders);
+      const user = await assertPaidPlanFlow(baseUrl, planId, expected, capturedOrders);
+      if (planId === "standard") lifecycleUser = user;
     }
+    await assertSubscriptionLifecycleEndpoints(baseUrl, lifecycleUser);
+    await assertSubscriptionExpiryEndpoint(baseUrl, lifecycleUser);
     await assertAdminPreview(baseUrl);
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -303,6 +383,8 @@ console.log(JSON.stringify({
     "plan catalog monthly and yearly pricing",
     "Razorpay subscription order paise amounts",
     "verified payment activates the correct plan",
+    "duplicate payment verification is idempotent",
+    "subscription cancel, renewal, downgrade, and expiry routes",
     "paid feature unlocks and lower-tier inheritance",
     "free plan upgrade indicators remain locked",
     "admin preview remains admin-only",

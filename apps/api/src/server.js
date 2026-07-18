@@ -199,6 +199,16 @@ async function sendBusinessApprovalNotification(api, user, approval, body = {}, 
       notificationRecipient: "",
     };
     try {
+      api.recordBusinessEmailDelivery(user, {
+        workspaceOwnerUserId: approval.ownerUserId || null,
+        companyId: approval.companyId || null,
+        status: result.notificationStatus,
+        message: result.notificationMessage,
+        recipient: result.notificationRecipient,
+        action: "approval_notification",
+      }, { ...options, permission: "approvals" });
+    } catch {}
+    try {
       return api.recordApprovalNotification(user, approval.id, {
         status: result.notificationStatus,
         message: result.notificationMessage,
@@ -232,6 +242,16 @@ async function sendBusinessApprovalNotification(api, user, approval, body = {}, 
       notificationMessage: `Approval notification sent to ${recipient}`,
       notificationRecipient: recipient,
     };
+    try {
+      api.recordBusinessEmailDelivery(user, {
+        workspaceOwnerUserId: approval.ownerUserId || null,
+        companyId: approval.companyId || null,
+        status: result.notificationStatus,
+        message: result.notificationMessage,
+        recipient,
+        action: "approval_notification",
+      }, { ...options, permission: "approvals" });
+    } catch {}
     return api.recordApprovalNotification(user, approval.id, {
       status: result.notificationStatus,
       message: result.notificationMessage,
@@ -244,6 +264,16 @@ async function sendBusinessApprovalNotification(api, user, approval, body = {}, 
       notificationMessage: publicSmtpErrorMessage(error, "send approval notification"),
       notificationRecipient: recipient,
     };
+    try {
+      api.recordBusinessEmailDelivery(user, {
+        workspaceOwnerUserId: approval.ownerUserId || null,
+        companyId: approval.companyId || null,
+        status: result.notificationStatus,
+        message: result.notificationMessage,
+        recipient,
+        action: "approval_notification",
+      }, { ...options, permission: "approvals" });
+    } catch {}
     try {
       return api.recordApprovalNotification(user, approval.id, {
         status: result.notificationStatus,
@@ -2964,6 +2994,16 @@ export function createServer(options = {}) {
             inviteDeliveryMessage: deliveryMessage,
             inviteSentAt: deliveryStatus === "sent" ? new Date().toISOString() : member.inviteSentAt,
           }, { previewPlan });
+          try {
+            api.recordBusinessEmailDelivery(user, {
+              workspaceOwnerUserId: body.workspaceOwnerUserId || member.ownerUserId || null,
+              companyId: body.companyId || member.companyId || null,
+              status: deliveryStatus,
+              message: deliveryMessage,
+              recipient: member.email,
+              action: "sub_user_access_email_retry",
+            }, { previewPlan, permission: "manageTeam" });
+          } catch {}
           await recordBusinessAudit(user, {
             ownerUserId: body.workspaceOwnerUserId || member.ownerUserId || user.id,
             companyId: body.companyId || member.companyId || null,
@@ -3037,6 +3077,16 @@ export function createServer(options = {}) {
             status: deliveryStatus,
             message: deliveryMessage,
           }, { previewPlan });
+          try {
+            api.recordBusinessEmailDelivery(user, {
+              workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+              companyId: body.companyId || null,
+              status: deliveryStatus,
+              message: deliveryMessage,
+              recipient,
+              action: "compliance_reminder_retry",
+            }, { previewPlan, permission: "compliance" });
+          } catch {}
           await recordBusinessAudit(user, {
             ownerUserId: body.workspaceOwnerUserId || user.id,
             companyId: body.companyId || null,
@@ -3294,6 +3344,16 @@ export function createServer(options = {}) {
           || "",
         ).trim();
         if (!businessSmtpReady(deliverySettings)) {
+          try {
+            api.recordBusinessEmailDelivery(user, {
+              workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+              companyId: body.companyId || null,
+              status: "not_configured",
+              message: smtpNotConfiguredMessage("send compliance reminders"),
+              recipient,
+              action: "compliance_reminder",
+            }, { previewPlan, permission: "compliance" });
+          } catch {}
           await recordBusinessAudit(user, {
             ownerUserId: body.workspaceOwnerUserId || user.id,
             companyId: body.companyId || null,
@@ -3322,6 +3382,16 @@ export function createServer(options = {}) {
             status: "sent",
             message: `Reminder sent to ${recipient}`,
           }, { previewPlan });
+          try {
+            api.recordBusinessEmailDelivery(user, {
+              workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+              companyId: body.companyId || null,
+              status: "sent",
+              message: `Reminder sent to ${recipient}`,
+              recipient,
+              action: "compliance_reminder",
+            }, { previewPlan, permission: "compliance" });
+          } catch {}
           await recordBusinessAudit(user, {
             ownerUserId: body.workspaceOwnerUserId || user.id,
             companyId: body.companyId || null,
@@ -3350,6 +3420,16 @@ export function createServer(options = {}) {
             status: "failed",
             message: deliveryMessage,
           }, { previewPlan });
+          try {
+            api.recordBusinessEmailDelivery(user, {
+              workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+              companyId: body.companyId || null,
+              status: "failed",
+              message: deliveryMessage,
+              recipient,
+              action: "compliance_reminder",
+            }, { previewPlan, permission: "compliance" });
+          } catch {}
           await recordBusinessAudit(user, {
             ownerUserId: body.workspaceOwnerUserId || user.id,
             companyId: body.companyId || null,
@@ -3437,6 +3517,16 @@ export function createServer(options = {}) {
             inviteDeliveryMessage: deliveryMessage,
           }, { previewPlan });
         }
+        try {
+          api.recordBusinessEmailDelivery(user, {
+            workspaceOwnerUserId: body.workspaceOwnerUserId || member.ownerUserId || null,
+            companyId: body.companyId || member.companyId || null,
+            status: deliveryStatus,
+            message: deliveryMessage,
+            recipient: member.email,
+            action: "sub_user_access_email",
+          }, { previewPlan, permission: "manageTeam" });
+        } catch {}
         await recordBusinessAudit(user, {
           ownerUserId: body.workspaceOwnerUserId || user.id,
           companyId: body.companyId || null,
@@ -3511,7 +3601,8 @@ export function createServer(options = {}) {
         const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-team-update");
         sendJson(res, 200, { ...member, businessWorkspaceSync });
       } catch (error) {
-        sendJson(res, /business/i.test(error.message) ? 402 : 404, { error: error.message });
+        const status = /business/i.test(error.message) ? 402 : /not found/i.test(error.message) ? 404 : 400;
+        sendJson(res, status, { error: error.message });
       }
       return;
     }

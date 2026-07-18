@@ -1022,12 +1022,23 @@ export function createStore(seed = {}, options = {}) {
   function sanitizeBusinessSettings(settings) {
     if (!settings) return null;
     const complianceReview = assessComplianceProfile(settings.complianceProfile || {});
+    const deliveryHistory = Array.isArray(settings.emailSettings?.deliveryHistory)
+      ? settings.emailSettings.deliveryHistory.slice(-10).map((entry) => ({
+        at: entry.at || "",
+        status: String(entry.status || "").trim().toLowerCase(),
+        message: String(entry.message || "").trim().slice(0, 500),
+        recipient: String(entry.recipient || "").trim().toLowerCase(),
+        action: String(entry.action || "email").trim().slice(0, 80),
+      }))
+      : [];
     return clone({
       ...settings,
       emailSettings: {
         ...settings.emailSettings,
         smtpPass: "",
         smtpPassConfigured: Boolean(settings.emailSettings?.smtpPass),
+        deliveryAttempts: deliveryHistory.length,
+        deliveryHistory,
       },
       paymentSettings: {
         ...settings.paymentSettings,
@@ -1160,13 +1171,25 @@ export function createStore(seed = {}, options = {}) {
       };
       state.businessSettings.push(settings);
     }
+    const deliveryEntry = {
+      at: new Date().toISOString(),
+      status: String(input.status || "failed").trim().toLowerCase(),
+      message: String(input.message || "").trim().slice(0, 500),
+      recipient: String(input.recipient || "").trim().toLowerCase(),
+      action: String(input.action || "email").trim().slice(0, 80),
+    };
+    const deliveryHistory = Array.isArray(settings.emailSettings?.deliveryHistory)
+      ? settings.emailSettings.deliveryHistory.slice(-19)
+      : [];
+    deliveryHistory.push(deliveryEntry);
     settings.emailSettings = {
       ...(settings.emailSettings || {}),
-      lastDeliveryAt: new Date().toISOString(),
-      lastDeliveryStatus: String(input.status || "failed").trim().toLowerCase(),
-      lastDeliveryMessage: String(input.message || "").trim().slice(0, 500),
-      lastDeliveryRecipient: String(input.recipient || "").trim().toLowerCase(),
-      lastDeliveryAction: String(input.action || "email").trim().slice(0, 80),
+      lastDeliveryAt: deliveryEntry.at,
+      lastDeliveryStatus: deliveryEntry.status,
+      lastDeliveryMessage: deliveryEntry.message,
+      lastDeliveryRecipient: deliveryEntry.recipient,
+      lastDeliveryAction: deliveryEntry.action,
+      deliveryHistory,
     };
     settings.updatedAt = new Date().toISOString();
     persist();

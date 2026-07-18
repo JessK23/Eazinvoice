@@ -451,9 +451,13 @@ export function createApi(deps = {}) {
         workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
       }, "manageTeam");
       const email = String(input.email || "").trim().toLowerCase();
+      const requestedRole = String(input.role || "viewer").trim().toLowerCase();
       const ownerEmail = String(access.owner?.email || "").trim().toLowerCase();
       const actorEmail = String(user.email || "").trim().toLowerCase();
       if (!email) throw new Error("Enter a valid team member email address.");
+      if (!["accountant", "viewer"].includes(requestedRole)) {
+        throw new Error("Sub-users can only be created as Accountant or Viewer.");
+      }
       if (email === ownerEmail || email === actorEmail) {
         throw new Error("You cannot add the workspace owner/admin email as a sub-user. Please use a different email address for Accountant or Viewer access.");
       }
@@ -471,6 +475,7 @@ export function createApi(deps = {}) {
       return store.createTeamMember({
         ...input,
         email,
+        role: requestedRole,
         ownerUserId: access.ownerUserId,
         invitedByUserId: user.id,
       });
@@ -483,7 +488,13 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: ownerUserId,
       }, "manageTeam");
-      const member = store.updateTeamMember(memberId, updates, user);
+      if (updates.role !== undefined && !["accountant", "viewer"].includes(String(updates.role || "").trim().toLowerCase())) {
+        throw new Error("Sub-users can only be assigned Accountant or Viewer access.");
+      }
+      const member = store.updateTeamMember(memberId, {
+        ...updates,
+        role: updates.role !== undefined ? String(updates.role || "").trim().toLowerCase() : updates.role,
+      }, user);
       if (!member) throw new Error("Team member not found");
       return member;
     },
@@ -531,7 +542,7 @@ export function createApi(deps = {}) {
       const access = this.requireBusinessWorkspaceAccess(user, {
         ...options,
         workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
-      }, "manageSettings");
+      }, options.permission || "manageSettings");
       return store.recordBusinessEmailDelivery(access.owner, input);
     },
 
