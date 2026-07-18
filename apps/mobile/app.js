@@ -169,7 +169,19 @@ function totals() {
   const income = invoices.reduce((sum, record) => sum + number(record.total), 0);
   const expenses = orders.reduce((sum, record) => sum + number(record.total), 0);
   const unpaid = invoices.reduce((sum, record) => sum + Math.max(0, number(record.total) - number(record.paidAmount)), 0);
-  return { income, expenses, profit: income - expenses, unpaid };
+  const paidRevenue = invoices.reduce((sum, record) => sum + number(record.paidAmount), 0);
+  const payables = orders.reduce((sum, record) => sum + Math.max(0, number(record.total) - number(record.paidAmount)), 0);
+  return {
+    income,
+    expenses,
+    profit: income - expenses,
+    unpaid,
+    paidRevenue,
+    payables,
+    assets: paidRevenue + unpaid,
+    liabilitiesAndEquity: payables + income - expenses,
+    workingCapital: unpaid - payables,
+  };
 }
 
 function setText(id, value) {
@@ -312,6 +324,10 @@ function render() {
   setText("reportExpenses", money(summary.expenses));
   setText("reportProfit", money(summary.profit));
   setText("reportUnpaid", money(summary.unpaid));
+  setText("mobileBalanceAssets", `Assets ${money(summary.assets)}`);
+  setText("mobileBalanceLiabilities", `Liabilities + equity ${money(summary.liabilitiesAndEquity)}`);
+  setText("mobileCashFlow", `Operating ${money(summary.profit)}`);
+  setText("mobileWorkingCapital", `Receivables minus payables ${money(summary.workingCapital)}`);
   renderList("invoiceList", state.invoices, "No invoices yet.");
   renderList("poList", state.orders, "No PO / WO records yet.");
   renderList("recentList", [...state.invoices, ...state.orders].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5), "No recent activity yet.");

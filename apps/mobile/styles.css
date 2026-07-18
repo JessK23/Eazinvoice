@@ -299,6 +299,7 @@ p {
 .summary-strip article,
 .metric-grid article,
 .report-stack article,
+.statement-grid article,
 .plan-list article {
   padding: 14px;
   border-radius: 20px;
@@ -306,7 +307,9 @@ p {
 
 .summary-strip span,
 .metric-grid span,
-.report-stack span {
+.report-stack span,
+.statement-grid span,
+.statement-grid small {
   display: block;
   color: var(--muted);
   font-size: 10px;
@@ -316,7 +319,8 @@ p {
 
 .summary-strip strong,
 .metric-grid strong,
-.report-stack strong {
+.report-stack strong,
+.statement-grid strong {
   display: block;
   margin-top: 8px;
   color: var(--navy);
@@ -617,10 +621,27 @@ p {
   grid-template-columns: 1fr;
 }
 
+.statement-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
 .report-stack article,
+.statement-grid article,
 .plan-list article {
   border: 1px solid var(--line);
   background: #fff;
+}
+
+.statement-grid article {
+  background: linear-gradient(135deg, rgba(236,253,243,.92), rgba(255,255,255,.96));
+}
+
+.statement-grid small {
+  margin-top: 6px;
+  text-transform: none;
+  font-weight: 700;
 }
 
 .plan-usage {

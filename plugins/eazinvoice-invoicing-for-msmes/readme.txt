@@ -4,7 +4,7 @@ Tags: invoice, billing, gst, msme, freelancer
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.0.3
+Stable tag: 1.0.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -31,6 +31,7 @@ The free plugin gives the site owner an embedded EazInvoice workspace inside Wor
 * Optional invoice CTA shortcode: `[eazinvoice_button]`
 * Legacy shortcode alias: `[eazinvoice_free_invoice]`
 * Local free-tier draft and created records for invoices and PO/WO documents
+* Accounting-ready report messaging for revenue, expense, profit, Balance Sheet, Cash Flow, and GST reporting in connected EazInvoice plans
 * Branded upgrade panel for EazInvoice Pro
 
 = Paid WordPress Pro Roadmap =
@@ -93,6 +94,10 @@ No. WooCommerce sync is optional and paid. The core EazInvoice plugin is designe
 7. Optional shortcode button shown on a WordPress page.
 
 == Changelog ==
+
+= 1.0.4 =
+* Added accounting and compliance reporting readiness messaging for Balance Sheet, Cash Flow, GST, revenue, expense, and profit workflows.
+* Aligned plugin preview content with the EazInvoice web and mobile reporting direction.
 
 = 1.0.3 =
 * Updated Standard, Pro, and Business tier pricing to match EazInvoice yearly billing.

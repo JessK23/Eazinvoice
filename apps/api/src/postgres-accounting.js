@@ -370,6 +370,53 @@ function summarizeRows(rows) {
   };
 }
 
+function statementLines(rows, accountType) {
+  return rows
+    .filter((row) => row.accountType === accountType && Math.abs(num(row.balance)) > 0.009)
+    .map((row) => ({
+      accountCode: row.accountCode,
+      accountName: row.accountName,
+      balance: num(row.balance),
+    }));
+}
+
+function statementBalance(rows, accountCode) {
+  return num(rows.find((row) => row.accountCode === accountCode)?.balance || 0);
+}
+
+function buildAccountingStatements(rows) {
+  const summary = summarizeRows(rows);
+  const cashAndBank = num(statementBalance(rows, "1110") + statementBalance(rows, "1120"));
+  const receivables = statementBalance(rows, "1100");
+  const payables = statementBalance(rows, "2100");
+  const gstPayable = statementBalance(rows, "2200");
+  const inputGstCredit = statementBalance(rows, "2210");
+  const totalLiabilitiesAndEquity = num(summary.liabilities + summary.equity + summary.profit);
+  return {
+    balanceSheet: {
+      assets: summary.assets,
+      liabilities: summary.liabilities,
+      equity: summary.equity,
+      retainedEarnings: summary.profit,
+      totalLiabilitiesAndEquity,
+      difference: num(summary.assets - totalLiabilitiesAndEquity),
+      assetLines: statementLines(rows, "asset"),
+      liabilityLines: statementLines(rows, "liability"),
+      equityLines: statementLines(rows, "equity"),
+    },
+    cashFlow: {
+      operatingCashFlow: summary.profit,
+      cashAndBank,
+      receivables,
+      payables,
+      gstPayable,
+      inputGstCredit,
+      netWorkingCapital: num(receivables - payables),
+      note: "Derived from posted invoices, PO/WO records, payments, and manual journal entries.",
+    },
+  };
+}
+
 async function listJournals(client, ownerUserId, companyId = null) {
   const params = [ownerUserId];
   const where = ["owner_user_id = $1"];
@@ -507,6 +554,8 @@ export async function syncAccountingFoundation(user, options = {}) {
     const purchaseOrdersSynced = await syncPurchaseOrders(client, ownerUser, companyId, accounts);
     const allAccounts = await listAccounts(client, ownerUser.id, companyId);
     const rows = await trialBalance(client, ownerUser, companyId);
+    const summary = summarizeRows(rows);
+    const statements = buildAccountingStatements(rows);
     return {
       enabled: true,
       companyId,
@@ -514,7 +563,10 @@ export async function syncAccountingFoundation(user, options = {}) {
       invoicesSynced,
       purchaseOrdersSynced,
       trialBalance: rows,
-      summary: summarizeRows(rows),
+      summary,
+      statements,
+      balanceSheet: statements.balanceSheet,
+      cashFlow: statements.cashFlow,
     };
   });
 }

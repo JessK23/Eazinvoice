@@ -73,6 +73,8 @@ const cashBookList = document.getElementById("cashBookList");
 const ledgerDrilldownList = document.getElementById("ledgerDrilldownList");
 const accountingGstCards = document.getElementById("accountingGstCards");
 const accountingGstEntries = document.getElementById("accountingGstEntries");
+const balanceSheetSummary = document.getElementById("balanceSheetSummary");
+const cashFlowSummary = document.getElementById("cashFlowSummary");
 const reportMonth = document.getElementById("reportMonth");
 const reportYear = document.getElementById("reportYear");
 const paymentModal = document.getElementById("paymentModal");
@@ -2029,6 +2031,39 @@ function renderAccountingGstSummary(payload = {}) {
   }
 }
 
+function accountingStatementRow(label, value, detail = "") {
+  return `
+    <div class="mini-table-row">
+      <span>${escapeHtml(label)}</span>
+      <strong>${accountingMoney(value)}</strong>
+      <small>${escapeHtml(detail)}</small>
+    </div>
+  `;
+}
+
+function renderAccountingStatements(payload = {}) {
+  const balanceSheet = payload.balanceSheet || payload.statements?.balanceSheet || {};
+  const cashFlow = payload.cashFlow || payload.statements?.cashFlow || {};
+  if (balanceSheetSummary) {
+    balanceSheetSummary.innerHTML = [
+      accountingStatementRow("Assets", balanceSheet.assets || 0, "Current ledger asset balance"),
+      accountingStatementRow("Liabilities", balanceSheet.liabilities || 0, "Vendor payables and GST payable"),
+      accountingStatementRow("Equity", balanceSheet.equity || 0, "Owner capital and equity rows"),
+      accountingStatementRow("Retained earnings", balanceSheet.retainedEarnings || 0, "Income minus expenses"),
+      accountingStatementRow("Balance check", balanceSheet.difference || 0, "Should remain near zero after full postings"),
+    ].join("");
+  }
+  if (cashFlowSummary) {
+    cashFlowSummary.innerHTML = [
+      accountingStatementRow("Cash and bank", cashFlow.cashAndBank || 0, "Cash in hand plus bank balance"),
+      accountingStatementRow("Operating result", cashFlow.operatingCashFlow || 0, "Profit from created records"),
+      accountingStatementRow("Receivables", cashFlow.receivables || 0, "Pending customer collections"),
+      accountingStatementRow("Payables", cashFlow.payables || 0, "Pending vendor payments"),
+      accountingStatementRow("Net working capital", cashFlow.netWorkingCapital || 0, "Receivables minus payables"),
+    ].join("");
+  }
+}
+
 function syncJournalAccountOptions() {
   const options = accountingAccounts.map((account) => (
     `<option value="${escapeHtml(account.id)}">${escapeHtml(account.accountCode)} - ${escapeHtml(account.accountName)}</option>`
@@ -2044,6 +2079,7 @@ function renderAccountingSummary(payload = {}) {
   if (accountingIncome) accountingIncome.textContent = accountingMoney(summary.income);
   if (accountingExpenses) accountingExpenses.textContent = accountingMoney(summary.expenses);
   if (accountingProfit) accountingProfit.textContent = accountingMoney(summary.profit);
+  renderAccountingStatements(payload);
 
   const accounts = (payload.accounts || []).map((account) => ({
     id: account.id,
