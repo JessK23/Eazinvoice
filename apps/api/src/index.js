@@ -118,6 +118,11 @@ export function createApi(deps = {}) {
       return hasPlanFeature(getActivePlanDefinition(subscriptions).plan, feature);
     },
 
+    resolveWorkspaceFeatureUser(user, options = {}, permission = "read") {
+      if (!options.workspaceOwnerUserId || options.workspaceOwnerUserId === user?.id) return user;
+      return this.resolveRecordsWorkspaceAccess(user, options, permission).owner;
+    },
+
     requireFeature(user, feature, options = {}) {
       if (!this.userCanUseFeature(user, feature, options)) {
         throw new Error(getFeatureRequirement(feature).message);
@@ -393,11 +398,12 @@ export function createApi(deps = {}) {
     },
 
     runRecurringInvoiceScheduler(user, options = {}) {
-      if (!this.userCanUseFeature(user, "recurringInvoices", options)) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "writeRecords");
+      if (!this.userCanUseFeature(workspace.owner, "recurringInvoices", options)) {
         throw new Error("Recurring invoice auto-drafts are available on Standard and higher plans.");
       }
       return store.runRecurringInvoiceScheduler({
-        ownerUserId: user?.id,
+        ownerUserId: workspace.ownerUserId,
         targetDate: options.targetDate,
         maxPerTemplate: options.maxPerTemplate,
       });
@@ -1027,20 +1033,23 @@ export function createApi(deps = {}) {
       const intent = String(approved.intent || "").trim();
       const payload = approved.payload || {};
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "writeRecords");
+      const featureUser = workspace.owner;
+      const featureOptions = { ...options, workspaceOwnerUserId: workspace.ownerUserId };
       if (intent === "invoice") {
-        if (!this.userCanUseFeature(user, "aiInvoiceAssist", options)) {
+        if (!this.userCanUseFeature(featureUser, "aiInvoiceAssist", featureOptions)) {
           throw new Error("AI invoice assistant is available on Pro and Business plans.");
         }
-        this.enforceAiQuota(user, options, true);
+        this.enforceAiQuota(featureUser, featureOptions, true);
         const invoice = this.createInvoice({
           ...payload,
           ownerUserId: workspace.ownerUserId,
           status: "draft",
           paymentStatus: "draft",
-        }, { ...options, user, workspaceOwnerUserId: workspace.ownerUserId });
+        }, { ...featureOptions, user });
         store.createAiUsageLog({
-          ownerUserId: user.id,
-          plan: this.getUserPlan(user, options).plan,
+          ownerUserId: workspace.ownerUserId,
+          actorUserId: user.id,
+          plan: this.getUserPlan(featureUser, featureOptions).plan,
           provider: "approved",
           intent,
           status: "saved",
@@ -1052,22 +1061,23 @@ export function createApi(deps = {}) {
           confidence: approved.confidence || "approved",
           message: "Approved AI invoice draft saved. Review it before creating the final invoice.",
           createdRecord: invoice,
-          quota: this.getAiQuota(user, options),
+          quota: this.getAiQuota(featureUser, featureOptions),
         };
       }
       if (intent === "purchase_order") {
-        if (!this.userCanUseFeature(user, "aiPoAssist", options)) {
+        if (!this.userCanUseFeature(featureUser, "aiPoAssist", featureOptions)) {
           throw new Error("AI PO and Work Order assistant is available on Pro and Business plans.");
         }
-        this.enforceAiQuota(user, options, true);
+        this.enforceAiQuota(featureUser, featureOptions, true);
         const purchaseOrder = this.createPurchaseOrder({
           ...payload,
           ownerUserId: workspace.ownerUserId,
           status: "draft",
-        }, { ...options, user, workspaceOwnerUserId: workspace.ownerUserId });
+        }, { ...featureOptions, user });
         store.createAiUsageLog({
-          ownerUserId: user.id,
-          plan: this.getUserPlan(user, options).plan,
+          ownerUserId: workspace.ownerUserId,
+          actorUserId: user.id,
+          plan: this.getUserPlan(featureUser, featureOptions).plan,
           provider: "approved",
           intent,
           status: "saved",
@@ -1079,25 +1089,29 @@ export function createApi(deps = {}) {
           confidence: approved.confidence || "approved",
           message: "Approved AI PO/WO draft saved. Review it before creating the final document.",
           createdRecord: purchaseOrder,
-          quota: this.getAiQuota(user, options),
+          quota: this.getAiQuota(featureUser, featureOptions),
         };
       }
       throw new Error("Approved AI draft is missing a valid invoice or PO payload.");
     },
 
     finalizeAiCommandResult(user, input = {}, options = {}, result, provider = "local") {
-      const plan = this.getUserPlan(user, options);
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, result.intent === "report_summary" ? "read" : "writeRecords");
+      const featureUser = workspace.owner;
+      const featureOptions = { ...options, workspaceOwnerUserId: workspace.ownerUserId };
+      const plan = this.getUserPlan(featureUser, featureOptions);
       const shouldBill = input.approvedPreview !== true && input.approvedDraft === undefined;
-      const withQuota = (payload) => ({ ...payload, quota: this.getAiQuota(user, options) });
+      const withQuota = (payload) => ({ ...payload, quota: this.getAiQuota(featureUser, featureOptions) });
 
       const shouldSaveDraft = input.saveDraft !== false && input.previewOnly !== true;
       if (result.intent === "clarification") {
-        if (!this.userCanUseFeature(user, "aiInvoiceAssist", options) && !this.userCanUseFeature(user, "aiPoAssist", options)) {
+        if (!this.userCanUseFeature(featureUser, "aiInvoiceAssist", featureOptions) && !this.userCanUseFeature(featureUser, "aiPoAssist", featureOptions)) {
           throw new Error("AI assistant is available on Pro and Business plans.");
         }
-        this.enforceAiQuota(user, options, shouldBill);
+        this.enforceAiQuota(featureUser, featureOptions, shouldBill);
         store.createAiUsageLog({
-          ownerUserId: user.id,
+          ownerUserId: workspace.ownerUserId,
+          actorUserId: user.id,
           plan: plan.plan,
           provider,
           intent: result.intent,
@@ -1108,12 +1122,13 @@ export function createApi(deps = {}) {
         return withQuota({ ...result, provider });
       }
       if (result.intent === "invoice") {
-        if (!this.userCanUseFeature(user, "aiInvoiceAssist", options)) {
+        if (!this.userCanUseFeature(featureUser, "aiInvoiceAssist", featureOptions)) {
           throw new Error("AI invoice assistant is available on Pro and Business plans.");
         }
-        this.enforceAiQuota(user, options, shouldBill);
+        this.enforceAiQuota(featureUser, featureOptions, shouldBill);
         store.createAiUsageLog({
-          ownerUserId: user.id,
+          ownerUserId: workspace.ownerUserId,
+          actorUserId: user.id,
           plan: plan.plan,
           provider,
           intent: result.intent,
@@ -1131,7 +1146,10 @@ export function createApi(deps = {}) {
             },
           });
         }
-        const invoice = this.createInvoice(result.payload, options);
+        const invoice = this.createInvoice({
+          ...result.payload,
+          workspaceOwnerUserId: workspace.ownerUserId,
+        }, { ...featureOptions, user });
         return withQuota({
           ...result,
           provider,
@@ -1139,12 +1157,13 @@ export function createApi(deps = {}) {
         });
       }
       if (result.intent === "purchase_order") {
-        if (!this.userCanUseFeature(user, "aiPoAssist", options)) {
+        if (!this.userCanUseFeature(featureUser, "aiPoAssist", featureOptions)) {
           throw new Error("AI PO and Work Order assistant is available on Pro and Business plans.");
         }
-        this.enforceAiQuota(user, options, shouldBill);
+        this.enforceAiQuota(featureUser, featureOptions, shouldBill);
         store.createAiUsageLog({
-          ownerUserId: user.id,
+          ownerUserId: workspace.ownerUserId,
+          actorUserId: user.id,
           plan: plan.plan,
           provider,
           intent: result.intent,
@@ -1162,19 +1181,23 @@ export function createApi(deps = {}) {
             },
           });
         }
-        const purchaseOrder = this.createPurchaseOrder(result.payload, options);
+        const purchaseOrder = this.createPurchaseOrder({
+          ...result.payload,
+          workspaceOwnerUserId: workspace.ownerUserId,
+        }, { ...featureOptions, user });
         return withQuota({
           ...result,
           provider,
           createdRecord: purchaseOrder,
         });
       }
-      if (!this.userCanUseFeature(user, "advancedReports", options)) {
+      if (!this.userCanUseFeature(featureUser, "advancedReports", featureOptions)) {
         throw new Error("AI report assistant is available on Pro and Business plans.");
       }
-      this.enforceAiQuota(user, options, shouldBill);
+      this.enforceAiQuota(featureUser, featureOptions, shouldBill);
       store.createAiUsageLog({
-        ownerUserId: user.id,
+        ownerUserId: workspace.ownerUserId,
+        actorUserId: user.id,
         plan: plan.plan,
         provider,
         intent: result.intent,
@@ -1200,9 +1223,10 @@ export function createApi(deps = {}) {
       if (input.approvedDraft) return this.createApprovedAiDraft(user, input, options);
       const command = String(input.command || "").trim();
       if (!command) throw new Error("Enter a command for the AI assistant.");
-      if (!this.userCanUseFeature(user, "aiInvoiceAssist", options)
-        && !this.userCanUseFeature(user, "aiPoAssist", options)
-        && !this.userCanUseFeature(user, "advancedReports", options)) {
+      const featureUser = this.resolveWorkspaceFeatureUser(user, options, "read");
+      if (!this.userCanUseFeature(featureUser, "aiInvoiceAssist", options)
+        && !this.userCanUseFeature(featureUser, "aiPoAssist", options)
+        && !this.userCanUseFeature(featureUser, "advancedReports", options)) {
         throw new Error("AI assistant is available on Pro and Business plans.");
       }
       const context = this.getAiCommandContext(user, options);

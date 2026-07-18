@@ -3791,6 +3791,18 @@ test("business workspace invite routes enforce owner accountant and viewer permi
     assert.equal(viewerInvoices.response.status, 200);
     assert.equal(viewerInvoices.payload.some((invoice) => invoice.id === accountantInvoice.payload.id), true);
 
+    const viewerInvoiceRead = await request(`/invoices/${accountantInvoice.payload.id}?workspaceOwnerUserId=${owner.user.id}`, {
+      token: viewer.token,
+    });
+    assert.equal(viewerInvoiceRead.response.status, 200);
+    assert.equal(viewerInvoiceRead.payload.ownerUserId, owner.user.id);
+
+    const viewerReports = await request(`/reports?workspaceOwnerUserId=${owner.user.id}`, { token: viewer.token });
+    assert.equal(viewerReports.response.status, 200);
+
+    const viewerAccounting = await request(`/accounting/summary?workspaceOwnerUserId=${owner.user.id}`, { token: viewer.token });
+    assert.notEqual(viewerAccounting.response.status, 401);
+
     const viewerInvoiceWriteDenied = await request(`/invoices/${accountantInvoice.payload.id}`, {
       method: "PATCH",
       token: viewer.token,
@@ -3801,6 +3813,17 @@ test("business workspace invite routes enforce owner accountant and viewer permi
     });
     assert.notEqual(viewerInvoiceWriteDenied.response.status, 200);
     assert.match(viewerInvoiceWriteDenied.payload.error, /team role cannot perform/i);
+
+    const viewerReportCreateDenied = await request("/reports", {
+      method: "POST",
+      token: viewer.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        title: "Viewer should not create report records",
+      },
+    });
+    assert.notEqual(viewerReportCreateDenied.response.status, 200);
+    assert.match(viewerReportCreateDenied.payload.error, /team role cannot perform/i);
 
     const accountantPayment = await request(`/invoices/${accountantInvoice.payload.id}/payments`, {
       method: "POST",
@@ -3815,6 +3838,39 @@ test("business workspace invite routes enforce owner accountant and viewer permi
     assert.equal(accountantPayment.response.status, 201);
     assert.equal(accountantPayment.payload.invoice.paymentStatus, "part_paid");
     assert.equal(accountantPayment.payload.invoice.ownerUserId, owner.user.id);
+
+    const viewerPaymentLinkDenied = await request(`/invoices/${accountantInvoice.payload.id}/payment-link`, {
+      method: "POST",
+      token: viewer.token,
+      body: { workspaceOwnerUserId: owner.user.id },
+    });
+    assert.notEqual(viewerPaymentLinkDenied.response.status, 200);
+    assert.match(viewerPaymentLinkDenied.payload.error, /team role cannot perform/i);
+
+    const accountantAiDraft = await request("/ai/command", {
+      method: "POST",
+      token: accountant.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        command: "Create invoice for Shared Customer for consulting INR 1000 plus 18% GST due in 7 days",
+        useLlm: false,
+      },
+    });
+    assert.equal(accountantAiDraft.response.status, 201);
+    assert.equal(accountantAiDraft.payload.createdRecord.ownerUserId, owner.user.id);
+    assert.equal(accountantAiDraft.payload.quota.plan, "business");
+
+    const viewerAiDraftDenied = await request("/ai/command", {
+      method: "POST",
+      token: viewer.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        command: "Create invoice for Shared Customer for consulting INR 1000 plus 18% GST",
+        useLlm: false,
+      },
+    });
+    assert.notEqual(viewerAiDraftDenied.response.status, 201);
+    assert.match(viewerAiDraftDenied.payload.error, /team role cannot perform/i);
 
     const accountantPo = await request("/purchase-orders", {
       method: "POST",
@@ -3832,6 +3888,24 @@ test("business workspace invite routes enforce owner accountant and viewer permi
     });
     assert.equal(accountantPo.response.status, 201);
     assert.equal(accountantPo.payload.ownerUserId, owner.user.id);
+
+    const viewerPoRead = await request(`/purchase-orders/${accountantPo.payload.id}?workspaceOwnerUserId=${owner.user.id}`, {
+      token: viewer.token,
+    });
+    assert.equal(viewerPoRead.response.status, 200);
+    assert.equal(viewerPoRead.payload.ownerUserId, owner.user.id);
+
+    const viewerPoPaymentDenied = await request(`/purchase-orders/${accountantPo.payload.id}/payments`, {
+      method: "POST",
+      token: viewer.token,
+      body: {
+        workspaceOwnerUserId: owner.user.id,
+        amount: 100,
+        mode: "UPI",
+      },
+    });
+    assert.notEqual(viewerPoPaymentDenied.response.status, 200);
+    assert.match(viewerPoPaymentDenied.payload.error, /team role cannot perform/i);
 
     const viewerPoDeleteDenied = await request(`/purchase-orders/${accountantPo.payload.id}?workspaceOwnerUserId=${owner.user.id}`, {
       method: "DELETE",
