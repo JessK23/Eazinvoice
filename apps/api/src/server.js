@@ -2919,8 +2919,13 @@ export function createServer(options = {}) {
     if (url.pathname === "/accounting/accounts" && req.method === "POST") {
       try {
         const body = await readBody(req);
+        const workspace = api.resolveRecordsWorkspaceAccess(user, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        }, "writeRecords");
         sendJson(res, 201, await api.createLedgerAccount(user, body, {
           companyId: body.companyId || null,
+          workspaceOwnerUserId: workspace.ownerUserId,
         }));
       } catch (error) {
         sendJson(res, 400, { error: error.message });
@@ -2951,8 +2956,13 @@ export function createServer(options = {}) {
     if (url.pathname === "/accounting/journals" && req.method === "POST") {
       try {
         const body = await readBody(req);
+        const workspace = api.resolveRecordsWorkspaceAccess(user, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        }, "writeRecords");
         sendJson(res, 201, await api.createJournalEntry(user, body, {
           companyId: body.companyId || null,
+          workspaceOwnerUserId: workspace.ownerUserId,
         }));
       } catch (error) {
         sendJson(res, 400, { error: error.message });

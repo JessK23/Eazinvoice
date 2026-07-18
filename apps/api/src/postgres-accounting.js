@@ -71,6 +71,14 @@ function transactionId(prefix) {
   return `${prefix}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function accountingOwnerId(user, options = {}) {
+  return options.workspaceOwnerUserId || options.ownerUserId || user?.id || "";
+}
+
+function accountingOwnerUser(user, options = {}) {
+  return { ...user, id: accountingOwnerId(user, options) };
+}
+
 function dateRange(options = {}) {
   const params = [];
   const where = [];
@@ -491,13 +499,14 @@ export async function syncAccountingFoundation(user, options = {}) {
     return { enabled: false, reason: "DATABASE_URL is not configured." };
   }
   if (!user?.id) throw new Error("Authentication required");
+  const ownerUser = accountingOwnerUser(user, options);
   return withPostgresClient(async (client) => {
     const companyId = options.companyId || null;
-    const accounts = await ensureDefaultAccounts(client, user.id, companyId);
-    const invoicesSynced = await syncInvoices(client, user, companyId, accounts);
-    const purchaseOrdersSynced = await syncPurchaseOrders(client, user, companyId, accounts);
-    const allAccounts = await listAccounts(client, user.id, companyId);
-    const rows = await trialBalance(client, user, companyId);
+    const accounts = await ensureDefaultAccounts(client, ownerUser.id, companyId);
+    const invoicesSynced = await syncInvoices(client, ownerUser, companyId, accounts);
+    const purchaseOrdersSynced = await syncPurchaseOrders(client, ownerUser, companyId, accounts);
+    const allAccounts = await listAccounts(client, ownerUser.id, companyId);
+    const rows = await trialBalance(client, ownerUser, companyId);
     return {
       enabled: true,
       companyId,
@@ -517,15 +526,17 @@ export async function getAccountingSummary(user, options = {}) {
 export async function getLedgerAccounts(user, options = {}) {
   if (!hasPostgresConfig()) return { enabled: false, reason: "DATABASE_URL is not configured.", accounts: [] };
   if (!user?.id) throw new Error("Authentication required");
+  const ownerUserId = accountingOwnerId(user, options);
   return withPostgresClient(async (client) => ({
     enabled: true,
-    accounts: (await listAccounts(client, user.id, options.companyId || null)).map(publicAccount),
+    accounts: (await listAccounts(client, ownerUserId, options.companyId || null)).map(publicAccount),
   }));
 }
 
 export async function createLedgerAccount(user, input = {}, options = {}) {
   if (!hasPostgresConfig()) throw new Error("DATABASE_URL is not configured.");
   if (!user?.id) throw new Error("Authentication required");
+  const ownerUserId = accountingOwnerId(user, options);
   const companyId = options.companyId || input.companyId || null;
   const accountCode = text(input.accountCode, input.account_code).toUpperCase();
   const accountName = text(input.accountName, input.account_name);
@@ -537,8 +548,8 @@ export async function createLedgerAccount(user, input = {}, options = {}) {
   if (!ACCOUNT_TYPES.has(accountType)) throw new Error("Choose a valid account type.");
   if (!NORMAL_BALANCES.has(normalBalance)) throw new Error("Choose debit or credit as normal balance.");
   return withPostgresClient(async (client) => {
-    await ensureDefaultAccounts(client, user.id, companyId);
-    const id = accountId(user.id, companyId, accountCode);
+    await ensureDefaultAccounts(client, ownerUserId, companyId);
+    const id = accountId(ownerUserId, companyId, accountCode);
     const result = await client.query(
       `insert into eazinvoice_ledger_accounts
         (id, owner_user_id, company_id, account_code, account_name, account_type, normal_balance, system_account, status, updated_at)
@@ -550,7 +561,7 @@ export async function createLedgerAccount(user, input = {}, options = {}) {
         status = 'active',
         updated_at = now()
        returning id, account_code, account_name, account_type, normal_balance, system_account, status`,
-      [id, user.id, companyId, accountCode, accountName, accountType, normalBalance],
+      [id, ownerUserId, companyId, accountCode, accountName, accountType, normalBalance],
     );
     return publicAccount(result.rows[0]);
   });
@@ -559,6 +570,7 @@ export async function createLedgerAccount(user, input = {}, options = {}) {
 export async function createJournalEntry(user, input = {}, options = {}) {
   if (!hasPostgresConfig()) throw new Error("DATABASE_URL is not configured.");
   if (!user?.id) throw new Error("Authentication required");
+  const ownerUserId = accountingOwnerId(user, options);
   const companyId = options.companyId || input.companyId || null;
   const currency = text(input.currency, "INR").toUpperCase();
   const journalDate = dateOnly(input.journalDate || input.date);
@@ -578,9 +590,9 @@ export async function createJournalEntry(user, input = {}, options = {}) {
     throw new Error("Journal debit and credit totals must match.");
   }
   return withPostgresClient(async (client) => {
-    await ensureDefaultAccounts(client, user.id, companyId);
+    await ensureDefaultAccounts(client, ownerUserId, companyId);
     for (const line of lines) {
-      await requireAccount(client, user.id, line.accountId, companyId);
+      await requireAccount(client, ownerUserId, line.accountId, companyId);
     }
     const journalId = transactionId("journal");
     const journalNumber = text(input.journalNumber, `JV-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`);
@@ -588,7 +600,7 @@ export async function createJournalEntry(user, input = {}, options = {}) {
       `insert into eazinvoice_journal_entries
         (id, owner_user_id, company_id, journal_number, journal_date, narration, status, currency, total_debit, total_credit, record, updated_at)
        values ($1, $2, $3, $4, $5, $6, 'posted', $7, $8, $9, $10::jsonb, now())`,
-      [journalId, user.id, companyId, journalNumber, journalDate, narration, currency, totalDebit, totalCredit, JSON.stringify({ manual: true })],
+      [journalId, ownerUserId, companyId, journalNumber, journalDate, narration, currency, totalDebit, totalCredit, JSON.stringify({ manual: true })],
     );
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
@@ -596,12 +608,12 @@ export async function createJournalEntry(user, input = {}, options = {}) {
         `insert into eazinvoice_journal_lines
           (id, journal_id, owner_user_id, company_id, account_id, line_index, description, debit, credit, currency, record, updated_at)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, now())`,
-        [`${journalId}:line:${index + 1}`, journalId, user.id, companyId, line.accountId, index + 1, line.description, line.debit, line.credit, currency, JSON.stringify({ manual: true })],
+        [`${journalId}:line:${index + 1}`, journalId, ownerUserId, companyId, line.accountId, index + 1, line.description, line.debit, line.credit, currency, JSON.stringify({ manual: true })],
       );
     }
     await replaceDerivedTransaction(client, {
       id: `journal:${journalId}`,
-      ownerUserId: user.id,
+      ownerUserId,
       companyId,
       transactionDate: journalDate,
       sourceType: "journal_entry",
@@ -632,23 +644,25 @@ export async function createJournalEntry(user, input = {}, options = {}) {
 export async function getJournalEntries(user, options = {}) {
   if (!hasPostgresConfig()) return { enabled: false, reason: "DATABASE_URL is not configured.", journals: [] };
   if (!user?.id) throw new Error("Authentication required");
+  const ownerUserId = accountingOwnerId(user, options);
   return withPostgresClient(async (client) => ({
     enabled: true,
-    journals: await listJournals(client, user.id, options.companyId || null),
+    journals: await listJournals(client, ownerUserId, options.companyId || null),
   }));
 }
 
 export async function getBookEntries(user, options = {}) {
   if (!hasPostgresConfig()) return { enabled: false, reason: "DATABASE_URL is not configured.", entries: [] };
   if (!user?.id) throw new Error("Authentication required");
+  const ownerUserId = accountingOwnerId(user, options);
   return withPostgresClient(async (client) => {
-    await ensureDefaultAccounts(client, user.id, options.companyId || null);
+    await ensureDefaultAccounts(client, ownerUserId, options.companyId || null);
     const book = text(options.book, "bank").toLowerCase() === "cash" ? "cash" : "bank";
     const accountCode = book === "cash" ? "1120" : "1110";
     return {
       enabled: true,
       book,
-      entries: await bookRows(client, user.id, accountCode, options.companyId || null),
+      entries: await bookRows(client, ownerUserId, accountCode, options.companyId || null),
     };
   });
 }
@@ -658,9 +672,10 @@ export async function getGstComplianceSummary(user, options = {}) {
     return { enabled: false, reason: "DATABASE_URL is not configured.", outputGst: 0, inputGst: 0, netGstPayable: 0, accounts: [], entries: [] };
   }
   if (!user?.id) throw new Error("Authentication required");
+  const ownerUserId = accountingOwnerId(user, options);
   return withPostgresClient(async (client) => ({
     enabled: true,
-    ...(await gstLedgerSummary(client, user.id, options)),
+    ...(await gstLedgerSummary(client, ownerUserId, options)),
   }));
 }
 
@@ -668,8 +683,9 @@ export async function getLedgerAccountEntries(user, accountIdValue, options = {}
   if (!hasPostgresConfig()) return { enabled: false, reason: "DATABASE_URL is not configured.", entries: [] };
   if (!user?.id) throw new Error("Authentication required");
   if (!accountIdValue) throw new Error("Ledger account is required.");
+  const ownerUserId = accountingOwnerId(user, options);
   return withPostgresClient(async (client) => ({
     enabled: true,
-    entries: await accountLedger(client, user.id, accountIdValue, options.companyId || null),
+    entries: await accountLedger(client, ownerUserId, accountIdValue, options.companyId || null),
   }));
 }

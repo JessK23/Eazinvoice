@@ -112,11 +112,11 @@ export const apiClient = {
   createInvoice(token, body) {
     return request("/invoices", { method: "POST", token, body });
   },
-  updateInvoice(token, invoiceId, body) {
-    return request(`/invoices/${invoiceId}`, { method: "PATCH", token, body });
+  updateInvoice(token, invoiceId, body, options = {}) {
+    return request(`/invoices/${invoiceId}${queryString(options)}`, { method: "PATCH", token, body });
   },
-  deleteInvoice(token, invoiceId) {
-    return request(`/invoices/${invoiceId}`, { method: "DELETE", token });
+  deleteInvoice(token, invoiceId, options = {}) {
+    return request(`/invoices/${invoiceId}${queryString(options)}`, { method: "DELETE", token });
   },
   recordInvoicePayment(token, invoiceId, body) {
     return request(`/invoices/${invoiceId}/payments`, { method: "POST", token, body });
@@ -133,23 +133,23 @@ export const apiClient = {
   verifyRazorpayPayment(token, body) {
     return request("/billing/razorpay/verify", { method: "POST", token, body });
   },
-  listPayments(token) {
-    return request("/payments", { token });
+  listPayments(token, options = {}) {
+    return request(`/payments${queryString(options)}`, { token });
   },
-  listPurchaseOrders(token) {
-    return request("/purchase-orders", { token });
+  listPurchaseOrders(token, options = {}) {
+    return request(`/purchase-orders${queryString(options)}`, { token });
   },
   createPurchaseOrder(token, body) {
     return request("/purchase-orders", { method: "POST", token, body });
   },
-  updatePurchaseOrder(token, poId, body) {
-    return request(`/purchase-orders/${poId}`, { method: "PATCH", token, body });
+  updatePurchaseOrder(token, poId, body, options = {}) {
+    return request(`/purchase-orders/${poId}${queryString(options)}`, { method: "PATCH", token, body });
   },
   recordPurchaseOrderPayment(token, poId, body) {
     return request(`/purchase-orders/${poId}/payments`, { method: "POST", token, body });
   },
-  deletePurchaseOrder(token, poId) {
-    return request(`/purchase-orders/${poId}`, { method: "DELETE", token });
+  deletePurchaseOrder(token, poId, options = {}) {
+    return request(`/purchase-orders/${poId}${queryString(options)}`, { method: "DELETE", token });
   },
   createSubscription(token, body) {
     return request("/subscriptions", { method: "POST", token, body });
@@ -168,6 +168,9 @@ export const apiClient = {
   },
   createReport(token, body) {
     return request("/reports", { method: "POST", token, body });
+  },
+  listReports(token, options = {}) {
+    return request(`/reports${queryString(options)}`, { token });
   },
   runAiCommand(token, body) {
     return request("/ai/command", { method: "POST", token, body });
@@ -234,9 +237,6 @@ export const apiClient = {
       token,
       body: { reason },
     });
-  },
-  listReports(token) {
-    return request("/reports", { token });
   },
   getReportSummary(token, filters = {}) {
     const query = new URLSearchParams();

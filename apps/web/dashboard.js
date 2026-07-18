@@ -2098,12 +2098,13 @@ async function refreshAccountingSummary() {
     accountingStatus.className = "form-status";
   }
   try {
-    const payload = await apiClient.getAccountingSummary(token);
+    const workspaceOptions = selectedWorkspaceOptions();
+    const payload = await apiClient.getAccountingSummary(token, workspaceOptions);
     const [journals, bankBook, cashBook, gstSummary] = await Promise.all([
-      apiClient.listJournalEntries(token).catch(() => ({ journals: [] })),
-      apiClient.getAccountingBook(token, { book: "bank" }).catch(() => ({ entries: [] })),
-      apiClient.getAccountingBook(token, { book: "cash" }).catch(() => ({ entries: [] })),
-      apiClient.getGstComplianceSummary(token).catch(() => ({ entries: [] })),
+      apiClient.listJournalEntries(token, workspaceOptions).catch(() => ({ journals: [] })),
+      apiClient.getAccountingBook(token, { ...workspaceOptions, book: "bank" }).catch(() => ({ entries: [] })),
+      apiClient.getAccountingBook(token, { ...workspaceOptions, book: "cash" }).catch(() => ({ entries: [] })),
+      apiClient.getGstComplianceSummary(token, workspaceOptions).catch(() => ({ entries: [] })),
     ]);
     renderAccountingSummary(payload);
     if (journalEntriesList) {
@@ -2131,7 +2132,7 @@ async function loadLedgerDrilldown(accountId) {
   if (!ledgerDrilldownList || !accountId) return;
   ledgerDrilldownList.innerHTML = "<p class=\"hint\">Loading ledger entries...</p>";
   try {
-    const payload = await apiClient.getLedgerAccountEntries(token, accountId);
+    const payload = await apiClient.getLedgerAccountEntries(token, accountId, selectedWorkspaceOptions());
     renderAccountingBook(ledgerDrilldownList, payload.entries || []);
   } catch (error) {
     ledgerDrilldownList.innerHTML = `<p class="hint">${escapeHtml(error.message || "Could not load ledger entries.")}</p>`;
@@ -2773,7 +2774,7 @@ function currentDetailReportSummaryFilters() {
 
 async function refreshDashboardReportSummary() {
   try {
-    const summary = await apiClient.getReportSummary(token, currentReportSummaryFilters());
+    const summary = await apiClient.getReportSummary(token, selectedWorkspaceOptions(currentReportSummaryFilters()));
     dashboardReportSummary = summary?.available ? summary : null;
   } catch {
     dashboardReportSummary = null;
@@ -2782,7 +2783,7 @@ async function refreshDashboardReportSummary() {
 
 async function refreshDetailReportSummary() {
   try {
-    const summary = await apiClient.getReportSummary(token, currentDetailReportSummaryFilters());
+    const summary = await apiClient.getReportSummary(token, selectedWorkspaceOptions(currentDetailReportSummaryFilters()));
     detailReportSummary = summary?.available ? summary : null;
   } catch {
     detailReportSummary = null;
@@ -3306,7 +3307,7 @@ function renderInvoiceWorkspace(invoices) {
       }
       try {
         setPaymentModalStatus("Opening Razorpay checkout...", "");
-        const orderPayload = await apiClient.createRazorpayOrder(token, { kind: "invoice", invoiceId });
+        const orderPayload = await apiClient.createRazorpayOrder(token, { kind: "invoice", invoiceId, ...selectedWorkspaceOptions() });
         const verified = await openRazorpayCheckout(orderPayload, async (result) => {
           const updatedInvoice = result.invoice || result;
           replaceInvoice(updatedInvoice);
@@ -3334,7 +3335,7 @@ function renderInvoiceWorkspace(invoices) {
       const invoiceId = button.getAttribute("data-delete-invoice");
       if (!invoiceId || !window.confirm("Delete this invoice? The number will remain consumed and will not be reused.")) return;
       try {
-        const deleted = await apiClient.deleteInvoice(token, invoiceId);
+        const deleted = await apiClient.deleteInvoice(token, invoiceId, selectedWorkspaceOptions());
         replaceInvoice(deleted);
         rerenderDashboardData();
       } catch (error) {
@@ -3409,7 +3410,7 @@ function renderPoWorkspace(purchaseOrders) {
       const poId = button.getAttribute("data-delete-po");
       if (!poId || !window.confirm("Delete this PO/WO? The number will remain consumed and will not be reused.")) return;
       try {
-        const deleted = await apiClient.deletePurchaseOrder(token, poId);
+        const deleted = await apiClient.deletePurchaseOrder(token, poId, selectedWorkspaceOptions());
         replacePurchaseOrder(deleted);
         rerenderDashboardData();
       } catch (error) {
@@ -4402,6 +4403,7 @@ paymentForm?.addEventListener("submit", async (event) => {
     setPaymentModalStatus("Adding payment...", "");
     const result = paymentContext === "purchaseOrder"
       ? await apiClient.recordPurchaseOrderPayment(token, recordId, {
+        ...selectedWorkspaceOptions(),
         amount,
         mode: paymentModeInput?.value || "manual",
         reference: paymentReferenceInput?.value || "",
@@ -4409,12 +4411,13 @@ paymentForm?.addEventListener("submit", async (event) => {
         paymentDate: paymentDateInput?.value || new Date().toISOString().slice(0, 10),
       })
       : await apiClient.recordInvoicePayment(token, recordId, {
-      amount,
-      mode: paymentModeInput?.value || "manual",
-      reference: paymentReferenceInput?.value || "",
-      notes: paymentNotesInput?.value || "",
-      paymentDate: paymentDateInput?.value || new Date().toISOString().slice(0, 10),
-    });
+        ...selectedWorkspaceOptions(),
+        amount,
+        mode: paymentModeInput?.value || "manual",
+        reference: paymentReferenceInput?.value || "",
+        notes: paymentNotesInput?.value || "",
+        paymentDate: paymentDateInput?.value || new Date().toISOString().slice(0, 10),
+      });
     const updatedRecord = paymentContext === "purchaseOrder" ? result.purchaseOrder || result : result.invoice || result;
     if (paymentContext === "purchaseOrder") replacePurchaseOrder(updatedRecord);
     else replaceInvoice(updatedRecord);
@@ -4455,6 +4458,7 @@ runRecurringDraftsBtn?.addEventListener("click", async () => {
   setRecurringDraftStatus("Checking due recurring invoices...", "");
   try {
     const result = await apiClient.runRecurringInvoiceDrafts(token, {
+      ...selectedWorkspaceOptions(),
       targetDate: new Date().toISOString().slice(0, 10),
     });
     (result.created || []).forEach(replaceInvoice);
@@ -4496,11 +4500,7 @@ reportExportPrint?.addEventListener("click", printCurrentReport);
 businessWorkspaceSwitcher?.addEventListener("change", async () => {
   selectedBusinessWorkspaceOwnerId = businessWorkspaceSwitcher.value || currentUser?.id || "";
   window.localStorage?.setItem("eazinvoice_business_workspace_owner", selectedBusinessWorkspaceOwnerId);
-  renderBusinessWorkspace();
-  await loadBusinessWorkspace().catch((error) => {
-    if (businessWorkspaceNotice) businessWorkspaceNotice.textContent = error.message || "Could not load the selected workspace.";
-    renderBusinessWorkspace();
-  });
+  window.location.reload();
 });
 
 workspaceTargetLinks.forEach((link) => {
@@ -4593,6 +4593,7 @@ ledgerAccountForm?.addEventListener("submit", async (event) => {
   setInlineStatus(ledgerAccountStatus, "Saving ledger account...", "");
   try {
     await apiClient.createLedgerAccount(token, {
+      ...selectedWorkspaceOptions(),
       accountCode: formData.get("accountCode"),
       accountName: formData.get("accountName"),
       accountType: formData.get("accountType"),
@@ -4627,6 +4628,7 @@ journalEntryForm?.addEventListener("submit", async (event) => {
   setInlineStatus(journalEntryStatus, "Posting journal entry...", "");
   try {
     await apiClient.createJournalEntry(token, {
+      ...selectedWorkspaceOptions(),
       journalDate: formData.get("journalDate"),
       currency: formData.get("currency"),
       narration: formData.get("narration"),
@@ -4651,16 +4653,29 @@ trialBalanceList?.addEventListener("click", (event) => {
 
 async function initializeDashboard() {
   try {
-    const [summary, companies, customers, vendors, reports, invoices, purchaseOrders, payments, subscriptions] = await Promise.all([
+    const [summary, workspaces, subscriptions] = await Promise.all([
       apiClient.getPlan(token).catch(() => ({ plan: "free", usage: { companies: 0, customers: 0, invoicesPerMonth: 0 }, limits: { companies: 1, customers: 100, invoicesPerMonth: 10 } })),
-      apiClient.listCompanies(token).catch(() => []),
-      apiClient.listCustomers(token).catch(() => []),
-      apiClient.listVendors(token).catch(() => []),
-      apiClient.listReports(token).catch(() => []),
-      apiClient.listInvoices(token),
-      apiClient.listPurchaseOrders(token).catch(() => []),
-      apiClient.listPayments(token).catch(() => []),
+      apiClient.listBusinessWorkspaces(token).catch(() => []),
       apiClient.listMySubscriptions(token).catch(() => []),
+    ]);
+    dashboardBusinessWorkspaces = Array.isArray(workspaces) ? workspaces : [];
+    if (dashboardBusinessWorkspaces.length) {
+      const stillAvailable = dashboardBusinessWorkspaces.some((workspace) => workspace.ownerUserId === selectedBusinessWorkspaceOwnerId);
+      if (!selectedBusinessWorkspaceOwnerId || !stillAvailable) {
+        const teamWorkspace = dashboardBusinessWorkspaces.find((workspace) => workspace.source === "team");
+        selectedBusinessWorkspaceOwnerId = (teamWorkspace || dashboardBusinessWorkspaces[0]).ownerUserId;
+        window.localStorage?.setItem("eazinvoice_business_workspace_owner", selectedBusinessWorkspaceOwnerId);
+      }
+    }
+    const workspaceOptions = selectedWorkspaceOptions();
+    const [companies, customers, vendors, reports, invoices, purchaseOrders, payments] = await Promise.all([
+      apiClient.listCompanies(token, workspaceOptions).catch(() => []),
+      apiClient.listCustomers(token, workspaceOptions).catch(() => []),
+      apiClient.listVendors(token, workspaceOptions).catch(() => []),
+      apiClient.listReports(token, workspaceOptions).catch(() => []),
+      apiClient.listInvoices(token, workspaceOptions),
+      apiClient.listPurchaseOrders(token, workspaceOptions).catch(() => []),
+      apiClient.listPayments(token, workspaceOptions).catch(() => []),
     ]);
   currentSubscription = subscriptions.slice().reverse().find((subscription) => String(subscription.status || "active").toLowerCase() === "active")
     || subscriptions[subscriptions.length - 1]
