@@ -3974,6 +3974,62 @@ test("security hardening blocks public uploads and cross-user business records",
   }
 });
 
+test("production access audit requires authentication for sensitive api routes", async () => {
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  const sensitiveRequests = [
+    { path: "/me" },
+    { path: "/profile", method: "PATCH", body: { name: "No Token" } },
+    { path: "/admin/money" },
+    { path: "/admin/operations" },
+    { path: "/admin/users" },
+    { path: "/uploads", method: "POST", body: { files: [] } },
+    { path: "/companies" },
+    { path: "/companies", method: "POST", body: { name: "Public Company" } },
+    { path: "/customers" },
+    { path: "/customers", method: "POST", body: { name: "Public Customer" } },
+    { path: "/vendors" },
+    { path: "/vendors", method: "POST", body: { name: "Public Vendor" } },
+    { path: "/billing/razorpay/order", method: "POST", body: { plan: "standard" } },
+    { path: "/subscriptions/me" },
+    { path: "/reports/summary" },
+    { path: "/accounting/summary" },
+    { path: "/reports" },
+    { path: "/business/team" },
+    { path: "/business/settings" },
+    { path: "/business/audit-events" },
+    { path: "/business/notifications" },
+    { path: "/business/api-keys" },
+    { path: "/business/approvals" },
+    { path: "/ai/usage" },
+    { path: "/ai/command", method: "POST", body: { command: "Create invoice" } },
+    { path: "/invoices" },
+    { path: "/invoices", method: "POST", body: { billToName: "Public Client" } },
+    { path: "/payments" },
+    { path: "/purchase-orders" },
+    { path: "/purchase-orders", method: "POST", body: { vendorName: "Public Vendor" } },
+  ];
+
+  try {
+    for (const request of sensitiveRequests) {
+      const response = await fetch(`${baseUrl}${request.path}`, {
+        method: request.method || "GET",
+        headers: { "Content-Type": "application/json" },
+        body: request.body ? JSON.stringify(request.body) : undefined,
+      });
+      assert.equal(
+        response.status,
+        401,
+        `${request.method || "GET"} ${request.path} should require authentication`,
+      );
+    }
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("wordpress connection validates active api keys and blocks mismatched accounts", async () => {
   const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
   const api = createApi({ store });
