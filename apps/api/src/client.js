@@ -187,6 +187,9 @@ export const apiClient = {
   getAdminSubscriptionAudit(token) {
     return request("/admin/subscription-audit", { token });
   },
+  getAdminOperations(token) {
+    return request("/admin/operations", { token });
+  },
   getAdminGateway(token) {
     return request("/admin/gateway", { token });
   },

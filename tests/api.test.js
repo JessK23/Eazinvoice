@@ -1134,6 +1134,79 @@ test("admin subscription audit exposes yearly tier checkout amounts", async () =
   }
 });
 
+test("admin operations dashboard is admin-only and hides secrets", async () => {
+  const restoreAdminEmail = useTestAdminEmail();
+  const previousGatewaySecret = process.env.RAZORPAY_KEY_SECRET;
+  const previousWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  process.env.RAZORPAY_KEY_SECRET = "super-secret-razorpay-value";
+  process.env.RAZORPAY_WEBHOOK_SECRET = "super-secret-webhook-value";
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  try {
+    const adminOtp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email: TEST_ADMIN_EMAIL, phone: "9665444554" },
+    });
+    const admin = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "EazInvoice Admin",
+        email: TEST_ADMIN_EMAIL,
+        password: "AdminSecure123",
+        phone: "9665444554",
+        otp: adminOtp.payload.devOtp,
+      },
+    });
+    const userOtp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email: "operations-user@example.com", phone: "9000000000" },
+    });
+    const user = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "Operations User",
+        email: "operations-user@example.com",
+        password: "UserSecure123",
+        phone: "9000000000",
+        otp: userOtp.payload.devOtp,
+      },
+    });
+
+    const blocked = await request("/admin/operations", { token: user.payload.token });
+    assert.equal(blocked.response.status, 403);
+
+    const operations = await request("/admin/operations", { token: admin.payload.token });
+    assert.equal(operations.response.status, 200);
+    assert.equal(typeof operations.payload.generatedAt, "string");
+    assert.equal(operations.payload.summary.users.total, 2);
+    assert.ok(Array.isArray(operations.payload.risks));
+    const raw = JSON.stringify(operations.payload);
+    assert.equal(raw.includes("super-secret-razorpay-value"), false);
+    assert.equal(raw.includes("super-secret-webhook-value"), false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    restoreAdminEmail();
+    if (previousGatewaySecret === undefined) delete process.env.RAZORPAY_KEY_SECRET;
+    else process.env.RAZORPAY_KEY_SECRET = previousGatewaySecret;
+    if (previousWebhookSecret === undefined) delete process.env.RAZORPAY_WEBHOOK_SECRET;
+    else process.env.RAZORPAY_WEBHOOK_SECRET = previousWebhookSecret;
+  }
+});
+
 test("paid subscriptions require submitted KYC documents while free does not", async () => {
   const server = createServer({ persist: false, useSupabaseEmailOtp: false });
   await new Promise((resolve) => server.listen(0, resolve));

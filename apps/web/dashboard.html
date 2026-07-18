@@ -47,6 +47,7 @@
       </div>
       <nav class="nav nav-groups">
         <a class="nav-item nav-item-featured" href="/apps/web/dashboard.html#ai-assistant" data-page-link="ai-assistant">AI Assistant</a>
+        <a id="adminOperationsSideLink" class="nav-item" href="/apps/web/dashboard.html#admin-operations" data-page-link="admin-operations" hidden>Admin Operations</a>
         <a class="nav-item active" href="/apps/web/dashboard.html#reports" data-page-link="reports">Reports</a>
         <a class="nav-item" href="/apps/web/dashboard.html#accounting" data-page-link="accounting">Accounting</a>
         <a class="nav-item" href="/apps/web/dashboard.html#invoices" data-page-link="invoices">Invoices</a>
@@ -1034,6 +1035,29 @@
         <div id="subscriptionArea" class="grid two"></div>
         <div id="subscriptionHistory" class="list" style="margin-top:14px"></div>
         <div id="subscriptionStatus" class="status" style="margin-top:10px"></div>
+      </section>
+      <section id="admin-operations" class="panel dashboard-page" data-dashboard-page="admin-operations">
+        <div class="dashboard-head">
+          <div>
+            <span class="pill gold">Admin only</span>
+            <h1>Operations Dashboard</h1>
+            <p class="hint">Production health summary for subscriptions, database sync, Razorpay, Business SMTP, and account risk.</p>
+          </div>
+          <button id="adminOperationsRefresh" class="ghost" type="button">Refresh</button>
+        </div>
+        <p id="adminOperationsStatus" class="inline-status" aria-live="polite"></p>
+        <div id="adminOperationsSummary" class="admin-grid"></div>
+        <div class="panel-subsection">
+          <div class="panel-head compact">
+            <div>
+              <span class="pill blue">Risk register</span>
+              <h3>Operational Checks</h3>
+              <p class="hint">Only sanitized status messages are shown here. Secrets and passwords are not exposed.</p>
+            </div>
+          </div>
+          <div id="adminOperationsRisks" class="record-list compact-list"></div>
+        </div>
+        <div id="adminOperationsTechnical" class="quick-grid"></div>
       </section>
     </main>
   </div>

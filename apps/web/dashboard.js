@@ -140,6 +140,12 @@ const aiUsageResetNote = document.getElementById("aiUsageResetNote");
 const aiUsagePeriodBadge = document.getElementById("aiUsagePeriodBadge");
 const adminAiUsagePanel = document.getElementById("adminAiUsagePanel");
 const adminAiUsageList = document.getElementById("adminAiUsageList");
+const adminOperationsSideLink = document.getElementById("adminOperationsSideLink");
+const adminOperationsRefresh = document.getElementById("adminOperationsRefresh");
+const adminOperationsStatus = document.getElementById("adminOperationsStatus");
+const adminOperationsSummary = document.getElementById("adminOperationsSummary");
+const adminOperationsRisks = document.getElementById("adminOperationsRisks");
+const adminOperationsTechnical = document.getElementById("adminOperationsTechnical");
 const businessWorkspaceBadge = document.getElementById("businessWorkspaceBadge");
 const businessWorkspaceNotice = document.getElementById("businessWorkspaceNotice");
 const businessWorkspaceStatusBoard = document.getElementById("businessWorkspaceStatusBoard");
@@ -284,6 +290,7 @@ function showDashboardPage(page = currentDashboardPage()) {
     });
   }
   if (page === "reports") renderMainReportCharts();
+  if (page === "admin-operations") loadAdminOperations();
 }
 
 function syncWorkspaceSectionControls(groupId) {
@@ -1155,6 +1162,86 @@ function attachFormValidityStatus(form, statusElement, message) {
   }, true);
 }
 
+function riskToneClass(severity) {
+  const normalized = String(severity || "").toLowerCase();
+  if (normalized === "danger") return "red";
+  if (normalized === "attention") return "gold";
+  return "blue";
+}
+
+function renderAdminOperations(payload) {
+  if (!adminOperationsSummary || !adminOperationsRisks || !adminOperationsTechnical) return;
+  const summary = payload?.summary || {};
+  const subscriptions = summary.subscriptions || {};
+  const business = summary.business || {};
+  const gateway = payload?.gateway || {};
+  const postgres = payload?.persistence?.postgres || {};
+  adminOperationsSummary.innerHTML = [
+    ["Users", Number(summary.users?.total || 0), `${Number(summary.users?.restricted || 0)} restricted`],
+    ["Subscriptions", Number(subscriptions.total || 0), `${Number(subscriptions.paid || 0)} paid`],
+    ["KYC Profiles", Number(summary.kyc?.total || 0), `${Number(summary.kyc?.byStatus?.pending || 0)} pending`],
+    ["Business Workspaces", Number(business.owners || 0), `${Number(business.smtpReady || 0)} SMTP ready`],
+    ["Billing Orders", Number(summary.billing?.orders || 0), `${Number(summary.billing?.captured || 0)} captured`],
+  ].map(([label, value, detail]) => `
+    <article class="admin-card">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <p class="hint">${escapeHtml(detail)}</p>
+    </article>
+  `).join("");
+  const risks = Array.isArray(payload?.risks) ? payload.risks : [];
+  adminOperationsRisks.innerHTML = risks.length
+    ? risks.map((risk) => `
+      <article class="record-card compact">
+        <div>
+          <strong>${escapeHtml(risk.area || "Operations")}</strong>
+          <div class="hint">${escapeHtml(risk.message || "")}</div>
+          <div class="hint">${escapeHtml(risk.action || "")}</div>
+        </div>
+        <span class="pill ${riskToneClass(risk.severity)}">${escapeHtml(risk.severity || "status")}</span>
+      </article>
+    `).join("")
+    : "<p class=\"hint\">No operational checks returned.</p>";
+  adminOperationsTechnical.innerHTML = [
+    {
+      title: "Postgres",
+      value: postgres.reachable ? "Reachable" : "Needs attention",
+      detail: postgres.database || postgres.error || "No database details available",
+      tone: postgres.reachable ? "ready" : "attention",
+    },
+    {
+      title: "Platform Razorpay",
+      value: gateway.configured ? "Configured" : "Incomplete",
+      detail: gateway.mode ? `${gateway.mode} mode` : "Gateway keys or webhook secret missing",
+      tone: gateway.configured ? "ready" : "attention",
+    },
+    {
+      title: "Business SMTP",
+      value: `${Number(business.smtpReady || 0)}/${Number(business.owners || 0)} ready`,
+      detail: "Workspace-level outgoing email readiness",
+      tone: business.owners && business.smtpReady < business.owners ? "attention" : "ready",
+    },
+  ].map((item) => `
+    <article class="quick-card workspace-status-card" data-tone="${escapeHtml(item.tone)}">
+      <span>${escapeHtml(item.title)}</span>
+      <strong>${escapeHtml(item.value)}</strong>
+      <small>${escapeHtml(item.detail)}</small>
+    </article>
+  `).join("");
+  setInlineStatus(adminOperationsStatus, `Updated ${formatAiDate(payload?.generatedAt || new Date().toISOString())}.`, "success");
+}
+
+async function loadAdminOperations() {
+  if (!sessionContext?.session?.admin?.authorized || !adminOperationsSummary) return;
+  setInlineStatus(adminOperationsStatus, "Loading operational health...", "");
+  try {
+    const payload = await apiClient.getAdminOperations(token);
+    renderAdminOperations(payload);
+  } catch (error) {
+    setInlineStatus(adminOperationsStatus, error.message || "Could not load operations dashboard.", "error");
+  }
+}
+
 function renderAiAssistantAccess() {
   if (!aiAssistantPanel) return;
   const allowed = canUseAiAssistant();
@@ -1360,6 +1447,7 @@ if (currentUser?.role === "admin") {
   if (adminNavLink) adminNavLink.hidden = false;
   if (adminSideLink) adminSideLink.hidden = false;
   if (profileAdminLink) profileAdminLink.hidden = false;
+  if (adminOperationsSideLink) adminOperationsSideLink.hidden = false;
 }
 
 function displayNameFor(user, organization) {
@@ -4351,6 +4439,10 @@ workspaceSectionSelect?.addEventListener("change", () => {
   }
   showDashboardPage("business-workspace");
   openWorkspaceGroup(targetId, true);
+});
+
+adminOperationsRefresh?.addEventListener("click", () => {
+  loadAdminOperations();
 });
 
 workspaceGroups.forEach((group) => {

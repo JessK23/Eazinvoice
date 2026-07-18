@@ -2163,6 +2163,113 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/admin/operations" && req.method === "GET") {
+      if (!isConfiguredAdminUser(user)) {
+        sendJson(res, 403, { error: "Forbidden" });
+        return;
+      }
+      const users = api.listUsers();
+      const subscriptions = api.listSubscriptions();
+      const companies = api.listCompanies();
+      const restricted = api.listRestrictedUsers();
+      const billingOrders = api.listBillingOrders();
+      const gateway = getGatewayStatus();
+      const persistence = await api.getPersistenceStatus();
+      const businessOwners = users.filter((entry) => api.getFreePlanSummary(entry).plan === "business");
+      const businessReadiness = businessOwners.reduce((acc, owner) => {
+        try {
+          const settings = api.getBusinessSettings(owner);
+          const emailSettings = settings.emailSettings || {};
+          const paymentSettings = settings.paymentSettings || {};
+          if (businessSmtpReady(emailSettings)) acc.smtpReady += 1;
+          if (paymentSettings.status === "live_ready" || paymentSettings.status === "test_mode") acc.gatewayReady += 1;
+          if (paymentSettings.paymentLinkEnabled) acc.paymentLinksEnabled += 1;
+        } catch {
+          acc.incomplete += 1;
+        }
+        return acc;
+      }, { smtpReady: 0, gatewayReady: 0, paymentLinksEnabled: 0, incomplete: 0 });
+      const subscriptionSummary = subscriptions.reduce((acc, subscription) => {
+        const status = String(subscription.status || "active").toLowerCase();
+        const plan = String(subscription.plan || "free").toLowerCase();
+        acc.total += 1;
+        acc.byStatus[status] = (acc.byStatus[status] || 0) + 1;
+        if (plan !== "free") acc.paid += 1;
+        return acc;
+      }, { total: 0, paid: 0, byStatus: {} });
+      const kycSummary = companies.reduce((acc, company) => {
+        const status = String(company.reviewStatus || company.kycStatus || "pending").toLowerCase();
+        acc.total += 1;
+        acc.byStatus[status] = (acc.byStatus[status] || 0) + 1;
+        return acc;
+      }, { total: 0, byStatus: {} });
+      const risks = [];
+      if (!persistence.postgres?.configured || !persistence.postgres?.reachable) {
+        risks.push({
+          severity: "danger",
+          area: "Database",
+          message: persistence.postgres?.configured ? "Postgres is configured but not reachable." : "Postgres is not configured.",
+          action: "Check DATABASE_URL and Render/Postgres availability before production writes.",
+        });
+      }
+      if (!gateway.configured) {
+        risks.push({
+          severity: "attention",
+          area: "Razorpay",
+          message: "Platform Razorpay keys or webhook secret are incomplete.",
+          action: "Complete live Razorpay environment variables before taking paid subscriptions.",
+        });
+      }
+      if (subscriptionSummary.paid && !persistence.postgres?.reachable) {
+        risks.push({
+          severity: "danger",
+          area: "Subscriptions",
+          message: "Paid subscriptions exist while Postgres entitlement verification is unavailable.",
+          action: "Restore Postgres before further paid subscription changes.",
+        });
+      }
+      if (businessOwners.length && businessReadiness.smtpReady < businessOwners.length) {
+        risks.push({
+          severity: "attention",
+          area: "Business SMTP",
+          message: `${businessOwners.length - businessReadiness.smtpReady} Business workspace(s) do not have SMTP ready.`,
+          action: "Ask workspace owners to validate email settings before relying on automated notices.",
+        });
+      }
+      if (!risks.length) {
+        risks.push({
+          severity: "ready",
+          area: "Operations",
+          message: "No high-priority operational risk detected from the current summaries.",
+          action: "Continue periodic audits after deployments and payment changes.",
+        });
+      }
+      sendJson(res, 200, {
+        generatedAt: new Date().toISOString(),
+        summary: {
+          users: {
+            total: users.length,
+            admins: users.filter((entry) => isConfiguredAdminUser(entry)).length,
+            restricted: restricted.length,
+          },
+          subscriptions: subscriptionSummary,
+          kyc: kycSummary,
+          business: {
+            owners: businessOwners.length,
+            ...businessReadiness,
+          },
+          billing: {
+            orders: billingOrders.length,
+            captured: billingOrders.filter((order) => String(order.status || "").toLowerCase() === "captured").length,
+          },
+        },
+        gateway,
+        persistence,
+        risks,
+      });
+      return;
+    }
+
     if (url.pathname === "/admin/gateway" && req.method === "GET") {
       if (!isConfiguredAdminUser(user)) {
         sendJson(res, 403, { error: "Forbidden" });
