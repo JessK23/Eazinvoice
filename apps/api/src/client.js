@@ -67,17 +67,17 @@ export const apiClient = {
   listPlans(token) {
     return request("/plans", { token });
   },
-  listCompanies(token) {
-    return request("/companies", { token });
+  listCompanies(token, options = {}) {
+    return request(`/companies${queryString(options)}`, { token });
   },
   createCompany(token, body) {
     return request("/companies", { method: "POST", token, body });
   },
-  updateCompany(token, companyId, body) {
-    return request(`/companies/${companyId}`, { method: "PATCH", token, body });
+  updateCompany(token, companyId, body, options = {}) {
+    return request(`/companies/${companyId}${queryString(options)}`, { method: "PATCH", token, body });
   },
-  listCustomers(token) {
-    return request("/customers", { token });
+  listCustomers(token, options = {}) {
+    return request(`/customers${queryString(options)}`, { token });
   },
   createCustomer(token, body) {
     return request("/customers", { method: "POST", token, body });
@@ -106,8 +106,8 @@ export const apiClient = {
   reactivateVendor(token, vendorId, body = {}) {
     return request(`/vendors/${vendorId}/reactivate`, { method: "POST", token, body });
   },
-  listInvoices(token) {
-    return request("/invoices", { token });
+  listInvoices(token, options = {}) {
+    return request(`/invoices${queryString(options)}`, { token });
   },
   createInvoice(token, body) {
     return request("/invoices", { method: "POST", token, body });

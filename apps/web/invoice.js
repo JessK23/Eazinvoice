@@ -80,6 +80,8 @@ let companies = [];
 let customers = [];
 let subscriptions = [];
 let invoices = [];
+let businessWorkspaces = [];
+let activeWorkspace = null;
 let activePlanSummary = sessionContext?.session?.plan?.active || sessionContext?.session?.plan || null;
 let lastSavedInvoice = null;
 let customerMode = "";
@@ -203,7 +205,7 @@ function renderInvoiceTierIndicator() {
 }
 
 function canUseWhatsappShare() {
-  return ["standard", "pro", "business"].includes(currentPlan());
+  return workspaceCanWriteRecords() && ["standard", "pro", "business"].includes(currentPlan());
 }
 
 function canUseStandardFeatures() {
@@ -236,6 +238,57 @@ function updateStandardFeatureControls() {
 
 function setStatus(message) {
   if (status) status.textContent = message;
+}
+
+function selectedWorkspaceOwnerId() {
+  return window.localStorage?.getItem("eazinvoice_business_workspace_owner") || "";
+}
+
+function resolveActiveWorkspace() {
+  const selectedOwnerId = selectedWorkspaceOwnerId();
+  activeWorkspace = businessWorkspaces.find((workspace) => workspace.ownerUserId === selectedOwnerId) || null;
+  return activeWorkspace;
+}
+
+function activeWorkspaceIsSharedTeam() {
+  return activeWorkspace?.source === "team";
+}
+
+function selectedWorkspaceRoleLabel() {
+  const role = String(activeWorkspace?.role || "owner").replace(/_/g, " ");
+  return role.charAt(0).toUpperCase() + role.slice(1);
+}
+
+function workspaceCanWriteRecords() {
+  return !activeWorkspaceIsSharedTeam() || Boolean(activeWorkspace?.permissions?.writeRecords);
+}
+
+function workspaceOptions(extra = {}) {
+  const workspace = resolveActiveWorkspace();
+  return workspace?.ownerUserId ? { ...extra, workspaceOwnerUserId: workspace.ownerUserId } : extra;
+}
+
+function workspaceWriteLockMessage(action = "change records") {
+  return `Your ${selectedWorkspaceRoleLabel()} role can view this Business workspace, but cannot ${action}.`;
+}
+
+function lockInvoiceFormForWorkspaceRole() {
+  if (!form || workspaceCanWriteRecords()) return;
+  form.querySelectorAll("input, select, textarea, button").forEach((field) => {
+    field.disabled = true;
+  });
+  document.getElementById("printInvoice")?.removeAttribute("disabled");
+  if (whatsappShare) {
+    whatsappShare.setAttribute("aria-disabled", "true");
+    whatsappShare.textContent = "WhatsApp Share (View only)";
+  }
+  setStatus(workspaceWriteLockMessage("edit or create invoices and PO/WO records"));
+}
+
+function guardWorkspaceWrite(action) {
+  if (workspaceCanWriteRecords()) return true;
+  setStatus(workspaceWriteLockMessage(action));
+  return false;
 }
 
 function setNewCustomerStatus(message, tone = "") {
@@ -704,6 +757,9 @@ function renderPreview() {
 }
 
 async function ensureInvoiceCustomer(data, companyId) {
+  if (!guardWorkspaceWrite("create customers while saving invoices")) {
+    throw new Error(workspaceWriteLockMessage("create customers while saving invoices"));
+  }
   if (customerMode !== "existing" && customerMode !== "new") {
     throw new Error("Choose Existing Customer or New Customer before saving the invoice.");
   }
@@ -712,6 +768,7 @@ async function ensureInvoiceCustomer(data, companyId) {
   const name = String(data.get("newCustomerName") || "").trim();
   if (!name) throw new Error("Enter the new customer's name before saving the invoice.");
   const customer = await apiClient.createCustomer(token, {
+    ...workspaceOptions(),
     companyId,
     name,
     gstNumber: data.get("newCustomerGstin"),
@@ -729,6 +786,10 @@ async function ensureInvoiceCustomer(data, companyId) {
 }
 
 async function addNewCustomerToList() {
+  if (!guardWorkspaceWrite("create customers")) {
+    setNewCustomerStatus(workspaceWriteLockMessage("create customers"), "error");
+    return null;
+  }
   const company = firstCompany();
   const data = new FormData(form);
   const name = String(data.get("newCustomerName") || "").trim();
@@ -741,6 +802,7 @@ async function addNewCustomerToList() {
     addNewCustomerBtn?.setAttribute("disabled", "disabled");
     setNewCustomerStatus("Adding customer...", "");
     const customer = await apiClient.createCustomer(token, {
+      ...workspaceOptions(),
       companyId: company?.id || null,
       name,
       businessName: newCustomerCategory?.value === "company" ? name : "",
@@ -830,6 +892,7 @@ function populateSelects() {
 }
 
 addItem?.addEventListener("click", () => {
+  if (!guardWorkspaceWrite("add invoice or PO/WO items")) return;
   itemsEl.appendChild(createItemRow());
   renderPreview();
 });
@@ -865,6 +928,7 @@ issuerCompanySelect?.addEventListener("change", () => {
   maybeOpenIssuerSetup();
 });
 updateIssuerBtn?.addEventListener("click", async () => {
+  if (!guardWorkspaceWrite("update issuer profiles")) return;
   const name = issuerNameInput?.value.trim() || currentUser?.name || "My Business";
   const panNumber = issuerPanInput?.value.trim() || "";
   const gstNumber = issuerGstInput?.value.trim() || "";
@@ -894,8 +958,8 @@ updateIssuerBtn?.addEventListener("click", async () => {
     const company = isUser
       ? (currentUser = (await apiClient.updateMe(token, { name, panNumber })).user, userIssuer())
       : existing?.id
-      ? await apiClient.updateCompany(token, existing.id, payload)
-      : await apiClient.createCompany(token, payload);
+      ? await apiClient.updateCompany(token, existing.id, payload, workspaceOptions())
+      : await apiClient.createCompany(token, { ...payload, ...workspaceOptions() });
     if (!company.isUserIssuer) {
       const index = companies.findIndex((entry) => entry.id === company.id);
       if (index >= 0) companies[index] = company;
@@ -917,11 +981,14 @@ document.getElementById("printInvoice")?.addEventListener("click", () => window.
 whatsappShare?.addEventListener("click", (event) => {
   if (canUseWhatsappShare()) return;
   event.preventDefault();
-  setStatus("WhatsApp sharing is available on Standard and higher plans. Please upgrade to use this feature.");
+  setStatus(workspaceCanWriteRecords()
+    ? "WhatsApp sharing is available on Standard and higher plans. Please upgrade to use this feature."
+    : workspaceWriteLockMessage("share invoices externally"));
 });
 
 form?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!guardWorkspaceWrite("save invoice drafts")) return;
   const data = new FormData(form);
   const company = selectedCompany();
   if (!company) {
@@ -935,6 +1002,7 @@ form?.addEventListener("submit", async (event) => {
     const invoiceCustomer = customer || await ensureInvoiceCustomer(data, issuerCompanyId);
     const gstMode = resolveGstMode(company, data.get("placeOfSupply"));
     lastSavedInvoice = await apiClient.createInvoice(token, {
+      ...workspaceOptions(),
       companyId: issuerCompanyId,
       customerId: invoiceCustomer?.id || null,
       invoiceNumber: data.get("invoiceNumber"),
@@ -982,14 +1050,19 @@ async function initializeInvoicePage() {
   form?.querySelector('input[name="dueDate"]')?.setAttribute("value", due);
 
   try {
-    const [planSummary, loadedCompanies, loadedCustomers, loadedInvoices, loadedSubscriptions] = await Promise.all([
+    const [planSummary, loadedWorkspaces, loadedSubscriptions] = await Promise.all([
       apiClient.getPlan(token).catch(() => null),
-      apiClient.listCompanies(token).catch(() => []),
-      apiClient.listCustomers(token).catch(() => []),
-      apiClient.listInvoices(token).catch(() => []),
+      apiClient.listBusinessWorkspaces(token).catch(() => []),
       apiClient.listMySubscriptions(token).catch(() => []),
     ]);
     activePlanSummary = planSummary || activePlanSummary;
+    businessWorkspaces = Array.isArray(loadedWorkspaces) ? loadedWorkspaces : [];
+    const loadOptions = workspaceOptions();
+    const [loadedCompanies, loadedCustomers, loadedInvoices] = await Promise.all([
+      apiClient.listCompanies(token, loadOptions).catch(() => []),
+      apiClient.listCustomers(token, loadOptions).catch(() => []),
+      apiClient.listInvoices(token, loadOptions).catch(() => []),
+    ]);
     companies = loadedCompanies;
     customers = loadedCustomers;
     invoices = loadedInvoices;
@@ -1004,7 +1077,10 @@ async function initializeInvoicePage() {
     updateTaxLabels();
     updateStandardFeatureControls();
     renderPreview();
-    if (status && !companies.length) status.textContent = "You can raise invoices using your registered name. Add PAN if asked before continuing.";
+    lockInvoiceFormForWorkspaceRole();
+    if (status && !companies.length && workspaceCanWriteRecords()) {
+      status.textContent = "You can raise invoices using your registered name. Add PAN if asked before continuing.";
+    }
   } catch (error) {
     setStatus(error.message || "Could not load invoice data. Please refresh or login again.");
   }
