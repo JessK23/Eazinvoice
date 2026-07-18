@@ -3922,6 +3922,20 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/ai-agent/command" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, await api.runAiAgentCommand(user, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        }));
+      } catch (error) {
+        const status = /pro|business|ai/i.test(error.message) ? 402 : 400;
+        sendJson(res, status, { error: error.message });
+      }
+      return;
+    }
+
     if (url.pathname === "/admin/recurring/run" && req.method === "POST") {
       if (!isConfiguredAdminUser(user)) {
         sendJson(res, 403, { error: "Forbidden" });

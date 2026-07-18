@@ -2198,6 +2198,45 @@ test("Pro AI command assistant drafts invoices, PO/WO, and report summaries", ()
   assert.equal(aiUsage.every((entry) => entry.ownerUserId === user.id), true);
 });
 
+test("AI Agent wraps command proposals with safe plan, checks, and no auto-save", async () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Agent User", email: "agent@example.com" });
+  api.createSubscription({
+    userId: user.id,
+    subscriberName: user.name,
+    subscriberType: "individual",
+    plan: "pro",
+    amount: 499,
+    status: "active",
+  });
+  api.createCompany({ name: "Agent Services", ownerUserId: user.id, state: "Maharashtra" });
+
+  const agent = await api.runAiAgentCommand(user, {
+    command: "Create an invoice for Rachel Antony, amount 40000 plus 18% gst with her account details, Pan Card and address.",
+  }, { useLlm: false });
+
+  assert.equal(agent.agent, true);
+  assert.equal(agent.intent, "invoice");
+  assert.equal(agent.result.intent, "invoice");
+  assert.equal(agent.result.customerMatch.status, "missing");
+  assert.equal(agent.result.proposedRecord.billToName, "Rachel Antony");
+  assert.equal(agent.result.proposedRecord.total, 47200);
+  assert.equal(api.listInvoices(user).length, 0);
+  assert.equal(agent.safety.createsFinalRecordsAutomatically, false);
+  assert.equal(agent.nextActions.some((action) => action.id === "create_draft"), true);
+  assert.equal(agent.checks.some((check) => check.status === "warning" && /not saved/i.test(check.detail)), true);
+});
+
+test("AI Agent keeps Pro and Business gates intact", async () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const freeUser = api.createUser({ name: "Free Agent", email: "free-agent@example.com" });
+
+  await assert.rejects(
+    () => api.runAiAgentCommand(freeUser, { command: "Create invoice for Rahul INR 1000" }, { useLlm: false }),
+    /Pro and Business plans/i,
+  );
+});
+
 test("Pro AI assistant can refine commands with OpenAI JSON and save the approved proposal", async () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const user = api.createUser({ name: "LLM User", email: "llm@example.com" });

@@ -175,6 +175,9 @@ export const apiClient = {
   runAiCommand(token, body) {
     return request("/ai/command", { method: "POST", token, body });
   },
+  runAiAgentCommand(token, body) {
+    return request("/ai-agent/command", { method: "POST", token, body });
+  },
   getAiUsage(token, filters = {}) {
     return request(`/ai/usage${queryString(filters)}`, { token });
   },

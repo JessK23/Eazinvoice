@@ -30,6 +30,7 @@ const PLAN_LIMITS = {
 };
 
 const state = loadState();
+let pendingAiAgentRecord = null;
 const panels = document.querySelectorAll("[data-panel]");
 const navButtons = document.querySelectorAll("[data-view]");
 const drawerLinks = document.querySelectorAll(".drawer-link");
@@ -432,7 +433,7 @@ function runAiCommand() {
   const prompt = document.getElementById("aiPrompt")?.value.trim() || "";
   if (!result) return;
   if (!hasPlan("pro")) {
-    result.innerHTML = `<strong>Upgrade required</strong><span>AI Assistant is available from the Pro tier onward.</span>`;
+    result.innerHTML = `<strong>Upgrade required</strong><span>AI Agent is available from the Pro tier onward.</span>`;
     return;
   }
   if (!prompt) {
@@ -450,9 +451,19 @@ function runAiCommand() {
 
   if (isReport) {
     const summary = totals();
+    pendingAiAgentRecord = null;
     result.innerHTML = `
-      <strong>AI report summary</strong>
+      <strong>AI Agent report summary</strong>
       <span>Revenue is ${money(summary.income)}, expenses are ${money(summary.expenses)}, profit is ${money(summary.profit)}, and unpaid invoices stand at ${money(summary.unpaid)}.</span>
+    `;
+    return;
+  }
+
+  if (amount <= 0) {
+    pendingAiAgentRecord = null;
+    result.innerHTML = `
+      <strong>More details needed</strong>
+      <span>Add a valid amount before the AI Agent prepares a draft.</span>
     `;
     return;
   }
@@ -478,15 +489,34 @@ function runAiCommand() {
     createdAt: new Date().toISOString(),
   };
   Object.assign(record, calculateRecord(record));
+  pendingAiAgentRecord = record;
+  result.innerHTML = `
+    <strong>AI Agent proposal ready</strong>
+    <span>${escapeHtml(recordLabel(record))} draft for ${escapeHtml(record.partyName)} can be saved for ${escapeHtml(money(record.total, record.currency))}. Review before saving.</span>
+    <button id="saveAiDraftMobile" class="primary full" type="button">Save draft</button>
+  `;
+}
+
+function savePendingAiAgentDraft() {
+  const result = document.getElementById("aiResult");
+  if (!pendingAiAgentRecord) {
+    if (result) result.innerHTML = `<strong>No proposal waiting</strong><span>Run the AI Agent again before saving a draft.</span>`;
+    return;
+  }
+  const record = pendingAiAgentRecord;
   if (record.type === "order") state.orders.push(record);
   else state.invoices.push(record);
   rememberParty(record);
+  pendingAiAgentRecord = null;
   saveState();
   render();
-  result.innerHTML = `
-    <strong>${escapeHtml(record.number)} drafted</strong>
-    <span>${escapeHtml(recordLabel(record))} for ${escapeHtml(record.partyName)} has been saved as a draft for ${escapeHtml(money(record.total, record.currency))}.</span>
-  `;
+  const updatedResult = document.getElementById("aiResult");
+  if (updatedResult) {
+    updatedResult.innerHTML = `
+      <strong>${escapeHtml(record.number)} saved as draft</strong>
+      <span>${escapeHtml(recordLabel(record))} for ${escapeHtml(record.partyName)} is now available in records.</span>
+    `;
+  }
 }
 
 navButtons.forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
@@ -515,6 +545,7 @@ document.querySelectorAll("[data-example]").forEach((button) => {
 document.body.addEventListener("click", (event) => {
   const payButton = event.target.closest("[data-pay]");
   if (payButton) openPaymentSheet(payButton.dataset.pay);
+  if (event.target.closest("#saveAiDraftMobile")) savePendingAiAgentDraft();
 });
 
 document.getElementById("closePaymentSheet")?.addEventListener("click", closePaymentSheet);

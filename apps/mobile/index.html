@@ -30,7 +30,7 @@
           </div>
         </div>
         <button class="drawer-link active" type="button" data-view="home">Home</button>
-        <button class="drawer-link" type="button" data-view="ai">AI Assistant</button>
+        <button class="drawer-link" type="button" data-view="ai">AI Agent</button>
         <button class="drawer-link" type="button" data-view="invoice">Invoices</button>
         <button class="drawer-link" type="button" data-view="po">PO / WO</button>
         <button class="drawer-link" type="button" data-view="reports">Reports</button>
@@ -83,7 +83,7 @@
           <strong id="manualInvoiceLimit">Available</strong>
         </article>
         <article>
-          <span>AI Assistant</span>
+          <span>AI Agent</span>
           <strong id="aiLimitText">Pro tier</strong>
         </article>
         <article>
@@ -123,18 +123,18 @@
         <div class="panel-head">
           <div>
             <span class="soft-label">Pro feature</span>
-            <h2>AI Assistant</h2>
+            <h2>AI Agent</h2>
           </div>
           <span id="aiAccessPill" class="soft-pill blue">Enabled</span>
         </div>
-        <p class="muted">Ask EazAI to draft invoices, PO/WO records, or summarize reports from saved mobile data.</p>
+        <p class="muted">Ask EazAI to plan invoice drafts, PO/WO drafts, or report summaries from saved mobile data. Drafts are saved only after you confirm.</p>
         <textarea id="aiPrompt" rows="5" placeholder="Example: Create invoice for Rachel Antony for website design INR 40000 plus 18% GST."></textarea>
         <div class="chip-row">
           <button type="button" data-example="invoice">Invoice</button>
           <button type="button" data-example="po">PO</button>
           <button type="button" data-example="report">Report</button>
         </div>
-        <button id="runAiButton" class="primary full" type="button">Run AI Command</button>
+        <button id="runAiButton" class="primary full" type="button">Run AI Agent</button>
         <div id="aiResult" class="ai-result"></div>
       </section>
     </section>

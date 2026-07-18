@@ -21,6 +21,14 @@ const profileDropdownName = document.getElementById("profileDropdownName");
 const profileDropdownEmail = document.getElementById("profileDropdownEmail");
 const profileAdminLink = document.getElementById("profileAdminLink");
 const profileLogoutBtn = document.getElementById("profileLogoutBtn");
+const contextBusinessName = document.getElementById("contextBusinessName");
+const contextBusinessMeta = document.getElementById("contextBusinessMeta");
+const contextGstin = document.getElementById("contextGstin");
+const contextGstStatus = document.getElementById("contextGstStatus");
+const contextFinancialYear = document.getElementById("contextFinancialYear");
+const contextFyMeta = document.getElementById("contextFyMeta");
+const contextPlanRole = document.getElementById("contextPlanRole");
+const contextAccessMeta = document.getElementById("contextAccessMeta");
 const orgLogo = document.getElementById("orgLogo");
 const orgName = document.getElementById("orgName");
 const orgMeta = document.getElementById("orgMeta");
@@ -273,7 +281,8 @@ function showDashboardPage(page = currentDashboardPage()) {
     section.hidden = section.getAttribute("data-dashboard-page") !== visiblePage;
   });
   dashboardPageLinks.forEach((link) => {
-    const isActive = link.getAttribute("data-page-link") === (page.startsWith("report-") ? "reports" : page);
+    const linkPage = link.getAttribute("data-page-link");
+    const isActive = linkPage === page || (!page.startsWith("report-") && linkPage === page);
     link.classList.toggle("active", isActive);
     if (isActive) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
@@ -1303,7 +1312,7 @@ function renderAiAssistantAccess() {
         ? workspaceWriteLockMessage("run AI commands that create drafts or update records")
         : quotaBlocked
         ? `Monthly AI command limit reached for ${activePlanSummary.label || "this"} plan. Upgrade or wait for the next monthly reset.`
-        : `AI Assistant is live on this plan. ${aiLimit.label}: ${aiLimit.value}.`,
+        : `AI Agent is live on this plan. ${aiLimit.label}: ${aiLimit.value}.`,
       roleBlocked || aiLimit.tone === "red" ? "error" : "success"
     );
   }
@@ -1386,6 +1395,31 @@ function renderAiResult(result) {
     appendAiChatMessage("assistant", "Proposal discarded. Send a fresh instruction whenever you are ready.");
     setAiAssistantStatus("AI proposal discarded.", "");
   });
+}
+
+function renderAiAgentSummary(agentResponse) {
+  if (!agentResponse?.agent) return;
+  const checks = Array.isArray(agentResponse.checks) ? agentResponse.checks : [];
+  const plan = Array.isArray(agentResponse.plan) ? agentResponse.plan : [];
+  const toneForStatus = (status) => {
+    if (status === "blocked") return "maroon";
+    if (status === "warning") return "gold";
+    return "blue";
+  };
+  appendAiChatMessage("assistant", `
+    <div class="ai-result-card ai-agent-card">
+      <div>
+        <strong>AI Agent plan</strong>
+        <div class="hint">${escapeHtml(agentResponse.reply || "I reviewed your command and prepared the next safe action.")}</div>
+        ${plan.length ? `<ol class="compact-list">${plan.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol>` : ""}
+        ${checks.length ? `
+          <div class="badge-row">
+            ${checks.map((check) => `<span class="pill ${toneForStatus(check.status)}" title="${escapeHtml(check.detail || "")}">${escapeHtml(check.label || check.status || "Check")}</span>`).join("")}
+          </div>
+        ` : ""}
+      </div>
+    </div>
+  `, { html: true });
 }
 
 async function savePendingAiDraft() {
@@ -1483,6 +1517,42 @@ function displayNameFor(user, organization) {
   return organization?.legalName || organization?.name || user?.name || user?.email || "User";
 }
 
+function financialYearLabel(startMonth = 4) {
+  const normalizedStart = Number(startMonth) || 4;
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+  if (normalizedStart === 1) return `FY ${currentYear}`;
+  const fyStart = currentMonth >= normalizedStart ? currentYear : currentYear - 1;
+  return `FY ${fyStart}-${String((fyStart + 1) % 100).padStart(2, "0")}`;
+}
+
+function renderAppContext(user, organization) {
+  const complianceProfile = dashboardBusinessSettings?.complianceProfile || {};
+  const workspace = activeBusinessWorkspace();
+  const businessName = displayNameFor(user, organization);
+  const entityType = organization?.entityType || complianceProfile.entityType || "individual";
+  const gstin = organization?.gstin || organization?.gstNumber || complianceProfile.gstin || "";
+  const pan = organization?.pan || organization?.panNumber || complianceProfile.pan || "";
+  const gstReady = Boolean(gstin);
+  const fyStartMonth = Number(complianceProfile.fiscalYearStartMonth || 4);
+  const role = workspace?.role || (user?.role === "admin" ? "admin" : "owner");
+  const planLabel = activePlanSummary?.label || currentSubscription?.plan || "Free";
+
+  if (contextBusinessName) contextBusinessName.textContent = businessName;
+  if (contextBusinessMeta) {
+    contextBusinessMeta.textContent = organization
+      ? `${String(entityType).replace(/_/g, " ")} · ${organization.state || organization.address || "Profile saved"}`
+      : "No business profile selected";
+  }
+  if (contextGstin) contextGstin.textContent = gstin || pan || "Not added";
+  if (contextGstStatus) contextGstStatus.textContent = gstReady ? "GST-ready profile" : "Add GSTIN/PAN in Compliance Profile";
+  if (contextFinancialYear) contextFinancialYear.textContent = financialYearLabel(fyStartMonth);
+  if (contextFyMeta) contextFyMeta.textContent = fyStartMonth === 4 ? "India default: April to March" : `Starts in month ${fyStartMonth}`;
+  if (contextPlanRole) contextPlanRole.textContent = `${planLabel} / ${String(role).replace(/_/g, " ")}`;
+  if (contextAccessMeta) contextAccessMeta.textContent = workspace?.source === "team" ? "Team workspace access" : "Owner workspace access";
+}
+
 function renderProfile(user, organization) {
   const displayName = displayNameFor(user, organization);
   const initials = displayName
@@ -1496,6 +1566,7 @@ function renderProfile(user, organization) {
   if (profileDisplayMeta) profileDisplayMeta.textContent = user?.role === "admin" ? "Admin account" : "User account";
   if (profileDropdownName) profileDropdownName.textContent = displayName;
   if (profileDropdownEmail) profileDropdownEmail.textContent = user?.email || "";
+  renderAppContext(user, organization);
 }
 
 function renderPlanCards(currentPlan) {
@@ -3591,6 +3662,7 @@ function renderBusinessWorkspaceContext(enabled) {
     businessWorkspaceBadge.textContent = enabled ? "Workspace active" : "Business required";
     businessWorkspaceBadge.className = `pill ${enabled ? "blue" : "gold"}`;
   }
+  renderAppContext(currentUser, dashboardCompanies[0] || null);
 }
 
 function setFormPermission(form, allowed, lockedMessage = "Your current workspace role can view this section, but cannot change it.") {
@@ -4060,7 +4132,7 @@ aiVoiceButton?.addEventListener("click", () => {
 
 async function sendAiCommand() {
   if (!canUseAiAssistant()) {
-    setAiAssistantStatus("AI assistant is available on Pro and Business plans.", "error");
+    setAiAssistantStatus("AI Agent is available on Pro and Business plans.", "error");
     return;
   }
   if (!workspaceCanWriteRecords()) {
@@ -4080,21 +4152,23 @@ async function sendAiCommand() {
   showAiThinking();
   setAiAssistantStatus("AI is reviewing your command...", "");
   try {
-    const result = await apiClient.runAiCommand(token, { command, previewOnly: true });
+    const agentResponse = await apiClient.runAiAgentCommand(token, { command });
+    const result = agentResponse.result || agentResponse;
     removeAiThinking();
-    applyAiQuotaResult(result.quota);
+    applyAiQuotaResult(agentResponse.quota || result.quota);
     renderAiAssistantAccess();
     await loadAiUsage();
     pendingAiDraftCommand = result.intent === "invoice" || result.intent === "purchase_order" ? command : null;
     pendingAiDraftResult = pendingAiDraftCommand ? result : null;
+    renderAiAgentSummary(agentResponse);
     renderAiResult(result);
     const missingCustomer = result.customerMatch?.status === "missing";
     setAiAssistantStatus(
       result.intent === "report"
-        ? "AI report summary ready."
+        ? "AI Agent report summary ready."
         : missingCustomer
-          ? "AI proposal ready, but this customer is not saved yet. Add the customer first or create the draft and complete details later."
-          : "AI proposal ready. Review it, then create the draft if it looks correct.",
+          ? "AI Agent proposal ready, but this customer is not saved yet. Add the customer first or create the draft and complete details later."
+          : "AI Agent proposal ready. Review it, then create the draft if it looks correct.",
       missingCustomer ? "" : "success"
     );
   } catch (error) {

@@ -25,6 +25,7 @@ import {
 } from "./postgres-accounting.js";
 import { summarizePostgresReports } from "./postgres-reporting.js";
 import { buildAiCommand } from "./ai-assistant.js";
+import { buildAiAgentResponse } from "./ai-agent.js";
 import { tryBuildAiCommandWithLlm } from "./ai-llm.js";
 
 function normalizeUsageMonth(input) {
@@ -1252,6 +1253,19 @@ export function createApi(deps = {}) {
       }
       if (!result) result = buildAiCommand(command, context);
       return this.finalizeAiCommandResult(user, input, options, result, provider);
+    },
+
+    async runAiAgentCommand(user, input = {}, options = {}) {
+      if (!user?.id) throw new Error("Authentication required");
+      const command = String(input.command || "").trim();
+      if (!command) throw new Error("Enter a command for the AI agent.");
+      const assistantResult = await this.runAiCommandAsync(user, {
+        ...input,
+        command,
+        previewOnly: true,
+        approvedDraft: undefined,
+      }, options);
+      return buildAiAgentResponse({ command, assistantResult });
     },
 
     getAiUsageSummary(user, options = {}) {
