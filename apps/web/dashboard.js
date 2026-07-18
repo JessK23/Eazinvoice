@@ -360,6 +360,29 @@ function workspaceCan(permission) {
   return Boolean(activeBusinessWorkspace()?.permissions?.[permission]);
 }
 
+function activeWorkspaceIsSharedTeam() {
+  return activeBusinessWorkspace()?.source === "team";
+}
+
+function selectedWorkspaceRoleLabel() {
+  const role = String(activeBusinessWorkspace()?.role || "owner").replace(/_/g, " ");
+  return role.charAt(0).toUpperCase() + role.slice(1);
+}
+
+function workspaceCanWriteRecords() {
+  return !activeWorkspaceIsSharedTeam() || workspaceCan("writeRecords");
+}
+
+function workspaceWriteLockMessage(action = "change records") {
+  return `Your ${selectedWorkspaceRoleLabel()} role can view this Business workspace, but cannot ${action}.`;
+}
+
+function setWorkspaceLockStatus(action, element = paymentModalStatus) {
+  const message = workspaceWriteLockMessage(action);
+  setInlineStatus(element, message, "error");
+  return message;
+}
+
 function canOpenBusinessWorkspace() {
   return activePlanAllows("teamAccess") || dashboardBusinessWorkspaces.some((workspace) => workspace.source === "team");
 }
@@ -395,7 +418,7 @@ const WORKSPACE_SECTION_META = [
   {
     id: "workspace-team-access",
     title: "Sub-users",
-    description: "Create accountant, admin, or viewer access by email.",
+    description: "Create accountant or viewer access by email.",
     permission: "manageTeam",
   },
   {
@@ -1246,6 +1269,8 @@ function renderAiAssistantAccess() {
   if (!aiAssistantPanel) return;
   const allowed = canUseAiAssistant();
   const quotaBlocked = aiQuotaExceeded();
+  const roleBlocked = allowed && !workspaceCanWriteRecords();
+  const disableAiControls = !allowed || quotaBlocked || roleBlocked;
   renderAiQuotaPanel();
   if (aiAssistantPlanBadge) {
     aiAssistantPlanBadge.textContent = allowed
@@ -1253,13 +1278,13 @@ function renderAiAssistantAccess() {
       : "Upgrade to Pro";
     aiAssistantPlanBadge.className = `pill ${allowed ? "blue" : "gold"}`;
   }
-  if (aiCommandRun) aiCommandRun.disabled = !allowed || quotaBlocked;
-  if (aiCommandInput) aiCommandInput.disabled = !allowed || quotaBlocked;
+  if (aiCommandRun) aiCommandRun.disabled = disableAiControls;
+  if (aiCommandInput) aiCommandInput.disabled = disableAiControls;
   [aiInvoiceExample, aiPoExample, aiReportExample].forEach((button) => {
-    if (button) button.disabled = !allowed || quotaBlocked;
+    if (button) button.disabled = disableAiControls;
   });
   if (aiVoiceButton) {
-    aiVoiceButton.disabled = !allowed || quotaBlocked || !("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
+    aiVoiceButton.disabled = disableAiControls || !("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
     aiVoiceButton.title = aiVoiceButton.disabled && allowed
       ? "Voice input is not available in this browser. Typed commands still work."
       : "Speak an invoice, PO, or report command";
@@ -1272,10 +1297,12 @@ function renderAiAssistantAccess() {
   } else {
     const aiLimit = planLimitLine("aiCommandsPerMonth", activePlanSummary);
     setAiAssistantStatus(
-      quotaBlocked
+      roleBlocked
+        ? workspaceWriteLockMessage("run AI commands that create drafts or update records")
+        : quotaBlocked
         ? `Monthly AI command limit reached for ${activePlanSummary.label || "this"} plan. Upgrade or wait for the next monthly reset.`
         : `AI Assistant is live on this plan. ${aiLimit.label}: ${aiLimit.value}.`,
-      aiLimit.tone === "red" ? "error" : "success"
+      roleBlocked || aiLimit.tone === "red" ? "error" : "success"
     );
   }
 }
@@ -2841,6 +2868,10 @@ function renderCustomers(customers) {
 
   document.querySelectorAll("[data-edit-customer]").forEach((button) => {
     button.addEventListener("click", async () => {
+      if (!workspaceCanWriteRecords()) {
+        window.alert(workspaceWriteLockMessage("edit customers"));
+        return;
+      }
       const customerId = button.getAttribute("data-edit-customer");
       const customer = dashboardCustomers.find((entry) => entry.id === customerId);
       if (!customer) return;
@@ -2870,6 +2901,10 @@ function renderCustomers(customers) {
 
   document.querySelectorAll("[data-delete-customer]").forEach((button) => {
     button.addEventListener("click", async () => {
+      if (!workspaceCanWriteRecords()) {
+        window.alert(workspaceWriteLockMessage("delete customers"));
+        return;
+      }
       const customerId = button.getAttribute("data-delete-customer");
       if (!customerId || !window.confirm("Delete this customer from the active list? Existing invoices will remain linked historically.")) return;
       try {
@@ -2884,6 +2919,10 @@ function renderCustomers(customers) {
 
   document.querySelectorAll("[data-reactivate-customer]").forEach((button) => {
     button.addEventListener("click", async () => {
+      if (!workspaceCanWriteRecords()) {
+        window.alert(workspaceWriteLockMessage("reactivate customers"));
+        return;
+      }
       const customerId = button.getAttribute("data-reactivate-customer");
       if (!customerId) return;
       try {
@@ -2971,6 +3010,10 @@ function renderVendors(vendors = dashboardVendors, purchaseOrders = dashboardPur
 
   document.querySelectorAll("[data-edit-vendor]").forEach((button) => {
     button.addEventListener("click", async () => {
+      if (!workspaceCanWriteRecords()) {
+        window.alert(workspaceWriteLockMessage("edit vendors"));
+        return;
+      }
       const vendorId = button.getAttribute("data-edit-vendor");
       const vendor = dashboardVendors.find((entry) => entry.id === vendorId);
       if (!vendor) return;
@@ -3000,6 +3043,10 @@ function renderVendors(vendors = dashboardVendors, purchaseOrders = dashboardPur
 
   document.querySelectorAll("[data-delete-vendor]").forEach((button) => {
     button.addEventListener("click", async () => {
+      if (!workspaceCanWriteRecords()) {
+        window.alert(workspaceWriteLockMessage("delete vendors"));
+        return;
+      }
       const vendorId = button.getAttribute("data-delete-vendor");
       if (!vendorId || !window.confirm("Delete this vendor from the active list? Existing PO/WO records will remain linked historically.")) return;
       try {
@@ -3014,6 +3061,10 @@ function renderVendors(vendors = dashboardVendors, purchaseOrders = dashboardPur
 
   document.querySelectorAll("[data-reactivate-vendor]").forEach((button) => {
     button.addEventListener("click", async () => {
+      if (!workspaceCanWriteRecords()) {
+        window.alert(workspaceWriteLockMessage("reactivate vendors"));
+        return;
+      }
       const vendorId = button.getAttribute("data-reactivate-vendor");
       if (!vendorId) return;
       try {
@@ -3178,16 +3229,19 @@ function renderInvoiceWorkspace(invoices) {
   const drafts = invoices.filter((invoice) => String(invoice.status || "").toLowerCase() === "draft");
   const createdInvoices = selectedPeriodInvoices(createdInvoicesOnly(invoices));
   const total = createdInvoices.reduce((sum, invoice) => sum + Number(invoice.total || 0), 0);
+  const canWriteRecords = workspaceCanWriteRecords();
   if (draftInvoiceCount) draftInvoiceCount.textContent = String(drafts.length);
   if (createdInvoiceCount) createdInvoiceCount.textContent = String(createdInvoices.length);
   if (invoiceRevenueTotal) invoiceRevenueTotal.textContent = `INR ${money(total)}`;
   if (runRecurringDraftsBtn) {
-    const canRunRecurring = activePlanAllows("recurringInvoices");
+    const canRunRecurring = activePlanAllows("recurringInvoices") && canWriteRecords;
     runRecurringDraftsBtn.disabled = !canRunRecurring;
-    runRecurringDraftsBtn.textContent = canRunRecurring ? "Generate Recurring Drafts" : "Recurring Drafts in Standard";
+    runRecurringDraftsBtn.textContent = activePlanAllows("recurringInvoices") ? "Generate Recurring Drafts" : "Recurring Drafts in Standard";
     runRecurringDraftsBtn.title = canRunRecurring
       ? "Create due draft invoices from recurring invoice templates"
-      : "Recurring invoice drafts are available on Standard and higher plans";
+      : activePlanAllows("recurringInvoices")
+        ? workspaceWriteLockMessage("generate recurring invoice drafts")
+        : "Recurring invoice drafts are available on Standard and higher plans";
   }
 
   const renderInvoiceRow = (invoice, tone = "gold") => {
@@ -3205,10 +3259,10 @@ function renderInvoiceWorkspace(invoices) {
           ${invoice.paymentLink?.url ? `<div class="hint">Payment link: ${escapeHtml(invoice.paymentLink.url)}</div>` : ""}
         </div>
         <div class="row-actions">
-          <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoiceId)}">${isDraft ? "Edit Draft" : "Open / Edit"}</a>
-          ${!isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-invoice="${escapeHtml(invoiceId)}" data-balance="${balance}">Record Payment</button>` : ""}
-          ${!isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-link="${escapeHtml(invoiceId)}">${activePlanAllows("razorpayCollections") ? "Collect Online" : "Upgrade for Gateway"}</button>` : ""}
-          <button class="ghost small danger" type="button" data-delete-invoice="${escapeHtml(invoiceId)}">Delete</button>
+          <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoiceId)}">${canWriteRecords ? (isDraft ? "Edit Draft" : "Open / Edit") : "Open"}</a>
+          ${canWriteRecords && !isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-invoice="${escapeHtml(invoiceId)}" data-balance="${balance}">Record Payment</button>` : ""}
+          ${canWriteRecords && !isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-link="${escapeHtml(invoiceId)}">${activePlanAllows("razorpayCollections") ? "Collect Online" : "Upgrade for Gateway"}</button>` : ""}
+          ${canWriteRecords ? `<button class="ghost small danger" type="button" data-delete-invoice="${escapeHtml(invoiceId)}">Delete</button>` : `<span class="pill gold">View only</span>`}
           <span class="pill ${paymentTone(rawPaymentStatus)}">${escapeHtml(paymentStatus.toUpperCase())}</span>
         </div>
       </div>
@@ -3229,6 +3283,10 @@ function renderInvoiceWorkspace(invoices) {
 
   document.querySelectorAll("[data-payment-invoice]").forEach((button) => {
     button.addEventListener("click", () => {
+      if (!workspaceCanWriteRecords()) {
+        setWorkspaceLockStatus("record invoice payments");
+        return;
+      }
       const invoiceId = button.getAttribute("data-payment-invoice");
       const invoice = dashboardInvoices.find((entry) => entry.id === invoiceId);
       if (invoice) openPaymentModal(invoice);
@@ -3237,6 +3295,10 @@ function renderInvoiceWorkspace(invoices) {
 
   document.querySelectorAll("[data-payment-link]").forEach((button) => {
     button.addEventListener("click", async () => {
+      if (!workspaceCanWriteRecords()) {
+        setWorkspaceLockStatus("create invoice payment links");
+        return;
+      }
       const invoiceId = button.getAttribute("data-payment-link");
       if (!activePlanAllows("razorpayCollections")) {
         setPaymentModalStatus("Razorpay payment collection is available on Standard and higher plans. Upgrade before using gateway links.", "error");
@@ -3265,6 +3327,10 @@ function renderInvoiceWorkspace(invoices) {
 
   document.querySelectorAll("[data-delete-invoice]").forEach((button) => {
     button.addEventListener("click", async () => {
+      if (!workspaceCanWriteRecords()) {
+        setWorkspaceLockStatus("delete invoices");
+        return;
+      }
       const invoiceId = button.getAttribute("data-delete-invoice");
       if (!invoiceId || !window.confirm("Delete this invoice? The number will remain consumed and will not be reused.")) return;
       try {
@@ -3283,6 +3349,7 @@ function renderPoWorkspace(purchaseOrders) {
   const drafts = activePurchaseOrders.filter((po) => String(po.status || "created").toLowerCase() === "draft");
   const created = selectedPeriodPurchaseOrders(activePurchaseOrders.filter((po) => String(po.status || "created").toLowerCase() !== "draft"));
   const total = created.reduce((sum, po) => sum + Number(po.total || 0), 0);
+  const canWriteRecords = workspaceCanWriteRecords();
   if (draftPoCount) draftPoCount.textContent = String(drafts.length);
   if (createdPoCount) createdPoCount.textContent = String(created.length);
   if (poValueTotal) poValueTotal.textContent = `INR ${money(total)}`;
@@ -3312,9 +3379,9 @@ function renderPoWorkspace(purchaseOrders) {
           <div class="hint">${escapeHtml(po.billToName || "Vendor")} - ${escapeHtml(po.poDate || "No date")} - ${escapeHtml(currency)} ${money(po.total || 0)} - Balance ${escapeHtml(currency)} ${money(balance)}</div>
         </div>
         <div class="row-actions">
-          <a class="ghost small" href="/apps/web/invoice.html?type=po&po=${encodeURIComponent(poId)}">${isDraft ? "Edit Draft" : "Open / Edit"}</a>
-          ${!isDraft && paymentStatus !== "paid" ? `<button class="ghost small" type="button" data-record-po-payment="${escapeHtml(poId)}">Record Payment</button>` : ""}
-          <button class="ghost small danger" type="button" data-delete-po="${escapeHtml(poId)}">Delete</button>
+          <a class="ghost small" href="/apps/web/invoice.html?type=po&po=${encodeURIComponent(poId)}">${canWriteRecords ? (isDraft ? "Edit Draft" : "Open / Edit") : "Open"}</a>
+          ${canWriteRecords && !isDraft && paymentStatus !== "paid" ? `<button class="ghost small" type="button" data-record-po-payment="${escapeHtml(poId)}">Record Payment</button>` : ""}
+          ${canWriteRecords ? `<button class="ghost small danger" type="button" data-delete-po="${escapeHtml(poId)}">Delete</button>` : `<span class="pill gold">View only</span>`}
           <span class="pill ${tone}">${escapeHtml(String(po.status || "created").toUpperCase())}</span>
           <span class="pill ${paymentTone}">${escapeHtml(paymentStatus.replace("_", " ").toUpperCase())}</span>
         </div>
@@ -3335,6 +3402,10 @@ function renderPoWorkspace(purchaseOrders) {
 
   document.querySelectorAll("[data-delete-po]").forEach((button) => {
     button.addEventListener("click", async () => {
+      if (!workspaceCanWriteRecords()) {
+        setWorkspaceLockStatus("delete PO/WO records");
+        return;
+      }
       const poId = button.getAttribute("data-delete-po");
       if (!poId || !window.confirm("Delete this PO/WO? The number will remain consumed and will not be reused.")) return;
       try {
@@ -3348,6 +3419,10 @@ function renderPoWorkspace(purchaseOrders) {
   });
   document.querySelectorAll("[data-record-po-payment]").forEach((button) => {
     button.addEventListener("click", () => {
+      if (!workspaceCanWriteRecords()) {
+        setWorkspaceLockStatus("record PO/WO payments");
+        return;
+      }
       const poId = button.getAttribute("data-record-po-payment");
       const purchaseOrder = dashboardPurchaseOrders.find((entry) => entry.id === poId);
       if (purchaseOrder) openPaymentModal(purchaseOrder, "purchaseOrder");
@@ -3951,6 +4026,12 @@ async function sendAiCommand() {
     setAiAssistantStatus("AI assistant is available on Pro and Business plans.", "error");
     return;
   }
+  if (!workspaceCanWriteRecords()) {
+    const message = workspaceWriteLockMessage("run AI commands that create drafts or update records");
+    appendAiChatMessage("assistant", message);
+    setAiAssistantStatus(message, "error");
+    return;
+  }
   const command = aiCommandInput?.value?.trim() || "";
   if (!command) {
     setAiAssistantStatus("Enter a command for invoice, PO/WO, or report generation.", "error");
@@ -3987,7 +4068,7 @@ async function sendAiCommand() {
     appendAiChatMessage("assistant", message);
     setAiAssistantStatus(message, "error");
   } finally {
-    aiCommandRun.disabled = !canUseAiAssistant() || aiQuotaExceeded();
+    aiCommandRun.disabled = !canUseAiAssistant() || aiQuotaExceeded() || !workspaceCanWriteRecords();
   }
 }
 
@@ -4298,6 +4379,10 @@ paymentModal?.addEventListener("click", (event) => {
 
 paymentForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!workspaceCanWriteRecords()) {
+    setWorkspaceLockStatus("record payments");
+    return;
+  }
   const paymentContext = paymentForm.dataset.context || "invoice";
   const recordId = paymentInvoiceId?.value || "";
   const amount = Number(paymentAmountInput?.value || 0);
@@ -4362,6 +4447,10 @@ runRecurringDraftsBtn?.addEventListener("click", async () => {
     setRecurringDraftStatus("Recurring draft generation is available on Standard and higher plans.", "error");
     return;
   }
+  if (!workspaceCanWriteRecords()) {
+    setRecurringDraftStatus(workspaceWriteLockMessage("generate recurring invoice drafts"), "error");
+    return;
+  }
   runRecurringDraftsBtn.disabled = true;
   setRecurringDraftStatus("Checking due recurring invoices...", "");
   try {
@@ -4380,7 +4469,7 @@ runRecurringDraftsBtn?.addEventListener("click", async () => {
   } catch (error) {
     setRecurringDraftStatus(error.message || "Could not generate recurring drafts.", "error");
   } finally {
-    runRecurringDraftsBtn.disabled = !activePlanAllows("recurringInvoices");
+    runRecurringDraftsBtn.disabled = !activePlanAllows("recurringInvoices") || !workspaceCanWriteRecords();
   }
 });
 
@@ -4457,6 +4546,10 @@ workspaceGroups.forEach((group) => {
 
 vendorForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!workspaceCanWriteRecords()) {
+    setInlineStatus(vendorFormStatus, workspaceWriteLockMessage("create vendors"), "error");
+    return;
+  }
   const formData = new FormData(vendorForm);
   const vendorName = String(formData.get("name") || "").trim();
   if (!vendorName) {
@@ -4492,6 +4585,10 @@ refreshAccountingBtn?.addEventListener("click", () => {
 
 ledgerAccountForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!workspaceCanWriteRecords()) {
+    setInlineStatus(ledgerAccountStatus, workspaceWriteLockMessage("create ledger accounts"), "error");
+    return;
+  }
   const formData = new FormData(ledgerAccountForm);
   setInlineStatus(ledgerAccountStatus, "Saving ledger account...", "");
   try {
@@ -4511,6 +4608,10 @@ ledgerAccountForm?.addEventListener("submit", async (event) => {
 
 journalEntryForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!workspaceCanWriteRecords()) {
+    setInlineStatus(journalEntryStatus, workspaceWriteLockMessage("post journal entries"), "error");
+    return;
+  }
   const formData = new FormData(journalEntryForm);
   const debitAccount = String(formData.get("debitAccount") || "");
   const creditAccount = String(formData.get("creditAccount") || "");
