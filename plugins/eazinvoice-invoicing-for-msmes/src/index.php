@@ -138,6 +138,15 @@ final class EazInvoice_Plugin {
 			'eazinvoice-settings',
 			array( $this, 'render_settings_page' )
 		);
+
+		add_submenu_page(
+			'eazinvoice',
+			__( 'SOP / Help', 'eazinvoice-invoicing-for-msmes' ),
+			__( 'SOP / Help', 'eazinvoice-invoicing-for-msmes' ),
+			'manage_options',
+			'eazinvoice-help',
+			array( $this, 'render_help_page' )
+		);
 	}
 
 	/**
@@ -540,6 +549,7 @@ final class EazInvoice_Plugin {
 			'api'          => array( __( 'API Access', 'eazinvoice-invoicing-for-msmes' ), admin_url( 'admin.php?page=eazinvoice-api-access' ) ),
 			'gateway'      => array( __( 'Payment Gateway', 'eazinvoice-invoicing-for-msmes' ), admin_url( 'admin.php?page=eazinvoice-payment-gateway' ) ),
 			'settings'     => array( __( 'Settings', 'eazinvoice-invoicing-for-msmes' ), admin_url( 'admin.php?page=eazinvoice-settings' ) ),
+			'help'         => array( __( 'SOP / Help', 'eazinvoice-invoicing-for-msmes' ), admin_url( 'admin.php?page=eazinvoice-help' ) ),
 		);
 
 		$menu_id = 'eazinvoice-admin-menu-' . sanitize_html_class( $active );
@@ -1125,6 +1135,60 @@ final class EazInvoice_Plugin {
 		$label = (string) $atts['label'];
 
 		return '<div class="eazinvoice-shortcode"><a class="eazinvoice-shortcode-button" href="' . esc_url( $url ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $label ) . '</a></div>';
+	}
+
+	/**
+	 * Render SOP and user guidance page.
+	 */
+	public function render_help_page() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		$workspace_url = $this->get_create_invoice_url();
+		?>
+		<div class="wrap eazinvoice-admin">
+			<?php $this->render_admin_nav( 'help' ); ?>
+			<section class="eazinvoice-hero">
+				<div>
+					<p class="eazinvoice-kicker"><?php esc_html_e( 'Operating SOP', 'eazinvoice-invoicing-for-msmes' ); ?></p>
+					<h1><?php esc_html_e( 'How to use EazInvoice inside WordPress', 'eazinvoice-invoicing-for-msmes' ); ?></h1>
+					<p><?php esc_html_e( 'Use this page as the quick operating manual for the free plugin and paid EazInvoice-connected tiers.', 'eazinvoice-invoicing-for-msmes' ); ?></p>
+				</div>
+				<a class="eazinvoice-button" href="<?php echo esc_url( $workspace_url ); ?>" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'Open Workspace', 'eazinvoice-invoicing-for-msmes' ); ?></a>
+			</section>
+			<div class="eazinvoice-grid">
+				<section class="eazinvoice-card">
+					<h2><?php esc_html_e( 'Setup', 'eazinvoice-invoicing-for-msmes' ); ?></h2>
+					<ol>
+						<li><?php esc_html_e( 'Open Settings and add your EazInvoice account email, API key, workspace URL, and API settings URL.', 'eazinvoice-invoicing-for-msmes' ); ?></li>
+						<li><?php esc_html_e( 'Validate the API connection from API Access.', 'eazinvoice-invoicing-for-msmes' ); ?></li>
+						<li><?php esc_html_e( 'Keep the automatic public button enabled only where it makes sense for your website.', 'eazinvoice-invoicing-for-msmes' ); ?></li>
+					</ol>
+				</section>
+				<section class="eazinvoice-card">
+					<h2><?php esc_html_e( 'Free workflow', 'eazinvoice-invoicing-for-msmes' ); ?></h2>
+					<ol>
+						<li><?php esc_html_e( 'Create invoice or PO/WO drafts from the plugin admin pages.', 'eazinvoice-invoicing-for-msmes' ); ?></li>
+						<li><?php esc_html_e( 'Create final records only after customer/vendor, amount, tax, and terms are complete.', 'eazinvoice-invoicing-for-msmes' ); ?></li>
+						<li><?php esc_html_e( 'Use the EazInvoice workspace for full reporting and subscription-aware features.', 'eazinvoice-invoicing-for-msmes' ); ?></li>
+					</ol>
+				</section>
+				<section class="eazinvoice-card">
+					<h2><?php esc_html_e( 'Paid workflow', 'eazinvoice-invoicing-for-msmes' ); ?></h2>
+					<p><?php esc_html_e( 'Standard, Pro, and Business features unlock through the connected EazInvoice account. Upgrade from the Subscription page and then validate API access again.', 'eazinvoice-invoicing-for-msmes' ); ?></p>
+				</section>
+				<section class="eazinvoice-card">
+					<h2><?php esc_html_e( 'Release checklist', 'eazinvoice-invoicing-for-msmes' ); ?></h2>
+					<ol>
+						<li><?php esc_html_e( 'Run Plugin Check before each WordPress.org upload.', 'eazinvoice-invoicing-for-msmes' ); ?></li>
+						<li><?php esc_html_e( 'Confirm readme stable tag, plugin version, and license headers match.', 'eazinvoice-invoicing-for-msmes' ); ?></li>
+						<li><?php esc_html_e( 'Commit updated plugin files to WordPress.org SVN trunk with banners and icons in assets.', 'eazinvoice-invoicing-for-msmes' ); ?></li>
+					</ol>
+				</section>
+			</div>
+		</div>
+		<?php
 	}
 
 	/**

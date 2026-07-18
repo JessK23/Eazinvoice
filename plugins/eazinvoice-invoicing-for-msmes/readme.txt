@@ -4,7 +4,7 @@ Tags: invoice, billing, gst, msme, freelancer
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.0.4
+Stable tag: 1.0.5
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,10 @@ No. WooCommerce sync is optional and paid. The core EazInvoice plugin is designe
 7. Optional shortcode button shown on a WordPress page.
 
 == Changelog ==
+
+= 1.0.5 =
+* Added in-plugin SOP and operating guidance for invoices, PO/WO, subscriptions, API access, and releases.
+* Added clearer release readiness documentation for WordPress.org, Android, Razorpay, and web application checks.
 
 = 1.0.4 =
 * Added accounting and compliance reporting readiness messaging for Balance Sheet, Cash Flow, GST, revenue, expense, and profit workflows.

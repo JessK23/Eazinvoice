@@ -22,7 +22,8 @@
     "audit:subscriptions": "node scripts/subscription-entitlement-audit.mjs",
     "mobile:check": "node --check apps/mobile/app.js",
     "mobile:sync": "npx cap sync android",
-    "mobile:open": "npx cap open android"
+    "mobile:open": "npx cap open android",
+    "release:check": "node scripts/release-readiness-check.mjs"
   },
   "devDependencies": {
     "@capacitor/android": "^8.4.0",
