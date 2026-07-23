@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Eazinvoice Reports</title>
-  <link rel="stylesheet" href="./styles.css?v=20260719-ui-revamp-1" />
+  <link rel="stylesheet" href="./styles.css?v=20260723-ui-banner-refresh-4" />
   <script src="./nav.js?v=20260614-responsive-menu" defer></script>
 </head>
 <body>
@@ -1166,6 +1166,33 @@
         </div>
       </form>
       <div id="paymentModalStatus" class="inline-status" aria-live="polite"></div>
+    </div>
+  </div>
+  <div id="documentEmailModal" class="payment-modal" hidden>
+    <div class="payment-modal-card">
+      <div class="panel-head">
+        <div>
+          <span class="pill blue">Email document</span>
+          <h2 id="documentEmailTitle">Email Invoice</h2>
+        </div>
+        <button id="documentEmailClose" class="ghost small" type="button">Close</button>
+      </div>
+      <p id="documentEmailMeta" class="hint"></p>
+      <form id="documentEmailForm" class="grid two">
+        <input id="documentEmailRecordId" name="recordId" type="hidden" />
+        <input id="documentEmailContext" name="context" type="hidden" />
+        <label class="full">Recipient Email
+          <input id="documentEmailRecipient" name="toEmail" type="email" placeholder="client@example.com" required />
+        </label>
+        <label class="full">Message
+          <textarea id="documentEmailNote" name="note" rows="3" placeholder="Optional short message"></textarea>
+        </label>
+        <div class="actions full">
+          <button id="documentEmailSubmit" class="primary" type="submit">Send Email</button>
+          <button id="documentEmailCancel" class="ghost" type="button">Cancel</button>
+        </div>
+      </form>
+      <div id="documentEmailStatus" class="inline-status" aria-live="polite"></div>
     </div>
   </div>
   <script type="module" src="./dashboard.js?v=20260603-report-charts"></script>

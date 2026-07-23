@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Eazinvoice Document Workflow</title>
-  <link rel="stylesheet" href="./styles.css?v=20260719-ui-revamp-1" />
+  <link rel="stylesheet" href="./styles.css?v=20260723-ui-banner-refresh-4" />
   <script src="./nav.js?v=20260614-responsive-menu" defer></script>
 </head>
 <body>
@@ -291,6 +291,7 @@
           <button id="saveDraftBtn" class="primary" type="submit">Save Draft</button>
           <button id="createInvoiceBtn" class="primary alt" type="button">Create Invoice</button>
           <button id="printInvoice" class="ghost" type="button">Generate Tax Invoice PDF</button>
+          <button id="emailDocumentBtn" class="ghost" type="button">Email</button>
           <a id="whatsappShare" class="ghost" href="#" target="_blank" rel="noreferrer">WhatsApp Share</a>
         </div>
         <span id="invoiceWorkflowStatus" class="status"></span>
@@ -352,6 +353,32 @@
     </div>
   </div>
 
+  <div id="documentEmailModal" class="payment-modal" hidden>
+    <div class="payment-modal-card">
+      <div class="panel-head">
+        <div>
+          <span class="pill blue">Email document</span>
+          <h2 id="documentEmailTitle">Email Invoice</h2>
+        </div>
+        <button id="documentEmailClose" class="ghost small" type="button">Close</button>
+      </div>
+      <p id="documentEmailMeta" class="hint"></p>
+      <form id="documentEmailForm" class="grid two">
+        <label class="full">Recipient Email
+          <input id="documentEmailRecipient" name="toEmail" type="email" placeholder="client@example.com" required />
+        </label>
+        <label class="full">Message
+          <textarea id="documentEmailNote" name="note" rows="3" placeholder="Optional short message"></textarea>
+        </label>
+        <div class="actions full">
+          <button id="documentEmailSubmit" class="primary" type="submit">Send Email</button>
+          <button id="documentEmailCancel" class="ghost" type="button">Cancel</button>
+        </div>
+      </form>
+      <div id="documentEmailStatus" class="inline-status" aria-live="polite"></div>
+    </div>
+  </div>
+
   <script>
     (() => {
       const form = document.getElementById("invoiceWorkflowForm");
@@ -400,6 +427,7 @@
       const saveDraftButton = document.getElementById("saveDraftBtn");
       const createInvoiceButton = document.getElementById("createInvoiceBtn");
       const printButton = document.getElementById("printInvoice");
+      const emailDocumentBtn = document.getElementById("emailDocumentBtn");
       const previewRows = document.getElementById("previewRows");
       const previewCompany = document.getElementById("previewCompany");
       const previewCompanyMeta = document.getElementById("previewCompanyMeta");
@@ -452,6 +480,16 @@
       const saveSuccessTitle = document.getElementById("saveSuccessTitle");
       const saveSuccessMessage = document.getElementById("saveSuccessMessage");
       const saveSuccessContinue = document.getElementById("saveSuccessContinue");
+      const documentEmailModal = document.getElementById("documentEmailModal");
+      const documentEmailForm = document.getElementById("documentEmailForm");
+      const documentEmailTitle = document.getElementById("documentEmailTitle");
+      const documentEmailMeta = document.getElementById("documentEmailMeta");
+      const documentEmailClose = document.getElementById("documentEmailClose");
+      const documentEmailCancel = document.getElementById("documentEmailCancel");
+      const documentEmailRecipient = document.getElementById("documentEmailRecipient");
+      const documentEmailNote = document.getElementById("documentEmailNote");
+      const documentEmailSubmit = document.getElementById("documentEmailSubmit");
+      const documentEmailStatus = document.getElementById("documentEmailStatus");
       const token = localStorage.getItem("eazinvoice_token") || new URLSearchParams(location.search).get("token") || "";
       const params = new URLSearchParams(location.search);
       const invoiceIdFromUrl = params.get("invoice") || "";
@@ -627,6 +665,12 @@
             ? "Standard features are active for this session. Recurring details are saved with the invoice and branding removal applies to print/PDF."
             : "Recurring drafts and branding removal are available on Standard and higher plans.";
         }
+        if (emailDocumentBtn) {
+          emailDocumentBtn.textContent = allowed ? "Email" : "Email (Paid)";
+          emailDocumentBtn.title = allowed
+            ? "Email this saved document to the customer or vendor"
+            : "Emailing invoices and PO/WO documents is available on Standard and higher plans.";
+        }
         [recurringInvoiceToggle, recurringFrequency, recurringNextDate, hideBrandingToggle].forEach((field) => {
           if (!field) return;
           field.disabled = !allowed;
@@ -648,10 +692,55 @@
         invoicePaymentStatus.dataset.tone = tone;
       }
 
+      function setWorkflowStatus(message, tone = "") {
+        if (!status) return;
+        status.textContent = message || "";
+        status.dataset.tone = tone;
+      }
+
       function setInvoicePaymentModalStatus(message, tone = "") {
         if (!invoicePaymentModalStatus) return;
         invoicePaymentModalStatus.textContent = message || "";
         invoicePaymentModalStatus.dataset.tone = tone;
+      }
+
+      function setDocumentEmailStatus(message, tone = "") {
+        if (!documentEmailStatus) return;
+        documentEmailStatus.textContent = message || "";
+        documentEmailStatus.dataset.tone = tone;
+      }
+
+      function selectedRecipientEmail() {
+        const selected = activeRecipients().find((entry) => entry.id === customerSelect?.value);
+        return selected?.email || fallbackSavedInvoice?.email || fallbackSavedInvoice?.billToEmail || "";
+      }
+
+      function openDocumentEmailModal() {
+        const documentRecord = fallbackSavedInvoice;
+        if (!canUseStandardFeatures()) {
+          setWorkflowStatus("Emailing invoices and PO/WO documents is available on Standard and higher plans.", "error");
+          return;
+        }
+        if (!documentRecord?.id || String(documentRecord.status || "").toLowerCase() === "draft") {
+          setWorkflowStatus(`Create the ${documentTypeShort()} before emailing it. Drafts stay internal.`, "error");
+          return;
+        }
+        if (!documentEmailModal || !documentEmailRecipient) return;
+        const number = documentRecord.invoiceNumber || documentRecord.poNumber || documentTypeLabel();
+        if (documentEmailTitle) documentEmailTitle.textContent = isPoFlow ? `Email ${documentTypeLabel()}` : "Email Invoice";
+        if (documentEmailMeta) documentEmailMeta.textContent = `${number} - ${documentRecord.billToName || (isPoFlow ? "Vendor" : "Customer")}`;
+        documentEmailRecipient.value = selectedRecipientEmail();
+        if (documentEmailNote) documentEmailNote.value = "";
+        if (documentEmailSubmit) documentEmailSubmit.disabled = false;
+        setDocumentEmailStatus("");
+        documentEmailModal.hidden = false;
+        documentEmailRecipient.focus();
+      }
+
+      function closeDocumentEmailModal() {
+        if (documentEmailModal) documentEmailModal.hidden = true;
+        documentEmailForm?.reset();
+        setDocumentEmailStatus("");
       }
 
       function renderInvoicePaymentPanel(invoice = fallbackSavedInvoice) {
@@ -1337,6 +1426,44 @@
       invoicePaymentModalCancel?.addEventListener("click", closeInvoicePaymentModal);
       invoicePaymentModal?.addEventListener("click", (event) => {
         if (event.target === invoicePaymentModal) closeInvoicePaymentModal();
+      });
+      emailDocumentBtn?.addEventListener("click", openDocumentEmailModal);
+      documentEmailClose?.addEventListener("click", closeDocumentEmailModal);
+      documentEmailCancel?.addEventListener("click", closeDocumentEmailModal);
+      documentEmailModal?.addEventListener("click", (event) => {
+        if (event.target === documentEmailModal) closeDocumentEmailModal();
+      });
+      documentEmailForm?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!fallbackSavedInvoice?.id) {
+          setDocumentEmailStatus(`Create the ${documentTypeShort()} before emailing it.`, "error");
+          return;
+        }
+        const toEmail = documentEmailRecipient?.value || "";
+        if (!toEmail) {
+          setDocumentEmailStatus("Add a valid recipient email.", "error");
+          return;
+        }
+        try {
+          if (documentEmailSubmit) documentEmailSubmit.disabled = true;
+          setDocumentEmailStatus("Sending email...", "");
+          const path = isPoFlow
+            ? `/purchase-orders/${encodeURIComponent(fallbackSavedInvoice.id)}/email`
+            : `/invoices/${encodeURIComponent(fallbackSavedInvoice.id)}/email`;
+          const result = await api(path, {
+            method: "POST",
+            body: JSON.stringify({
+              toEmail,
+              note: documentEmailNote?.value || "",
+            }),
+          });
+          setDocumentEmailStatus(`${result.documentType || "Document"} sent to ${result.recipient || toEmail}.`, "success");
+          setWorkflowStatus(`${result.documentType || documentTypeLabel()} emailed successfully.`, "success");
+        } catch (error) {
+          setDocumentEmailStatus(error.message || "Could not email this document.", "error");
+        } finally {
+          if (documentEmailSubmit) documentEmailSubmit.disabled = false;
+        }
       });
       invoicePaymentForm?.addEventListener("submit", async (event) => {
         event.preventDefault();
