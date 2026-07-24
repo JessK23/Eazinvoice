@@ -20,9 +20,17 @@ async function request(path, { method = "GET", body, token } = {}) {
     },
     body: body ? JSON.stringify(body) : undefined,
   });
-  const payload = await response.json();
+  const responseText = await response.text();
+  let payload = {};
+  if (responseText) {
+    try {
+      payload = JSON.parse(responseText);
+    } catch {
+      payload = { message: responseText };
+    }
+  }
   if (!response.ok) {
-    throw new Error(payload.error || "Request failed");
+    throw new Error(payload.error || payload.message || `Request failed (${response.status})`);
   }
   return payload;
 }
