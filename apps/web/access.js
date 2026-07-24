@@ -45,6 +45,13 @@ const accessCreatedInvoicesList = document.getElementById("accessCreatedInvoices
 const accessDraftPoCount = document.getElementById("accessDraftPoCount");
 const accessCreatedPoCount = document.getElementById("accessCreatedPoCount");
 const accessPlanFeatureGrid = document.getElementById("accessPlanFeatureGrid");
+const accessTierBanner = document.getElementById("accessTierBanner");
+const accessTierBannerBadge = document.getElementById("accessTierBannerBadge");
+const accessTierBannerTitle = document.getElementById("accessTierBannerTitle");
+const accessTierBannerText = document.getElementById("accessTierBannerText");
+const accessTierBannerTags = document.getElementById("accessTierBannerTags");
+const accessTierBannerMetric = document.getElementById("accessTierBannerMetric");
+const accessTierBannerMetricText = document.getElementById("accessTierBannerMetricText");
 
 let currentUser = null;
 let companies = [];
@@ -165,6 +172,55 @@ function renderPlanFeatures(catalog = []) {
   }).join("");
 }
 
+function renderTierBanner() {
+  if (!accessTierBanner) return;
+  const tier = (plan?.plan || "free").toLowerCase();
+  if (app) app.dataset.plan = tier;
+  const banner = {
+    free: {
+      badge: "Free plan",
+      title: "Start lean, upgrade when you need more.",
+      text: "Basic invoices, core records, and guided access in a lighter workspace banner.",
+      metric: "Free tier",
+      metricText: "Invoices, profile updates, and essential access are available now.",
+      tags: ["Basic invoices", "Limited records", "Upgrade ready"],
+    },
+    standard: {
+      badge: "Standard plan",
+      title: "Recurring billing and WhatsApp sharing made simple.",
+      text: "A clean workspace for growing teams that need invoice delivery, recurring drafts, and payment collection.",
+      metric: "Standard tier",
+      metricText: "WhatsApp sharing, recurring drafts, and payment workflows are highlighted here.",
+      tags: ["WhatsApp share", "Recurring drafts", "Razorpay links"],
+    },
+    pro: {
+      badge: "Pro plan",
+      title: "AI-assisted invoicing and reporting for faster decisions.",
+      text: "Pro brings AI invoice drafting, AI PO support, and advanced reports into a focused, modern workspace.",
+      metric: "Pro tier",
+      metricText: "AI assistant, report summaries, and multiple-business operations are featured here.",
+      tags: ["AI assistant", "Advanced reports", "Multiple businesses"],
+    },
+    business: {
+      badge: "Business plan",
+      title: "Team access, approvals, and audit-ready control.",
+      text: "Business elevates the workspace for multi-user approvals, compliance, notifications, and API access.",
+      metric: "Business tier",
+      metricText: "Team workflows, audit trails, and compliance controls are surfaced here.",
+      tags: ["Team access", "Approvals", "Audit trail"],
+    },
+  }[tier] || {};
+
+  if (accessTierBannerBadge && banner.badge) accessTierBannerBadge.textContent = banner.badge;
+  if (accessTierBannerTitle && banner.title) accessTierBannerTitle.textContent = banner.title;
+  if (accessTierBannerText && banner.text) accessTierBannerText.textContent = banner.text;
+  if (accessTierBannerMetric && banner.metric) accessTierBannerMetric.textContent = banner.metric;
+  if (accessTierBannerMetricText && banner.metricText) accessTierBannerMetricText.textContent = banner.metricText;
+  if (accessTierBannerTags) {
+    accessTierBannerTags.innerHTML = (banner.tags || []).map((tag) => `<span class="pill blue">${escapeHtml(tag)}</span>`).join("");
+  }
+}
+
 const validTabs = new Set(Array.from(tabs).map((tab) => tab.dataset.tab).filter(Boolean));
 
 function requestedTab() {
@@ -233,6 +289,7 @@ function renderAccess() {
   setText("statusPo", String(purchaseOrders.length));
   setText("statusEmail", currentUser?.emailVerified ? "Verified" : "Pending");
   setText("statusMobile", currentUser?.phone ? "Registered" : "Pending");
+  renderTierBanner();
 
   const total = invoices.reduce((sum, invoice) => sum + Number(invoice.total || 0), 0);
   const activity = document.getElementById("statusActivity");

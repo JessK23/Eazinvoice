@@ -101,6 +101,18 @@ const paymentModeInput = document.getElementById("paymentModeInput");
 const paymentReferenceInput = document.getElementById("paymentReferenceInput");
 const paymentNotesInput = document.getElementById("paymentNotesInput");
 const paymentSubmitButton = document.getElementById("paymentSubmitButton");
+const documentEmailModal = document.getElementById("documentEmailModal");
+const documentEmailForm = document.getElementById("documentEmailForm");
+const documentEmailClose = document.getElementById("documentEmailClose");
+const documentEmailCancel = document.getElementById("documentEmailCancel");
+const documentEmailTitle = document.getElementById("documentEmailTitle");
+const documentEmailMeta = document.getElementById("documentEmailMeta");
+const documentEmailRecordId = document.getElementById("documentEmailRecordId");
+const documentEmailContext = document.getElementById("documentEmailContext");
+const documentEmailRecipient = document.getElementById("documentEmailRecipient");
+const documentEmailNote = document.getElementById("documentEmailNote");
+const documentEmailSubmit = document.getElementById("documentEmailSubmit");
+const documentEmailStatus = document.getElementById("documentEmailStatus");
 const dashboardPages = document.querySelectorAll("[data-dashboard-page]");
 const dashboardPageLinks = document.querySelectorAll("[data-page-link]");
 const businessProfilesList = document.getElementById("businessProfilesList");
@@ -248,6 +260,7 @@ const FEATURE_GATES = [
   { key: "pdfPrint", label: "PDF and print", upgrade: "Free" },
   { key: "manualPayments", label: "Manual payment tracking", upgrade: "Free" },
   { key: "whatsappShare", label: "WhatsApp sharing", upgrade: "Standard" },
+  { key: "documentEmailShare", label: "Email invoice and PO", upgrade: "Standard" },
   { key: "razorpayCollections", label: "Razorpay collection links", upgrade: "Standard" },
   { key: "recurringInvoices", label: "Recurring auto-drafts", upgrade: "Standard" },
   { key: "aiInvoiceAssist", label: "AI invoice assistant", upgrade: "Pro" },
@@ -3192,6 +3205,48 @@ function setPaymentModalStatus(message, tone = "") {
   paymentModalStatus.dataset.tone = tone;
 }
 
+function setDocumentEmailStatus(message, tone = "") {
+  if (!documentEmailStatus) return;
+  documentEmailStatus.textContent = message || "";
+  documentEmailStatus.dataset.tone = tone;
+}
+
+function documentEmailRecipientFor(record, context = "invoice") {
+  if (context === "purchaseOrder") {
+    const vendor = dashboardVendors.find((entry) => entry.id === record.vendorId);
+    return vendor?.email || record.email || record.billToEmail || "";
+  }
+  const customer = dashboardCustomers.find((entry) => entry.id === record.customerId);
+  return customer?.email || record.email || record.billToEmail || "";
+}
+
+function openDocumentEmailModal(record, context = "invoice") {
+  if (!documentEmailModal || !documentEmailForm || !documentEmailRecordId || !documentEmailContext || !documentEmailRecipient) return;
+  if (!activePlanAllows("documentEmailShare")) {
+    setPaymentModalStatus("Emailing invoices and PO/WO documents is available on Standard and higher plans.", "error");
+    return;
+  }
+  const isPurchaseOrder = context === "purchaseOrder";
+  const number = isPurchaseOrder ? record.poNumber : record.invoiceNumber;
+  const party = record.billToName || (isPurchaseOrder ? "Vendor" : "Customer");
+  if (documentEmailTitle) documentEmailTitle.textContent = isPurchaseOrder ? "Email PO / Work Order" : "Email Invoice";
+  if (documentEmailMeta) documentEmailMeta.textContent = `${number || (isPurchaseOrder ? "PO/WO" : "Invoice")} - ${party}`;
+  documentEmailRecordId.value = record.id || "";
+  documentEmailContext.value = context;
+  documentEmailRecipient.value = documentEmailRecipientFor(record, context);
+  if (documentEmailNote) documentEmailNote.value = "";
+  if (documentEmailSubmit) documentEmailSubmit.disabled = false;
+  setDocumentEmailStatus("");
+  documentEmailModal.hidden = false;
+  documentEmailRecipient.focus();
+}
+
+function closeDocumentEmailModal() {
+  if (documentEmailModal) documentEmailModal.hidden = true;
+  documentEmailForm?.reset();
+  setDocumentEmailStatus("");
+}
+
 function setRecurringDraftStatus(message, tone = "") {
   if (!recurringDraftStatus) return;
   recurringDraftStatus.hidden = !message;
@@ -3368,6 +3423,7 @@ function renderInvoiceWorkspace(invoices) {
         </div>
         <div class="row-actions">
           <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoiceId)}">${canWriteRecords ? (isDraft ? "Edit Draft" : "Open / Edit") : "Open"}</a>
+          ${canWriteRecords && !isDraft ? `<button class="ghost small" type="button" data-email-invoice="${escapeHtml(invoiceId)}">${activePlanAllows("documentEmailShare") ? "Email" : "Upgrade for Email"}</button>` : ""}
           ${canWriteRecords && !isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-invoice="${escapeHtml(invoiceId)}" data-balance="${balance}">Record Payment</button>` : ""}
           ${canWriteRecords && !isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-link="${escapeHtml(invoiceId)}">${activePlanAllows("razorpayCollections") ? "Collect Online" : "Upgrade for Gateway"}</button>` : ""}
           ${canWriteRecords ? `<button class="ghost small danger" type="button" data-delete-invoice="${escapeHtml(invoiceId)}">Delete</button>` : `<span class="pill gold">View only</span>`}
@@ -3398,6 +3454,18 @@ function renderInvoiceWorkspace(invoices) {
       const invoiceId = button.getAttribute("data-payment-invoice");
       const invoice = dashboardInvoices.find((entry) => entry.id === invoiceId);
       if (invoice) openPaymentModal(invoice);
+    });
+  });
+
+  document.querySelectorAll("[data-email-invoice]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!workspaceCanWriteRecords()) {
+        setWorkspaceLockStatus("email invoices");
+        return;
+      }
+      const invoiceId = button.getAttribute("data-email-invoice");
+      const invoice = dashboardInvoices.find((entry) => entry.id === invoiceId);
+      if (invoice) openDocumentEmailModal(invoice, "invoice");
     });
   });
 
@@ -3488,6 +3556,7 @@ function renderPoWorkspace(purchaseOrders) {
         </div>
         <div class="row-actions">
           <a class="ghost small" href="/apps/web/invoice.html?type=po&po=${encodeURIComponent(poId)}">${canWriteRecords ? (isDraft ? "Edit Draft" : "Open / Edit") : "Open"}</a>
+          ${canWriteRecords && !isDraft ? `<button class="ghost small" type="button" data-email-po="${escapeHtml(poId)}">${activePlanAllows("documentEmailShare") ? "Email" : "Upgrade for Email"}</button>` : ""}
           ${canWriteRecords && !isDraft && paymentStatus !== "paid" ? `<button class="ghost small" type="button" data-record-po-payment="${escapeHtml(poId)}">Record Payment</button>` : ""}
           ${canWriteRecords ? `<button class="ghost small danger" type="button" data-delete-po="${escapeHtml(poId)}">Delete</button>` : `<span class="pill gold">View only</span>`}
           <span class="pill ${tone}">${escapeHtml(String(po.status || "created").toUpperCase())}</span>
@@ -3523,6 +3592,17 @@ function renderPoWorkspace(purchaseOrders) {
       } catch (error) {
         setPaymentModalStatus(error.message || "Could not delete PO/WO.", "error");
       }
+    });
+  });
+  document.querySelectorAll("[data-email-po]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!workspaceCanWriteRecords()) {
+        setWorkspaceLockStatus("email PO/WO records");
+        return;
+      }
+      const poId = button.getAttribute("data-email-po");
+      const purchaseOrder = dashboardPurchaseOrders.find((entry) => entry.id === poId);
+      if (purchaseOrder) openDocumentEmailModal(purchaseOrder, "purchaseOrder");
     });
   });
   document.querySelectorAll("[data-record-po-payment]").forEach((button) => {
@@ -4486,6 +4566,47 @@ paymentModalClose?.addEventListener("click", closePaymentModal);
 paymentModalCancel?.addEventListener("click", closePaymentModal);
 paymentModal?.addEventListener("click", (event) => {
   if (event.target === paymentModal) closePaymentModal();
+});
+documentEmailClose?.addEventListener("click", closeDocumentEmailModal);
+documentEmailCancel?.addEventListener("click", closeDocumentEmailModal);
+documentEmailModal?.addEventListener("click", (event) => {
+  if (event.target === documentEmailModal) closeDocumentEmailModal();
+});
+
+documentEmailForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!workspaceCanWriteRecords()) {
+    setWorkspaceLockStatus("email documents");
+    return;
+  }
+  if (!activePlanAllows("documentEmailShare")) {
+    setDocumentEmailStatus("Emailing invoices and PO/WO documents is available on Standard and higher plans.", "error");
+    return;
+  }
+  const recordId = documentEmailRecordId?.value || "";
+  const context = documentEmailContext?.value || "invoice";
+  const toEmail = documentEmailRecipient?.value || "";
+  if (!recordId || !toEmail) {
+    setDocumentEmailStatus("Add a valid recipient email.", "error");
+    return;
+  }
+  try {
+    if (documentEmailSubmit) documentEmailSubmit.disabled = true;
+    setDocumentEmailStatus("Sending email...", "");
+    const payload = {
+      ...selectedWorkspaceOptions(),
+      toEmail,
+      note: documentEmailNote?.value || "",
+    };
+    const result = context === "purchaseOrder"
+      ? await apiClient.emailPurchaseOrder(token, recordId, payload)
+      : await apiClient.emailInvoice(token, recordId, payload);
+    setDocumentEmailStatus(`${result.documentType || "Document"} sent to ${result.recipient || toEmail}.`, "success");
+  } catch (error) {
+    setDocumentEmailStatus(error.message || "Could not email this document.", "error");
+  } finally {
+    if (documentEmailSubmit) documentEmailSubmit.disabled = false;
+  }
 });
 
 paymentForm?.addEventListener("submit", async (event) => {

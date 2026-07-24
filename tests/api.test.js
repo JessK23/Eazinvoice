@@ -1846,6 +1846,7 @@ test("paid tier catalog keeps promised feature gates explicit", () => {
 
   assert.equal(plans.free.amount, 0);
   assert.equal(plans.free.features.whatsappShare, false);
+  assert.equal(plans.free.features.documentEmailShare, false);
   assert.equal(plans.free.features.aiInvoiceAssist, false);
   assert.equal(plans.free.features.razorpayCollections, false);
   assert.equal(plans.free.billingCycle, "yearly");
@@ -1855,8 +1856,10 @@ test("paid tier catalog keeps promised feature gates explicit", () => {
   assert.equal(plans.standard.monthlyAmount, 199);
   assert.equal(plans.standard.annualAmount, 2388);
   assert.equal(plans.standard.features.whatsappShare, true);
+  assert.equal(plans.standard.features.documentEmailShare, true);
   assert.equal(plans.standard.features.razorpayCollections, true);
   assert.equal(plans.standard.features.aiInvoiceAssist, false);
+  assert.equal(plans.standard.implementation.ready.includes("Email invoice and PO"), true);
   assert.equal(plans.standard.implementation.ready.includes("Recurring invoice metadata"), true);
   assert.equal(plans.standard.implementation.ready.includes("Branding removal controls"), true);
   assert.equal(plans.standard.implementation.ready.includes("Automatic recurring scheduler"), true);
@@ -1884,7 +1887,7 @@ test("paid tier inheritance flows upward only", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const plans = Object.fromEntries(api.listPlans().map((plan) => [plan.plan, plan]));
   const freeFeatures = ["basicInvoices", "gstInvoices", "pdfPrint", "manualPayments", "emailOtp", "wordpressFree"];
-  const standardFeatures = ["whatsappShare", "razorpayCollections", "recurringInvoices", "wordpressPaid"];
+  const standardFeatures = ["whatsappShare", "documentEmailShare", "razorpayCollections", "recurringInvoices", "wordpressPaid"];
   const proFeatures = ["aiInvoiceAssist", "aiPoAssist", "advancedReports", "multiBusiness"];
   const businessFeatures = ["teamAccess", "apiAccess", "approvals"];
 
@@ -4084,6 +4087,156 @@ test("security hardening blocks public uploads and cross-user business records",
     assert.equal(ownerInvoiceRead.payload.ownerUserId, owner.user.id);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("document email sharing is paid-tier gated for invoices and PO/WO records", async () => {
+  const previousEmailSmtpHost = process.env.EMAIL_SMTP_HOST;
+  const previousEmailSmtpPort = process.env.EMAIL_SMTP_PORT;
+  const previousEmailSmtpUser = process.env.EMAIL_SMTP_USER;
+  const previousEmailSmtpPass = process.env.EMAIL_SMTP_PASS;
+  const previousEmailSmtpFrom = process.env.EMAIL_SMTP_FROM;
+  const previousEmailSmtpSecure = process.env.EMAIL_SMTP_SECURE;
+  process.env.EMAIL_SMTP_HOST = "smtp.test.local";
+  process.env.EMAIL_SMTP_PORT = "587";
+  process.env.EMAIL_SMTP_USER = "support@eazinvoice.com";
+  process.env.EMAIL_SMTP_PASS = "test-password";
+  process.env.EMAIL_SMTP_FROM = "support@eazinvoice.com";
+  process.env.EMAIL_SMTP_SECURE = "false";
+
+  const sentMessages = [];
+  const server = createServer({
+    persist: false,
+    useSupabaseEmailOtp: false,
+    businessSmtpSender: async (settings, message) => {
+      sentMessages.push({ settings, message });
+      return { ok: true };
+    },
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  async function signup(name, email, phone) {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email, phone },
+    });
+    const created = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name,
+        email,
+        password: "Secure123",
+        phone,
+        otp: otp.payload.devOtp,
+      },
+    });
+    assert.equal(created.response.status, 201);
+    return created.payload;
+  }
+
+  try {
+    const freeUser = await signup("Free Email User", "free-document-email@example.com", "9100001001");
+    const paidUser = await signup("Paid Email User", "paid-document-email@example.com", "9100001002");
+    server.eazinvoiceApi.createSubscription({
+      userId: paidUser.user.id,
+      subscriberName: paidUser.user.name,
+      plan: "standard",
+      amount: 2388,
+      monthlyAmount: 199,
+      billingCycle: "yearly",
+      status: "active",
+      paymentStatus: "paid",
+    });
+
+    const freeInvoice = await request("/invoices", {
+      method: "POST",
+      token: freeUser.token,
+      body: {
+        billToName: "Free Client",
+        status: "created",
+        currency: "INR",
+        items: [{ description: "Consulting", quantity: 1, rate: 1000, gstRate: 18 }],
+      },
+    });
+    assert.equal(freeInvoice.response.status, 201);
+    const freeEmail = await request(`/invoices/${freeInvoice.payload.id}/email`, {
+      method: "POST",
+      token: freeUser.token,
+      body: { toEmail: "client@example.com" },
+    });
+    assert.equal(freeEmail.response.status, 402);
+    assert.match(freeEmail.payload.error, /Emailing invoices/i);
+
+    const paidInvoice = await request("/invoices", {
+      method: "POST",
+      token: paidUser.token,
+      body: {
+        billToName: "Paid Client",
+        status: "created",
+        currency: "INR",
+        items: [{ description: "Web design", quantity: 1, rate: 5000, gstRate: 18 }],
+      },
+    });
+    assert.equal(paidInvoice.response.status, 201);
+    const paidEmail = await request(`/invoices/${paidInvoice.payload.id}/email`, {
+      method: "POST",
+      token: paidUser.token,
+      body: { toEmail: "paid-client@example.com", note: "Please review this invoice." },
+    });
+    assert.equal(paidEmail.response.status, 200);
+    assert.equal(paidEmail.payload.status, "sent");
+    assert.equal(paidEmail.payload.smtpSource, "app");
+    assert.equal(sentMessages.at(-1).message.to, "paid-client@example.com");
+    assert.match(sentMessages.at(-1).message.subject, /Tax Invoice/);
+
+    const paidPo = await request("/purchase-orders", {
+      method: "POST",
+      token: paidUser.token,
+      body: {
+        billToName: "Paid Vendor",
+        documentType: "wo",
+        status: "created",
+        currency: "INR",
+        items: [{ description: "Vendor service", quantity: 1, rate: 2000, gstRate: 18 }],
+      },
+    });
+    assert.equal(paidPo.response.status, 201);
+    const poEmail = await request(`/purchase-orders/${paidPo.payload.id}/email`, {
+      method: "POST",
+      token: paidUser.token,
+      body: { toEmail: "vendor@example.com" },
+    });
+    assert.equal(poEmail.response.status, 200);
+    assert.equal(poEmail.payload.documentType, "Work Order");
+    assert.equal(sentMessages.at(-1).message.to, "vendor@example.com");
+    assert.match(sentMessages.at(-1).message.subject, /Work Order/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (previousEmailSmtpHost === undefined) delete process.env.EMAIL_SMTP_HOST;
+    else process.env.EMAIL_SMTP_HOST = previousEmailSmtpHost;
+    if (previousEmailSmtpPort === undefined) delete process.env.EMAIL_SMTP_PORT;
+    else process.env.EMAIL_SMTP_PORT = previousEmailSmtpPort;
+    if (previousEmailSmtpUser === undefined) delete process.env.EMAIL_SMTP_USER;
+    else process.env.EMAIL_SMTP_USER = previousEmailSmtpUser;
+    if (previousEmailSmtpPass === undefined) delete process.env.EMAIL_SMTP_PASS;
+    else process.env.EMAIL_SMTP_PASS = previousEmailSmtpPass;
+    if (previousEmailSmtpFrom === undefined) delete process.env.EMAIL_SMTP_FROM;
+    else process.env.EMAIL_SMTP_FROM = previousEmailSmtpFrom;
+    if (previousEmailSmtpSecure === undefined) delete process.env.EMAIL_SMTP_SECURE;
+    else process.env.EMAIL_SMTP_SECURE = previousEmailSmtpSecure;
   }
 });
 

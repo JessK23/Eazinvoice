@@ -1192,6 +1192,25 @@ export function createStore(seed = {}, options = {}) {
       deliveryHistory,
     };
     settings.updatedAt = new Date().toISOString();
+    recordBusinessAuditEvent(user, {
+      ownerUserId: user.id,
+      companyId,
+      actorUserId: user.id,
+      actorEmail: user.email,
+      actorName: user.name,
+      actorRole: user.role,
+      category: "smtp",
+      action: String(input.action || "smtp.delivery").trim().toLowerCase().replace(/[^a-z0-9_.:-]/g, "_").slice(0, 100) || "smtp.delivery",
+      outcome: deliveryEntry.status,
+      targetType: "email_delivery",
+      targetLabel: deliveryEntry.recipient || deliveryEntry.action,
+      message: deliveryEntry.message || "Business email delivery attempt recorded",
+      metadata: {
+        status: deliveryEntry.status,
+        recipient: deliveryEntry.recipient,
+        action: deliveryEntry.action,
+      },
+    });
     persist();
     return sanitizeBusinessSettings(settings);
   }
@@ -1392,6 +1411,27 @@ export function createStore(seed = {}, options = {}) {
     stored.lastReminderRecipient = String(input.to || "").trim();
     stored.lastReminderStatus = String(input.status || "sent").trim().toLowerCase();
     stored.updatedAt = now;
+    recordBusinessAuditEvent(user, {
+      ownerUserId: user.id,
+      companyId,
+      actorUserId: user.id,
+      actorEmail: user.email,
+      actorName: user.name,
+      actorRole: user.role,
+      category: "smtp",
+      action: "smtp.compliance_reminder",
+      outcome: stored.lastReminderStatus,
+      targetType: "compliance_task",
+      targetId: taskId,
+      targetLabel: sourceTask.complianceName,
+      message: stored.lastReminderStatus === "sent" ? "Compliance reminder delivery recorded" : "Compliance reminder delivery failed or was not configured",
+      metadata: {
+        recipient: stored.lastReminderRecipient,
+        status: stored.lastReminderStatus,
+        dueDate: sourceTask.dueDate || "",
+        frequency: sourceTask.frequency || "",
+      },
+    });
     persist();
 
     return clone({
@@ -1736,6 +1776,27 @@ export function createStore(seed = {}, options = {}) {
       updatedAt: new Date().toISOString(),
     };
     state.teamMembers.push(member);
+    recordBusinessAuditEvent(null, {
+      ownerUserId: input.ownerUserId ?? null,
+      companyId: input.companyId ?? null,
+      actorUserId: input.invitedByUserId ?? input.ownerUserId ?? null,
+      actorEmail: String(input.inviterEmail || "").trim().toLowerCase(),
+      actorName: String(input.inviterName || "").trim(),
+      actorRole: String(input.inviterRole || "").trim(),
+      category: "team",
+      action: "team.sub_user_created",
+      outcome: "queued",
+      targetType: "team_member",
+      targetId: member.id,
+      targetLabel: `${member.name} <${member.email}>`,
+      message: "Sub-user created and invitation queued for email delivery",
+      metadata: {
+        email: member.email,
+        role: member.role,
+        inviteDeliveryStatus: member.inviteDeliveryStatus,
+        accessMethod: "verified_email",
+      },
+    });
     persist();
     return clone(member);
   }
@@ -1776,6 +1837,28 @@ export function createStore(seed = {}, options = {}) {
       });
     }
     member.updatedAt = new Date().toISOString();
+    recordBusinessAuditEvent(user, {
+      ownerUserId: member.ownerUserId ?? user?.id ?? null,
+      companyId: member.companyId ?? null,
+      actorUserId: user?.id || null,
+      actorEmail: user?.email || "",
+      actorName: user?.name || "",
+      actorRole: user?.role || "",
+      category: "team",
+      action: "team.member_updated",
+      outcome: "success",
+      targetType: "team_member",
+      targetId: member.id,
+      targetLabel: `${member.name} <${member.email}>`,
+      message: "Team member record updated",
+      metadata: {
+        previousRole,
+        previousStatus,
+        role: member.role,
+        status: member.status,
+        inviteDeliveryStatus: member.inviteDeliveryStatus || "",
+      },
+    });
     persist();
     return clone(member);
   }
@@ -1810,6 +1893,26 @@ export function createStore(seed = {}, options = {}) {
       updatedAt: new Date().toISOString(),
     };
     state.approvalRequests.push(request);
+    recordBusinessAuditEvent(null, {
+      ownerUserId: input.ownerUserId ?? null,
+      companyId: input.companyId ?? null,
+      actorUserId: input.requestedByUserId ?? input.ownerUserId ?? null,
+      actorEmail: String(input.requestedByEmail || "").trim().toLowerCase(),
+      actorName: String(input.requestedByName || "").trim(),
+      actorRole: String(input.requestedByRole || "").trim(),
+      category: "approval",
+      action: "approval.request_created",
+      outcome: "queued",
+      targetType: "approval_request",
+      targetId: request.id,
+      targetLabel: request.documentNumber,
+      message: "Approval request created",
+      metadata: {
+        documentType: request.documentType,
+        documentId: request.documentId,
+        approverUserId: request.approverUserId,
+      },
+    });
     persist();
     return clone(request);
   }
@@ -1823,6 +1926,27 @@ export function createStore(seed = {}, options = {}) {
     request.decisionNotes = String(updates.decisionNotes || updates.notes || request.decisionNotes || "").trim();
     request.decidedAt = request.status === "pending" ? null : new Date().toISOString();
     request.updatedAt = new Date().toISOString();
+    recordBusinessAuditEvent(user, {
+      ownerUserId: request.ownerUserId ?? user?.id ?? null,
+      companyId: request.companyId ?? null,
+      actorUserId: user?.id || null,
+      actorEmail: user?.email || "",
+      actorName: user?.name || "",
+      actorRole: user?.role || "",
+      category: "approval",
+      action: "approval.request_decided",
+      outcome: request.status === "approved" ? "success" : request.status === "rejected" ? "blocked" : "info",
+      targetType: "approval_request",
+      targetId: request.id,
+      targetLabel: request.documentNumber,
+      message: `Approval request ${request.status}`,
+      metadata: {
+        documentType: request.documentType,
+        documentId: request.documentId,
+        status: request.status,
+        decisionNotes: request.decisionNotes,
+      },
+    });
     persist();
     return clone(request);
   }
@@ -1844,6 +1968,25 @@ export function createStore(seed = {}, options = {}) {
       status: request.notificationStatus,
       recipient: request.notificationRecipient,
       message: request.notificationMessage,
+    });
+    recordBusinessAuditEvent(user, {
+      ownerUserId: request.ownerUserId ?? user?.id ?? null,
+      companyId: request.companyId ?? null,
+      actorUserId: user?.id || null,
+      actorEmail: user?.email || "",
+      actorName: user?.name || "",
+      actorRole: user?.role || "",
+      category: "smtp",
+      action: `smtp.${String(input.action || "approval_notification").trim().toLowerCase().replace(/[^a-z0-9_.:-]/g, "_").slice(0, 100) || "approval_notification"}`,
+      outcome: request.notificationStatus || "info",
+      targetType: "approval_request",
+      targetId: request.id,
+      targetLabel: request.documentNumber,
+      message: request.notificationMessage || "Approval notification delivery recorded",
+      metadata: {
+        recipient: request.notificationRecipient,
+        status: request.notificationStatus,
+      },
     });
     persist();
     return clone(request);
@@ -2486,5 +2629,6 @@ export function createStore(seed = {}, options = {}) {
     exportState,
   };
 }
+
 
 

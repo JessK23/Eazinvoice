@@ -305,6 +305,110 @@ function buildGatewayAttentionMessage(emailSettings = {}, user = {}, reason = ""
   };
 }
 
+function isValidEmailAddress(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+}
+
+function displayDocumentType(document = {}, fallback = "invoice") {
+  if (fallback === "invoice") return "Tax Invoice";
+  return String(document.documentType || "po").toLowerCase() === "wo" ? "Work Order" : "Purchase Order";
+}
+
+function documentNumber(document = {}, fallback = "invoice") {
+  return document.invoiceNumber || document.poNumber || document.documentNumber || (fallback === "invoice" ? "Invoice" : "PO/WO");
+}
+
+function resolveDocumentRecipient(api, user, document = {}, type = "invoice", body = {}, options = {}) {
+  const manualEmail = String(body.toEmail || body.recipientEmail || "").trim();
+  if (manualEmail) {
+    return {
+      email: manualEmail,
+      name: String(body.recipientName || document.billToName || "").trim(),
+      source: "manual",
+    };
+  }
+  if (type === "invoice" && document.customerId) {
+    const customer = api.getCustomer(document.customerId, user, options);
+    if (customer?.email) {
+      return {
+        email: String(customer.email).trim(),
+        name: customer.name || customer.businessName || document.billToName || "",
+        source: "customer",
+      };
+    }
+  }
+  if (type === "purchase_order" && document.vendorId) {
+    const vendor = api.getVendor(document.vendorId, user, options);
+    if (vendor?.email) {
+      return {
+        email: String(vendor.email).trim(),
+        name: vendor.name || vendor.businessName || document.billToName || "",
+        source: "vendor",
+      };
+    }
+  }
+  return {
+    email: String(document.email || document.billToEmail || "").trim(),
+    name: document.billToName || "",
+    source: "document",
+  };
+}
+
+function buildDocumentEmailMessage(req, document = {}, type = "invoice", recipient = {}, body = {}) {
+  const appUrl = getPublicAppUrl(req);
+  const isInvoice = type === "invoice";
+  const label = displayDocumentType(document, isInvoice ? "invoice" : "purchase_order");
+  const number = documentNumber(document, isInvoice ? "invoice" : "purchase_order");
+  const amount = `${document.currency || "INR"} ${Number(document.total || 0).toFixed(2)}`;
+  const date = document.invoiceDate || document.poDate || "-";
+  const dueDate = document.dueDate || document.deliveryDate || "-";
+  const status = String(document.paymentStatus || document.status || "created").replace(/_/g, " ");
+  const path = isInvoice
+    ? `/apps/web/invoice.html?invoice=${encodeURIComponent(document.id || "")}`
+    : `/apps/web/invoice.html?type=po&po=${encodeURIComponent(document.id || "")}`;
+  const note = String(body.note || body.message || "").trim();
+  const lines = [
+    `Hi ${recipient.name || "there"},`,
+    "",
+    `Please find the ${label.toLowerCase()} details from EazInvoice.`,
+    "",
+    `${label}: ${number}`,
+    `Date: ${date}`,
+    `Due/Delivery date: ${dueDate}`,
+    `Amount: ${amount}`,
+    `Status: ${status}`,
+    "",
+    note ? `Message: ${note}` : "",
+    "",
+    `View or print this document: ${appUrl}${path}`,
+    "",
+    "EazInvoice",
+  ];
+  return {
+    to: recipient.email,
+    subject: `${label} ${number} from EazInvoice`,
+    text: lines.filter((line) => line !== "").join("\n"),
+  };
+}
+
+function resolveDocumentEmailSettings(api, user, body = {}, options = {}) {
+  try {
+    const businessSettings = api.getBusinessEmailDeliverySettings(user, {
+      previewPlan: options.previewPlan,
+      workspaceOwnerUserId: body.workspaceOwnerUserId || options.workspaceOwnerUserId || null,
+      companyId: body.companyId || options.companyId || null,
+    });
+    if (businessSmtpReady(businessSettings)) {
+      return { settings: businessSettings, source: "business" };
+    }
+  } catch {}
+  const appSettings = getAuthEmailSmtpSettings();
+  if (authEmailSmtpReady(appSettings)) {
+    return { settings: appSettings, source: "app" };
+  }
+  return { settings: {}, source: "none" };
+}
+
 function buildTeamActionMessage(emailSettings = {}, member = {}, action = "updated") {
   const businessName = emailSettings.senderName || "EazInvoice workspace";
   return {
@@ -1345,6 +1449,90 @@ export function createServer(options = {}) {
     } catch (error) {
       console.warn("Business audit event skipped:", error.message);
       return null;
+    }
+  }
+
+  async function sendDocumentEmail(req, user, previewPlan, type, id, body = {}) {
+    const workspace = api.resolveRecordsWorkspaceAccess(user, {
+      previewPlan,
+      workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+    }, "writeRecords");
+    const documentOptions = {
+      previewPlan,
+      workspaceOwnerUserId: workspace.ownerUserId,
+    };
+    const document = type === "invoice"
+      ? api.getInvoice(id, user, documentOptions)
+      : api.getPurchaseOrder(id, user, documentOptions);
+    if (!document) {
+      const error = new Error("Not found");
+      error.statusCode = 404;
+      throw error;
+    }
+    const owner = document.ownerUserId ? api.getUserById(document.ownerUserId) : workspace.owner;
+    api.requireFeature(owner || workspace.owner, "documentEmailShare", { previewPlan });
+    const recipient = resolveDocumentRecipient(api, user, document, type, body, documentOptions);
+    if (!isValidEmailAddress(recipient.email)) {
+      throw new Error(type === "invoice"
+        ? "Add a valid customer email before emailing this invoice."
+        : "Add a valid vendor email before emailing this PO/WO.");
+    }
+    const delivery = resolveDocumentEmailSettings(api, user, {
+      ...body,
+      workspaceOwnerUserId: workspace.ownerUserId,
+      companyId: document.companyId || body.companyId || null,
+    }, {
+      previewPlan,
+      workspaceOwnerUserId: workspace.ownerUserId,
+      companyId: document.companyId || body.companyId || null,
+    });
+    if (!businessSmtpReady(delivery.settings)) {
+      throw new Error("Document email delivery is available on paid plans, but SMTP is not configured. Add EazInvoice app SMTP settings or Business SMTP settings first.");
+    }
+    const message = buildDocumentEmailMessage(req, document, type, recipient, body);
+    try {
+      await businessSmtpSender(delivery.settings, message);
+      await recordBusinessAudit(user, {
+        ownerUserId: document.ownerUserId || workspace.ownerUserId,
+        companyId: document.companyId || null,
+        category: "smtp",
+        action: type === "invoice" ? "smtp.invoice_email_sent" : "smtp.purchase_order_email_sent",
+        outcome: "success",
+        targetType: type,
+        targetId: document.id,
+        targetLabel: documentNumber(document, type),
+        message: `${displayDocumentType(document, type)} emailed to ${recipient.email}.`,
+        metadata: {
+          recipient: recipient.email,
+          recipientSource: recipient.source,
+          smtpSource: delivery.source,
+        },
+      }, { previewPlan }, "document-email-audit");
+      return {
+        status: "sent",
+        recipient: recipient.email,
+        smtpSource: delivery.source,
+        documentType: displayDocumentType(document, type),
+        documentNumber: documentNumber(document, type),
+      };
+    } catch (error) {
+      await recordBusinessAudit(user, {
+        ownerUserId: document.ownerUserId || workspace.ownerUserId,
+        companyId: document.companyId || null,
+        category: "smtp",
+        action: type === "invoice" ? "smtp.invoice_email_failed" : "smtp.purchase_order_email_failed",
+        outcome: "failed",
+        targetType: type,
+        targetId: document.id,
+        targetLabel: documentNumber(document, type),
+        message: publicSmtpErrorMessage(error, "email this document"),
+        metadata: {
+          recipient: recipient.email,
+          recipientSource: recipient.source,
+          smtpSource: delivery.source,
+        },
+      }, { previewPlan }, "document-email-audit");
+      throw new Error(publicSmtpErrorMessage(error, "email this document"));
     }
   }
 
@@ -4202,6 +4390,20 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname.startsWith("/invoices/") && url.pathname.endsWith("/email") && req.method === "POST") {
+      const id = url.pathname.split("/")[2];
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        const result = await sendDocumentEmail(req, user, previewPlan, "invoice", id, body);
+        sendJson(res, 200, result);
+      } catch (error) {
+        const message = error.message || "Could not email this invoice.";
+        const status = error.statusCode || (/available on Standard|paid plans/i.test(message) ? 402 : /not found/i.test(message) ? 404 : 400);
+        sendJson(res, status, { error: message });
+      }
+      return;
+    }
+
     if (url.pathname.startsWith("/invoices/") && req.method === "PATCH") {
       const id = url.pathname.split("/")[2];
       const body = sanitizeStandardInvoiceFeatures(api, user, previewPlan, await readBody(req));
@@ -4338,6 +4540,20 @@ export function createServer(options = {}) {
         sendJson(res, 201, { ...recorded, reportSync });
       } catch (error) {
         sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/purchase-orders/") && url.pathname.endsWith("/email") && req.method === "POST") {
+      const id = url.pathname.split("/")[2];
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        const result = await sendDocumentEmail(req, user, previewPlan, "purchase_order", id, body);
+        sendJson(res, 200, result);
+      } catch (error) {
+        const message = error.message || "Could not email this PO/WO.";
+        const status = error.statusCode || (/available on Standard|paid plans/i.test(message) ? 402 : /not found/i.test(message) ? 404 : 400);
+        sendJson(res, status, { error: message });
       }
       return;
     }

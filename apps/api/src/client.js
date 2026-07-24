@@ -124,6 +124,9 @@ export const apiClient = {
   createInvoicePaymentLink(token, invoiceId, body = {}) {
     return request(`/invoices/${invoiceId}/payment-link`, { method: "POST", token, body });
   },
+  emailInvoice(token, invoiceId, body = {}) {
+    return request(`/invoices/${invoiceId}/email`, { method: "POST", token, body });
+  },
   runRecurringInvoiceDrafts(token, body = {}) {
     return request("/invoices/recurring/run", { method: "POST", token, body });
   },
@@ -147,6 +150,9 @@ export const apiClient = {
   },
   recordPurchaseOrderPayment(token, poId, body) {
     return request(`/purchase-orders/${poId}/payments`, { method: "POST", token, body });
+  },
+  emailPurchaseOrder(token, poId, body = {}) {
+    return request(`/purchase-orders/${poId}/email`, { method: "POST", token, body });
   },
   deletePurchaseOrder(token, poId, options = {}) {
     return request(`/purchase-orders/${poId}${queryString(options)}`, { method: "DELETE", token });
