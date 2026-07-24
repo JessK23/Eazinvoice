@@ -57,6 +57,13 @@ Paid plans are shown as monthly value but collected yearly:
 
 Free users see indicators for restricted paid features. Paid users inherit the previous tier features.
 
+## Android App Center
+
+1. Open the **Android App** section on the website.
+2. Review the Play Store status, APK test slot, and release notes.
+3. Use the app center as the public handoff point for mobile rollout.
+4. When the Play Store URL or APK URL is available, it can be linked from the app center without changing the rest of the website.
+
 ## Business Tier
 
 Business users can manage:
@@ -74,4 +81,3 @@ Business users can manage:
 - Do not share OTPs, passwords, API keys, Razorpay secrets, or SMTP passwords.
 - Use role-based sub-user access instead of sharing the owner login.
 - Created/deleted records are preserved historically for audit integrity.
-

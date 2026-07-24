@@ -39,9 +39,17 @@ Before publishing:
 4. Build a signed AAB from Android Studio.
 5. Upload the AAB to Google Play Console internal testing first.
 
+## Website App Center
+
+Use the EazInvoice website **Android App Center** as the public entry point for:
+
+1. Play Store release status.
+2. APK testing / internal release distribution.
+3. Release notes for each mobile build.
+4. User-facing mobile manual and rollout guidance.
+
 ## Security Notes
 
 - Never commit keystore files or signing passwords.
 - Use internal testing before production release.
 - Verify logout and session expiry on the device.
-

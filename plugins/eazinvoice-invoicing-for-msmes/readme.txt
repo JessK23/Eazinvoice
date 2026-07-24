@@ -16,6 +16,16 @@ EazInvoice helps WordPress site owners connect visitors, customers, and internal
 
 The free plugin gives the site owner an embedded EazInvoice workspace inside WordPress, account connection fields, and an automatic EazInvoice button on the public website. A shortcode remains available for custom placement on service pages, contact pages, or customer portals.
 
+== SOP / How It Works ==
+
+1. Install and activate the plugin from the WordPress Plugins screen.
+2. Open the EazInvoice menu inside WordPress.
+3. Connect the account email and workspace URL.
+4. Validate the API key before using paid features.
+5. Use the embedded invoice and PO / WO screens for draft or created records.
+6. Use the public website button or shortcode only when you want visitors to open the embedded EazInvoice flow.
+7. Use the Android App Center and user manuals on the EazInvoice website for mobile testing and release tracking.
+
 = Free Features =
 
 * EazInvoice admin settings page
