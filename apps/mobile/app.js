@@ -34,6 +34,17 @@ let pendingAiAgentRecord = null;
 const panels = document.querySelectorAll("[data-panel]");
 const navButtons = document.querySelectorAll("[data-view]");
 const drawerLinks = document.querySelectorAll(".drawer-link");
+const MOBILE_SEARCH_ITEMS = [
+  { title: "Home", detail: "Summary and quick actions", view: "home", keywords: "overview metrics profile" },
+  { title: "AI Agent", detail: "AI-assisted drafts and reports", view: "ai", keywords: "assistant prompt invoice po report" },
+  { title: "Invoices", detail: "Create invoices and record payments", view: "invoice", keywords: "invoice gst customer payment draft" },
+  { title: "PO / WO", detail: "Create purchase and work orders", view: "po", keywords: "purchase order work order vendor expense" },
+  { title: "Reports", detail: "Revenue, expenses and profit", view: "reports", keywords: "reports revenue expenses profit unpaid" },
+  { title: "Business", detail: "Team and integration tools", view: "business", keywords: "team smtp api razorpay gateway" },
+  { title: "Subscription", detail: "Plans, pricing and access", view: "subscription", keywords: "pricing plan upgrade standard pro business" },
+  { title: "Help", detail: "User guide and release checks", view: "help", keywords: "help sop manual instructions" },
+  { title: "Privacy Policy", detail: "How EazInvoice handles information", view: "privacy", keywords: "privacy data security delete account" },
+];
 
 function loadState() {
   try {
@@ -199,7 +210,45 @@ function switchView(name) {
   panels.forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === target));
   navButtons.forEach((button) => button.classList.toggle("active", button.dataset.view === target));
   drawerLinks.forEach((button) => button.classList.toggle("active", button.dataset.view === target));
+  const mobileSearchInput = document.getElementById("mobileSearchInput");
+  const mobileSearchResults = document.getElementById("mobileSearchResults");
+  if (mobileSearchInput) mobileSearchInput.value = "";
+  if (mobileSearchResults) mobileSearchResults.replaceChildren();
   closeDrawer();
+}
+
+function renderMobileSearch(query) {
+  const results = document.getElementById("mobileSearchResults");
+  if (!results) return;
+  const normalized = String(query || "").trim().toLowerCase();
+  results.replaceChildren();
+  if (!normalized) return;
+
+  const matches = MOBILE_SEARCH_ITEMS.filter((item) => {
+    const haystack = `${item.title} ${item.detail} ${item.keywords}`.toLowerCase();
+    return haystack.includes(normalized);
+  }).slice(0, 6);
+
+  if (!matches.length) {
+    const empty = document.createElement("p");
+    empty.className = "drawer-search-empty";
+    empty.textContent = "No matching feature found.";
+    results.append(empty);
+    return;
+  }
+
+  matches.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "drawer-search-result";
+    button.dataset.searchView = item.view;
+    const title = document.createElement("strong");
+    const detail = document.createElement("span");
+    title.textContent = item.title;
+    detail.textContent = item.detail;
+    button.append(title, detail);
+    results.append(button);
+  });
 }
 
 function recordLabel(record) {
@@ -523,6 +572,7 @@ navButtons.forEach((button) => button.addEventListener("click", () => switchView
 drawerLinks.forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
 document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.jump)));
 document.getElementById("menuButton")?.addEventListener("click", () => document.getElementById("drawer")?.classList.toggle("open"));
+document.getElementById("mobileSearchInput")?.addEventListener("input", (event) => renderMobileSearch(event.target.value));
 document.getElementById("profileButton")?.addEventListener("click", () => switchView("subscription"));
 document.getElementById("planSelect")?.addEventListener("change", (event) => {
   state.plan = event.target.value;
@@ -544,7 +594,9 @@ document.querySelectorAll("[data-example]").forEach((button) => {
 
 document.body.addEventListener("click", (event) => {
   const payButton = event.target.closest("[data-pay]");
+  const searchButton = event.target.closest("[data-search-view]");
   if (payButton) openPaymentSheet(payButton.dataset.pay);
+  if (searchButton) switchView(searchButton.dataset.searchView);
   if (event.target.closest("#saveAiDraftMobile")) savePendingAiAgentDraft();
 });
 

@@ -29,6 +29,11 @@
             <span>Money Managed Easy</span>
           </div>
         </div>
+        <label class="drawer-search">
+          <span>Find a feature</span>
+          <input id="mobileSearchInput" type="search" placeholder="Invoice, reports, privacy..." autocomplete="off" />
+        </label>
+        <div id="mobileSearchResults" class="drawer-search-results" aria-live="polite"></div>
         <button class="drawer-link active" type="button" data-view="home">Home</button>
         <button class="drawer-link" type="button" data-view="ai">AI Agent</button>
         <button class="drawer-link" type="button" data-view="invoice">Invoices</button>
@@ -37,6 +42,7 @@
         <button class="drawer-link" type="button" data-view="business">Business</button>
         <button class="drawer-link" type="button" data-view="subscription">Subscription</button>
         <button class="drawer-link" type="button" data-view="help">Help</button>
+        <button class="drawer-link" type="button" data-view="privacy">Privacy</button>
       </div>
     </aside>
 
@@ -334,7 +340,41 @@
           <article><strong>Daily use</strong><span>Login, update profile, create invoices, create PO/WO, record payments, and review reports.</span></article>
           <article><strong>Paid features</strong><span>Standard unlocks sharing and recurring tools. Pro unlocks AI. Business unlocks team, approvals, SMTP, API, and gateway tools.</span></article>
           <article><strong>Release checks</strong><span>Before Play Store release, verify production URL, login, reports, subscription status, and signed AAB configuration.</span></article>
+          <article><strong>Privacy</strong><span>Review how account, business, document, payment, and AI feature information is handled.</span><button class="tiny-button" type="button" data-jump="privacy">Open privacy policy</button></article>
         </div>
+      </section>
+    </section>
+
+    <section class="view" data-panel="privacy">
+      <section class="panel privacy-panel">
+        <div class="panel-head">
+          <div>
+            <span class="soft-label">Trust and transparency</span>
+            <h2>Privacy Policy</h2>
+          </div>
+          <span class="soft-pill">Effective 27 July 2026</span>
+        </div>
+        <p class="mobile-policy-intro">EazInvoice - Money Managed Easy processes information needed to provide invoicing, PO/WO, payment tracking, reporting, subscriptions, team tools, and optional AI features.</p>
+        <div class="policy-sections">
+          <article>
+            <strong>Information</strong>
+            <span>Account and contact details, business and tax information you enter, customers and vendors, documents, payments, subscription status, security events, and AI prompts or outputs when used.</span>
+          </article>
+          <article>
+            <strong>Purpose</strong>
+            <span>To authenticate users, provide requested business features, prepare records and reports, process subscriptions, send requested communications, protect accounts, and meet applicable legal obligations.</span>
+          </article>
+          <article>
+            <strong>Sharing</strong>
+            <span>We do not sell personal information. Information is shared only with providers needed to operate a requested feature, recipients selected by the user, or where required by law.</span>
+          </article>
+          <article>
+            <strong>Security and choices</strong>
+            <span>We use authentication, HTTPS, workspace access controls, and audit safeguards. You may request access, correction, export, or deletion, subject to legal financial-record retention.</span>
+          </article>
+        </div>
+        <a class="primary full policy-link" href="https://www.eazinvoice.com/apps/web/privacy.html" target="_blank" rel="noopener">Read the complete privacy policy</a>
+        <p class="privacy-contact">Privacy requests: <a href="mailto:support@eazinvoice.com">support@eazinvoice.com</a></p>
       </section>
     </section>
 

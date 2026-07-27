@@ -887,6 +887,130 @@ body[data-plan="pro"] .business-only {
   color: var(--navy);
 }
 
+.drawer-search {
+  display: grid;
+  gap: 8px;
+  margin: 6px 0 14px;
+}
+
+.drawer-search > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.drawer-search input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+
+.drawer-search input:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(23,92,211,.12);
+  outline: none;
+}
+
+.drawer-search-results {
+  display: grid;
+  gap: 6px;
+}
+
+.drawer-search-results button {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f7f9fc;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+}
+
+.drawer-search-results button:hover,
+.drawer-search-results button:focus-visible {
+  border-color: var(--blue);
+  background: #eef4ff;
+  outline: none;
+}
+
+.drawer-search-results button strong,
+.drawer-search-results button span {
+  display: block;
+}
+
+.drawer-search-results button span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.drawer-search-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.privacy-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.mobile-policy-intro,
+.policy-sections article span,
+.privacy-contact {
+  color: var(--muted);
+}
+
+.policy-sections {
+  display: grid;
+  gap: 10px;
+}
+
+.policy-sections article {
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #f8fafc;
+}
+
+.policy-sections article strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.policy-sections article span {
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.policy-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  text-decoration: none;
+}
+
+.privacy-contact {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 @media (max-width: 390px) {
   .app-shell {
     padding-inline: 12px;
