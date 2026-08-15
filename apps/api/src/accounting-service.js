@@ -359,6 +359,212 @@ export function postVendorPaymentCaptured(state, payment = {}, bill = {}, busine
   }
 }
 
+export function postCustomerPaymentReversed(state, reversal = {}, payment = {}, invoice = {}, business = {}, options = {}) {
+  if (!reversal?.id || !payment?.id || !invoice?.id) throw new Error("Payment reversal, payment and invoice are required for posting.");
+  if (!business?.id || reversal.businessId !== business.id || payment.businessId !== business.id || invoice.businessId !== business.id) {
+    throw new Error("Customer payment reversal business does not match source payment business.");
+  }
+  if (normalizeStatus(reversal.status || "posted") !== "posted") return { posted: false, reason: "payment_reversal_not_posted" };
+  const { journal: originalJournal, event: originalEvent } = options.lineage || {};
+  const { event, replay } = createFinancialEvent(state, {
+    businessId: business.id,
+    eventType: "customer_payment_reversed",
+    sourceType: "customer_payment_reversal",
+    sourceId: reversal.id,
+    sourceStatus: reversal.status || "posted",
+    eventTimestamp: reversal.reversalDate || reversal.createdAt,
+    idempotencyKey: eventKey(business.id, "customer_payment_reversed", reversal.id),
+    metadata: {
+      originalPaymentId: payment.id,
+      invoiceId: invoice.id,
+      reason: reversal.reason || "",
+      reference: reversal.reference || "",
+      reversesFinancialEventId: originalEvent?.id || reversal.reversesFinancialEventId || "",
+      reversesJournalId: originalJournal?.id || reversal.reversesJournalId || "",
+    },
+  });
+  if (event.postingStatus === "posted") return { posted: true, event: clone(event), replay: true };
+
+  try {
+    const accounts = {
+      ...ensureDefaultAccountingAccounts(state, business, reversal.ownerUserId || payment.ownerUserId),
+      ...(options.accounts || {}),
+    };
+    const journal = persistJournal(state, event, {
+      ownerUserId: reversal.ownerUserId || payment.ownerUserId,
+      journalDate: reversal.reversalDate || reversal.createdAt?.slice(0, 10),
+      narration: `Customer payment reversal for ${payment.id}`,
+      currency: reversal.currency || payment.currency || invoice.currency || "INR",
+      postingRule: "customer_payment_reversed",
+      lines: [
+        { account: accounts.accounts_receivable, debit: reversal.amount, description: `A/R restored for payment ${payment.id}` },
+        { account: accounts.bank_clearing, credit: reversal.amount, description: "Bank / payment clearing reversed" },
+      ],
+    });
+    journal.correctsDocumentId = payment.id;
+    journal.reversesJournalId = originalJournal?.id || reversal.reversesJournalId || "";
+    event.reversesFinancialEventId = originalEvent?.id || reversal.reversesFinancialEventId || "";
+    event.reversesJournalId = originalJournal?.id || reversal.reversesJournalId || "";
+    return { posted: true, event: clone(event), journal: clone(journal), replay };
+  } catch (error) {
+    failEvent(event, error);
+    return { posted: false, event: clone(event), error: event.failureReason };
+  }
+}
+
+export function postVendorPaymentReversed(state, reversal = {}, payment = {}, bill = {}, business = {}, options = {}) {
+  if (!reversal?.id || !payment?.id || !bill?.id) throw new Error("Vendor payment reversal, payment and bill are required for posting.");
+  if (!business?.id || reversal.businessId !== business.id || payment.businessId !== business.id || bill.businessId !== business.id) {
+    throw new Error("Vendor payment reversal business does not match source payment business.");
+  }
+  if (normalizeStatus(reversal.status || "posted") !== "posted") return { posted: false, reason: "vendor_payment_reversal_not_posted" };
+  const { journal: originalJournal, event: originalEvent } = options.lineage || {};
+  const { event, replay } = createFinancialEvent(state, {
+    businessId: business.id,
+    eventType: "vendor_payment_reversed",
+    sourceType: "vendor_payment_reversal",
+    sourceId: reversal.id,
+    sourceStatus: reversal.status || "posted",
+    eventTimestamp: reversal.reversalDate || reversal.createdAt,
+    idempotencyKey: eventKey(business.id, "vendor_payment_reversed", reversal.id),
+    metadata: {
+      originalPaymentId: payment.id,
+      vendorBillId: bill.id,
+      reason: reversal.reason || "",
+      reference: reversal.reference || "",
+      reversesFinancialEventId: originalEvent?.id || reversal.reversesFinancialEventId || "",
+      reversesJournalId: originalJournal?.id || reversal.reversesJournalId || "",
+    },
+  });
+  if (event.postingStatus === "posted") return { posted: true, event: clone(event), replay: true };
+
+  try {
+    const accounts = {
+      ...ensureDefaultAccountingAccounts(state, business, reversal.ownerUserId || payment.ownerUserId),
+      ...(options.accounts || {}),
+    };
+    const journal = persistJournal(state, event, {
+      ownerUserId: reversal.ownerUserId || payment.ownerUserId,
+      journalDate: reversal.reversalDate || reversal.createdAt?.slice(0, 10),
+      narration: `Vendor payment reversal for ${payment.id}`,
+      currency: reversal.currency || payment.currency || bill.currency || "INR",
+      postingRule: "vendor_payment_reversed",
+      lines: [
+        { account: accounts.bank_clearing, debit: reversal.amount, description: "Bank / payment clearing restored" },
+        { account: accounts.accounts_payable, credit: reversal.amount, description: `A/P restored for payment ${payment.id}` },
+      ],
+    });
+    journal.correctsDocumentId = payment.id;
+    journal.reversesJournalId = originalJournal?.id || reversal.reversesJournalId || "";
+    event.reversesFinancialEventId = originalEvent?.id || reversal.reversesFinancialEventId || "";
+    event.reversesJournalId = originalJournal?.id || reversal.reversesJournalId || "";
+    return { posted: true, event: clone(event), journal: clone(journal), replay };
+  } catch (error) {
+    failEvent(event, error);
+    return { posted: false, event: clone(event), error: event.failureReason };
+  }
+}
+
+export function postCustomerRefundProcessed(state, refund = {}, creditNote = {}, business = {}, options = {}) {
+  if (!refund?.id || !creditNote?.id) throw new Error("Customer refund and source credit note are required for posting.");
+  if (!business?.id || refund.businessId !== business.id || creditNote.businessId !== business.id) {
+    throw new Error("Customer refund business does not match source credit note business.");
+  }
+  if (normalizeStatus(refund.status || "processed") !== "processed") return { posted: false, reason: "customer_refund_not_processed" };
+  const { journal: sourceJournalEntry, event: sourceEvent } = options.lineage || {};
+  const { event, replay } = createFinancialEvent(state, {
+    businessId: business.id,
+    eventType: "customer_refund_processed",
+    sourceType: "customer_refund",
+    sourceId: refund.id,
+    sourceStatus: refund.status || "processed",
+    eventTimestamp: refund.refundDate || refund.createdAt,
+    idempotencyKey: eventKey(business.id, "customer_refund_processed", refund.id),
+    metadata: {
+      customerId: refund.customerId || "",
+      sourceCreditNoteId: creditNote.id,
+      reference: refund.reference || refund.providerReference || "",
+      settlesFinancialEventId: sourceEvent?.id || "",
+      settlesJournalId: sourceJournalEntry?.id || "",
+    },
+  });
+  if (event.postingStatus === "posted") return { posted: true, event: clone(event), replay: true };
+
+  try {
+    const accounts = {
+      ...ensureDefaultAccountingAccounts(state, business, refund.ownerUserId || creditNote.ownerUserId),
+      ...(options.accounts || {}),
+    };
+    const journal = persistJournal(state, event, {
+      ownerUserId: refund.ownerUserId || creditNote.ownerUserId,
+      journalDate: refund.refundDate || refund.createdAt?.slice(0, 10),
+      narration: `Customer refund for credit note ${creditNote.creditNoteNumber || creditNote.id}`,
+      currency: refund.currency || creditNote.currency || "INR",
+      postingRule: "customer_refund_processed",
+      lines: [
+        { account: accounts.accounts_receivable, debit: refund.amount, description: `Customer credit settled ${creditNote.creditNoteNumber || creditNote.id}` },
+        { account: accounts.bank_clearing, credit: refund.amount, description: "Refund paid through bank / clearing" },
+      ],
+    });
+    journal.correctsDocumentId = creditNote.id;
+    journal.reversesJournalId = "";
+    return { posted: true, event: clone(event), journal: clone(journal), replay };
+  } catch (error) {
+    failEvent(event, error);
+    return { posted: false, event: clone(event), error: event.failureReason };
+  }
+}
+
+export function postVendorRefundReceived(state, refund = {}, vendorCredit = {}, business = {}, options = {}) {
+  if (!refund?.id || !vendorCredit?.id) throw new Error("Vendor refund and source vendor credit are required for posting.");
+  if (!business?.id || refund.businessId !== business.id || vendorCredit.businessId !== business.id) {
+    throw new Error("Vendor refund business does not match source vendor credit business.");
+  }
+  if (normalizeStatus(refund.status || "received") !== "received") return { posted: false, reason: "vendor_refund_not_received" };
+  const { journal: sourceJournalEntry, event: sourceEvent } = options.lineage || {};
+  const { event, replay } = createFinancialEvent(state, {
+    businessId: business.id,
+    eventType: "vendor_refund_received",
+    sourceType: "vendor_refund",
+    sourceId: refund.id,
+    sourceStatus: refund.status || "received",
+    eventTimestamp: refund.receivedDate || refund.refundDate || refund.createdAt,
+    idempotencyKey: eventKey(business.id, "vendor_refund_received", refund.id),
+    metadata: {
+      vendorId: refund.vendorId || "",
+      sourceVendorCreditId: vendorCredit.id,
+      reference: refund.reference || refund.providerReference || "",
+      settlesFinancialEventId: sourceEvent?.id || "",
+      settlesJournalId: sourceJournalEntry?.id || "",
+    },
+  });
+  if (event.postingStatus === "posted") return { posted: true, event: clone(event), replay: true };
+
+  try {
+    const accounts = {
+      ...ensureDefaultAccountingAccounts(state, business, refund.ownerUserId || vendorCredit.ownerUserId),
+      ...(options.accounts || {}),
+    };
+    const journal = persistJournal(state, event, {
+      ownerUserId: refund.ownerUserId || vendorCredit.ownerUserId,
+      journalDate: refund.receivedDate || refund.refundDate || refund.createdAt?.slice(0, 10),
+      narration: `Vendor refund for credit ${vendorCredit.vendorCreditNumber || vendorCredit.id}`,
+      currency: refund.currency || vendorCredit.currency || "INR",
+      postingRule: "vendor_refund_received",
+      lines: [
+        { account: accounts.bank_clearing, debit: refund.amount, description: "Vendor refund received through bank / clearing" },
+        { account: accounts.accounts_payable, credit: refund.amount, description: `Supplier credit settled ${vendorCredit.vendorCreditNumber || vendorCredit.id}` },
+      ],
+    });
+    journal.correctsDocumentId = vendorCredit.id;
+    journal.reversesJournalId = "";
+    return { posted: true, event: clone(event), journal: clone(journal), replay };
+  } catch (error) {
+    failEvent(event, error);
+    return { posted: false, event: clone(event), error: event.failureReason };
+  }
+}
+
 export function postSalesCreditNotePosted(state, creditNote = {}, invoice = {}, business = {}, options = {}) {
   if (!creditNote?.id || !invoice?.id) throw new Error("Sales credit note and source invoice are required for posting.");
   if (!business?.id || creditNote.businessId !== business.id || invoice.businessId !== business.id) {

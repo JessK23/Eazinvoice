@@ -1523,6 +1523,300 @@ test("P1-5 correction controls enforce idempotency, over-credit limits, immutabi
   assert.throws(() => api.getFinancialReport(ownerA, "vendor-credits", { businessId: businessB }), /access|business/i);
 });
 
+test("P1-6 customer payment reversals restore A/R without touching revenue or GST", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Payment Reversal", email: "payment-reversal@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceDate: "2026-08-01",
+    dueDate: "2026-08-31",
+    gstMode: "intra",
+    items: [{ description: "Reversal sale", quantity: 1, rate: 10000, gstRate: 18 }],
+  });
+  const payment = api.recordInvoicePayment(invoice.id, { businessId, amount: 5000, paymentDate: "2026-08-05", idempotencyKey: "p16-cpay" }, { user, businessId }).payment;
+  const reversal = api.reverseCustomerPayment({
+    businessId,
+    originalPaymentId: payment.id,
+    reversalDate: "2026-08-10",
+    reason: "payment_failed",
+    idempotencyKey: "p16-cpay-reversal",
+  }, { user, businessId });
+  assert.equal(api.reverseCustomerPayment({
+    businessId,
+    originalPaymentId: payment.id,
+    reversalDate: "2026-08-10",
+    idempotencyKey: "p16-cpay-reversal",
+  }, { user, businessId }).id, reversal.id);
+
+  const refreshed = api.getInvoice(invoice.id, user, { businessId });
+  assert.equal(refreshed.paidAmount, 0);
+  assert.equal(refreshed.balanceAmount, 11800);
+  const paymentReport = api.getFinancialReport(user, "payments", { businessId, from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(paymentReport.totalCaptured, 5000);
+  assert.equal(paymentReport.totalReversed, 5000);
+  assert.equal(paymentReport.netEffectivePayments, 0);
+  const ledger = api.listAccountingEventLedger(user, { businessId });
+  const reversalJournal = ledger.journals.find((journal) => journal.sourceType === "customer_payment_reversal" && journal.sourceId === reversal.id);
+  assert.deepEqual(reversalJournal.lines.map((line) => [line.accountCode, line.debit, line.credit]), [
+    ["1100", 5000, 0],
+    ["1110", 0, 5000],
+  ]);
+  assert.ok(reversalJournal.reversesJournalId);
+  assert.equal(api.getFinancialReport(user, "profit-loss", { businessId }).revenue, 10000);
+  assert.equal(api.getFinancialReport(user, "gst-summary", { businessId }).totals.netOutputTax, 1800);
+  assert.equal(api.getFinancialReport(user, "ageing", { businessId, asOf: "2026-09-10" }).totalOutstanding, 11800);
+  assert.equal(api.getFinancialReport(user, "reconciliation", { businessId }).status, "reconciled");
+  assert.throws(
+    () => api.reverseCustomerPayment({ businessId, originalPaymentId: payment.id, amount: 1, idempotencyKey: "p16-over-reverse" }, { user, businessId }),
+    /cannot exceed unreversed payment/i,
+  );
+
+  const replacement = api.recordInvoicePayment(invoice.id, { businessId, amount: 11800, paymentDate: "2026-08-11", idempotencyKey: "p16-replacement-payment" }, { user, businessId });
+  assert.equal(replacement.invoice.paymentStatus, "paid");
+});
+
+test("P1-6 customer refunds settle credit balances without double-counting revenue or GST", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Customer Refund", email: "customer-refund@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceDate: "2026-08-01",
+    gstMode: "intra",
+    items: [{ description: "Refund sale", quantity: 1, rate: 10000, gstRate: 18 }],
+  });
+  const payment = api.recordInvoicePayment(invoice.id, { businessId, amount: 11800, paymentDate: "2026-08-02", idempotencyKey: "p16-refund-payment" }, { user, businessId }).payment;
+  const creditNote = api.createSalesCreditNote({
+    businessId,
+    sourceInvoiceId: invoice.id,
+    status: "posted",
+    creditNoteDate: "2026-08-03",
+    items: [{ description: "Refund credit", quantity: 1, rate: 2000, gstRate: 18 }],
+  }, { user, businessId });
+  const partial = api.createCustomerRefund({
+    businessId,
+    sourceCreditNoteId: creditNote.id,
+    sourcePaymentId: payment.id,
+    amount: 1000,
+    refundDate: "2026-08-04",
+    method: "razorpay",
+    idempotencyKey: "p16-customer-refund-1000",
+  }, { user, businessId });
+  assert.equal(api.createCustomerRefund({
+    businessId,
+    sourceCreditNoteId: creditNote.id,
+    amount: 1000,
+    refundDate: "2026-08-04",
+    idempotencyKey: "p16-customer-refund-1000",
+  }, { user, businessId }).id, partial.id);
+
+  let receivables = api.getFinancialReport(user, "receivables", { businessId });
+  assert.equal(receivables.totalOutstanding, 0);
+  assert.equal(receivables.customerCreditBalance, 1360);
+  assert.equal(receivables.netReceivableControlBalance, -1360);
+  assert.equal(api.getFinancialReport(user, "customer-refunds", { businessId }).totalRefunded, 1000);
+  assert.equal(api.getFinancialReport(user, "profit-loss", { businessId }).revenue, 8000);
+  assert.equal(api.getFinancialReport(user, "gst-summary", { businessId }).totals.netOutputTax, 1440);
+  assert.equal(api.getInvoice(invoice.id, user, { businessId }).total, 11800);
+
+  const finalRefund = api.createCustomerRefund({
+    businessId,
+    sourceCreditNoteId: creditNote.id,
+    amount: 1360,
+    refundDate: "2026-08-05",
+    idempotencyKey: "p16-customer-refund-final",
+  }, { user, businessId });
+  receivables = api.getFinancialReport(user, "receivables", { businessId, includeSettled: true });
+  assert.equal(receivables.customerCreditBalance, 0);
+  assert.equal(api.getFinancialReport(user, "customer-refunds", { businessId }).totalRefunded, 2360);
+  const refundJournal = api.listAccountingEventLedger(user, { businessId }).journals.find((journal) => journal.sourceType === "customer_refund" && journal.sourceId === finalRefund.id);
+  assert.deepEqual(refundJournal.lines.map((line) => [line.accountCode, line.debit, line.credit]), [
+    ["1100", 1360, 0],
+    ["1110", 0, 1360],
+  ]);
+  assert.throws(
+    () => api.createCustomerRefund({ businessId, sourceCreditNoteId: creditNote.id, amount: 0.01, idempotencyKey: "p16-customer-over-refund" }, { user, businessId }),
+    /cannot exceed available customer credit/i,
+  );
+  assert.equal(api.getFinancialReport(user, "reconciliation", { businessId }).status, "reconciled");
+});
+
+test("P1-6 vendor payment reversals and vendor refunds settle A/P credit positions safely", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Vendor Settlement", email: "vendor-settlement@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const vendor = api.createVendor({ name: "Refund Vendor", businessId }, { user, businessId });
+  const bill = api.createVendorBill({
+    ownerUserId: user.id,
+    businessId,
+    vendorId: vendor.id,
+    vendorBillNumber: "P16/VB/001",
+    status: "posted",
+    billDate: "2026-08-01",
+    dueDate: "2026-08-31",
+    gstMode: "intra",
+    items: [{ description: "Refund expense", quantity: 1, rate: 4000, gstRate: 18 }],
+  }, { user, businessId });
+  const partialPayment = api.recordVendorBillPayment(bill.id, { businessId, amount: 2000, paymentDate: "2026-08-02", idempotencyKey: "p16-vpay-partial" }, { user, businessId }).payment;
+  const reversal = api.reverseVendorPayment({
+    businessId,
+    originalPaymentId: partialPayment.id,
+    reversalDate: "2026-08-03",
+    reason: "duplicate_payment",
+    idempotencyKey: "p16-vpay-reversal",
+  }, { user, businessId });
+  assert.equal(api.getVendorBill(bill.id, user, { businessId }).balanceAmount, 4720);
+  assert.equal(api.getFinancialReport(user, "vendor-payments", { businessId }).netEffectivePayments, 0);
+  const reversalJournal = api.listAccountingEventLedger(user, { businessId }).journals.find((journal) => journal.sourceType === "vendor_payment_reversal" && journal.sourceId === reversal.id);
+  assert.deepEqual(reversalJournal.lines.map((line) => [line.accountCode, line.debit, line.credit]), [
+    ["1110", 2000, 0],
+    ["2100", 0, 2000],
+  ]);
+
+  const fullPayment = api.recordVendorBillPayment(bill.id, { businessId, amount: 4720, paymentDate: "2026-08-04", idempotencyKey: "p16-vpay-full" }, { user, businessId }).payment;
+  const vendorCredit = api.createVendorCredit({
+    businessId,
+    sourceVendorBillId: bill.id,
+    status: "posted",
+    vendorCreditDate: "2026-08-05",
+    items: [{ description: "Vendor refund credit", quantity: 1, rate: 1000, gstRate: 18 }],
+  }, { user, businessId });
+  const recovery = api.createVendorRefund({
+    businessId,
+    sourceVendorCreditId: vendorCredit.id,
+    sourceVendorPaymentId: fullPayment.id,
+    amount: 500,
+    receivedDate: "2026-08-06",
+    method: "bank",
+    idempotencyKey: "p16-vendor-recovery-500",
+  }, { user, businessId });
+  assert.equal(api.createVendorRefund({
+    businessId,
+    sourceVendorCreditId: vendorCredit.id,
+    amount: 500,
+    receivedDate: "2026-08-06",
+    idempotencyKey: "p16-vendor-recovery-500",
+  }, { user, businessId }).id, recovery.id);
+
+  const payables = api.getFinancialReport(user, "vendor-payables", { businessId });
+  assert.equal(payables.totalOutstanding, 0);
+  assert.equal(payables.vendorCreditBalance, 680);
+  assert.equal(payables.netPayableControlBalance, -680);
+  assert.equal(api.getFinancialReport(user, "vendor-refunds", { businessId }).totalRecovered, 500);
+  assert.equal(api.getFinancialReport(user, "profit-loss", { businessId }).expenses, 3000);
+  assert.equal(api.getFinancialReport(user, "gst-summary", { businessId }).totals.netInputTax, 540);
+  const recoveryJournal = api.listAccountingEventLedger(user, { businessId }).journals.find((journal) => journal.sourceType === "vendor_refund" && journal.sourceId === recovery.id);
+  assert.deepEqual(recoveryJournal.lines.map((line) => [line.accountCode, line.debit, line.credit]), [
+    ["1110", 500, 0],
+    ["2100", 0, 500],
+  ]);
+  assert.throws(
+    () => api.createVendorRefund({ businessId, sourceVendorCreditId: vendorCredit.id, amount: 681, idempotencyKey: "p16-vendor-over-refund" }, { user, businessId }),
+    /cannot exceed available supplier credit/i,
+  );
+  assert.equal(api.getFinancialReport(user, "reconciliation", { businessId }).status, "reconciled");
+});
+
+test("P1-6 settlement actions preserve cross-period audit and tenant isolation", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const ownerA = api.createUser({ name: "Settlement A", email: "settlement-a@example.com" });
+  const ownerB = api.createUser({ name: "Settlement B", email: "settlement-b@example.com" });
+  const businessA = api.listBusinessWorkspaces(ownerA)[0].businessId;
+  const businessB = api.listBusinessWorkspaces(ownerB)[0].businessId;
+  const invoiceA = api.createInvoice({
+    ownerUserId: ownerA.id,
+    businessId: businessA,
+    status: "created",
+    invoiceDate: "2026-04-01",
+    dueDate: "2026-04-30",
+    items: [{ description: "April payment", quantity: 1, rate: 5000, gstRate: 0 }],
+  });
+  const paymentA = api.recordInvoicePayment(invoiceA.id, { businessId: businessA, amount: 5000, paymentDate: "2026-04-02", idempotencyKey: "p16-cross-period-pay" }, { user: ownerA, businessId: businessA }).payment;
+  api.reverseCustomerPayment({ businessId: businessA, originalPaymentId: paymentA.id, reversalDate: "2026-06-01", idempotencyKey: "p16-cross-period-reversal" }, { user: ownerA, businessId: businessA });
+
+  assert.equal(api.getFinancialReport(ownerA, "payments", { businessId: businessA, from: "2026-04-01", to: "2026-04-30" }).totalCaptured, 5000);
+  assert.equal(api.getFinancialReport(ownerA, "payments", { businessId: businessA, from: "2026-04-01", to: "2026-04-30" }).totalReversed, 0);
+  assert.equal(api.getFinancialReport(ownerA, "payments", { businessId: businessA, from: "2026-06-01", to: "2026-06-30" }).totalCaptured, 0);
+  assert.equal(api.getFinancialReport(ownerA, "payments", { businessId: businessA, from: "2026-06-01", to: "2026-06-30" }).totalReversed, 5000);
+
+  const invoiceB = api.createInvoice({
+    ownerUserId: ownerB.id,
+    businessId: businessB,
+    status: "created",
+    invoiceDate: "2026-08-01",
+    items: [{ description: "Private payment", quantity: 1, rate: 1000, gstRate: 0 }],
+  });
+  const paymentB = api.recordInvoicePayment(invoiceB.id, { businessId: businessB, amount: 1000, idempotencyKey: "p16-private-pay" }, { user: ownerB, businessId: businessB }).payment;
+  assert.throws(
+    () => api.reverseCustomerPayment({ businessId: businessB, originalPaymentId: paymentB.id, idempotencyKey: "p16-cross-tenant-reverse" }, { user: ownerA, businessId: businessB }),
+    /access|business/i,
+  );
+  assert.throws(() => api.getFinancialReport(ownerA, "customer-refunds", { businessId: businessB }), /access|business/i);
+  assert.throws(() => api.getFinancialReport(ownerA, "vendor-refunds", { businessId: businessB }), /access|business/i);
+});
+
+test("P1-6 integrated settlement scenario reconciles sales, purchases, credits, refunds, and trial balance", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Settlement Golden", email: "settlement-golden@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const vendor = api.createVendor({ name: "Golden Recovery Vendor", businessId }, { user, businessId });
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceDate: "2026-08-01",
+    gstMode: "intra",
+    items: [{ description: "Golden sale", quantity: 1, rate: 10000, gstRate: 18 }],
+  });
+  const customerPayment = api.recordInvoicePayment(invoice.id, { businessId, amount: 11800, paymentDate: "2026-08-02", idempotencyKey: "p16-golden-customer-pay" }, { user, businessId }).payment;
+  const creditNote = api.createSalesCreditNote({
+    businessId,
+    sourceInvoiceId: invoice.id,
+    status: "posted",
+    creditNoteDate: "2026-08-03",
+    items: [{ description: "Golden credit", quantity: 1, rate: 2000, gstRate: 18 }],
+  }, { user, businessId });
+  api.createCustomerRefund({ businessId, sourceCreditNoteId: creditNote.id, sourcePaymentId: customerPayment.id, amount: 1000, refundDate: "2026-08-04", idempotencyKey: "p16-golden-customer-refund" }, { user, businessId });
+
+  const bill = api.createVendorBill({
+    ownerUserId: user.id,
+    businessId,
+    vendorId: vendor.id,
+    vendorBillNumber: "P16/GOLDEN/VB",
+    status: "posted",
+    billDate: "2026-08-01",
+    gstMode: "intra",
+    items: [{ description: "Golden expense", quantity: 1, rate: 4000, gstRate: 18 }],
+  }, { user, businessId });
+  const vendorPayment = api.recordVendorBillPayment(bill.id, { businessId, amount: 4720, paymentDate: "2026-08-02", idempotencyKey: "p16-golden-vendor-pay" }, { user, businessId }).payment;
+  const vendorCredit = api.createVendorCredit({
+    businessId,
+    sourceVendorBillId: bill.id,
+    status: "posted",
+    vendorCreditDate: "2026-08-03",
+    items: [{ description: "Golden vendor credit", quantity: 1, rate: 1000, gstRate: 18 }],
+  }, { user, businessId });
+  api.createVendorRefund({ businessId, sourceVendorCreditId: vendorCredit.id, sourceVendorPaymentId: vendorPayment.id, amount: 500, receivedDate: "2026-08-04", idempotencyKey: "p16-golden-vendor-refund" }, { user, businessId });
+
+  const bundle = api.getFinancialReport(user, "bundle", { businessId, from: "2026-08-01", to: "2026-08-31", asOf: "2026-08-31" });
+  assert.equal(bundle.receivables.customerCreditBalance, 1360);
+  assert.equal(bundle.vendorPayables.vendorCreditBalance, 680);
+  assert.equal(bundle.customerRefunds.totalRefunded, 1000);
+  assert.equal(bundle.vendorRefunds.totalRecovered, 500);
+  assert.equal(bundle.profitLoss.revenue, 8000);
+  assert.equal(bundle.profitLoss.expenses, 3000);
+  assert.equal(bundle.gst.totals.netOutputTax, 1440);
+  assert.equal(bundle.gst.totals.netInputTax, 540);
+  assert.equal(bundle.trialBalance.integrity.status, "reconciled");
+  assert.equal(bundle.reconciliation.status, "reconciled");
+  assert.equal(bundle.reconciliation.checks.every((check) => check.status === "reconciled"), true);
+});
+
 test("manual payments update invoice payment status", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const user = api.createUser({ name: "Pay User", email: "pay@example.com" });

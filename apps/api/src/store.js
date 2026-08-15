@@ -13,6 +13,10 @@ import {
   postPaymentCaptured,
   postVendorBillPosted,
   postVendorPaymentCaptured,
+  postCustomerPaymentReversed,
+  postVendorPaymentReversed,
+  postCustomerRefundProcessed,
+  postVendorRefundReceived,
   postSalesCreditNotePosted,
   postVendorCreditPosted,
   publicJournalWithLines,
@@ -212,6 +216,10 @@ export function createStore(seed = {}, options = {}) {
     vendorBills: [],
     creditNotes: [],
     vendorCredits: [],
+    paymentReversals: [],
+    customerRefunds: [],
+    vendorPaymentReversals: [],
+    vendorRefunds: [],
     invoices: [],
     purchaseOrders: [],
     payments: [],
@@ -239,6 +247,10 @@ export function createStore(seed = {}, options = {}) {
       vendorBill: 0,
       creditNote: 0,
       vendorCredit: 0,
+      paymentReversal: 0,
+      customerRefund: 0,
+      vendorPaymentReversal: 0,
+      vendorRefund: 0,
       invoice: 0,
       purchaseOrder: 0,
       payment: 0,
@@ -270,6 +282,10 @@ export function createStore(seed = {}, options = {}) {
     vendorBill: 0,
     creditNote: 0,
     vendorCredit: 0,
+    paymentReversal: 0,
+    customerRefund: 0,
+    vendorPaymentReversal: 0,
+    vendorRefund: 0,
     invoice: 0,
     purchaseOrder: 0,
     payment: 0,
@@ -302,6 +318,10 @@ export function createStore(seed = {}, options = {}) {
       vendorBills: state.vendorBills,
       creditNotes: state.creditNotes,
       vendorCredits: state.vendorCredits,
+      paymentReversals: state.paymentReversals,
+      customerRefunds: state.customerRefunds,
+      vendorPaymentReversals: state.vendorPaymentReversals,
+      vendorRefunds: state.vendorRefunds,
       invoices: state.invoices,
       purchaseOrders: state.purchaseOrders,
       payments: state.payments,
@@ -483,6 +503,21 @@ export function createStore(seed = {}, options = {}) {
       if (vendorBill?.businessId) return vendorBill.businessId;
       if (vendorBill?.ownerUserId) return ensureBusinessForOwner(vendorBill.ownerUserId)?.id || null;
     }
+    if (record.originalPaymentId) {
+      const payment = state.payments.find((entry) => entry.id === record.originalPaymentId);
+      if (payment?.businessId) return payment.businessId;
+      if (payment?.ownerUserId) return ensureBusinessForOwner(payment.ownerUserId)?.id || null;
+    }
+    if (record.sourceCreditNoteId) {
+      const note = state.creditNotes.find((entry) => entry.id === record.sourceCreditNoteId);
+      if (note?.businessId) return note.businessId;
+      if (note?.ownerUserId) return ensureBusinessForOwner(note.ownerUserId)?.id || null;
+    }
+    if (record.sourceVendorCreditId) {
+      const credit = state.vendorCredits.find((entry) => entry.id === record.sourceVendorCreditId);
+      if (credit?.businessId) return credit.businessId;
+      if (credit?.ownerUserId) return ensureBusinessForOwner(credit.ownerUserId)?.id || null;
+    }
     return null;
   }
 
@@ -506,6 +541,10 @@ export function createStore(seed = {}, options = {}) {
       state.vendorBills,
       state.creditNotes,
       state.vendorCredits,
+      state.paymentReversals,
+      state.customerRefunds,
+      state.vendorPaymentReversals,
+      state.vendorRefunds,
       state.invoices,
       state.purchaseOrders,
       state.payments,
@@ -2608,7 +2647,7 @@ export function createStore(seed = {}, options = {}) {
   function refreshInvoicePaymentStatus(invoice) {
     Object.assign(invoice, calculatePaymentState(
       invoice,
-      state.payments.filter((payment) => payment.invoiceId === invoice.id),
+      effectiveInvoicePayments(invoice.id),
     ));
     return invoice;
   }
@@ -2644,7 +2683,7 @@ export function createStore(seed = {}, options = {}) {
         invalidAmountMessage: "Enter a valid received amount.",
         overpaymentMessage: "Payment amount cannot be more than the pending invoice balance.",
       },
-      state.payments.filter((payment) => payment.invoiceId === invoice.id),
+      effectiveInvoicePayments(invoice.id),
     );
     const payment = {
       id: nextId("pay", ++state.counters.payment),
@@ -2750,7 +2789,7 @@ export function createStore(seed = {}, options = {}) {
         invalidAmountMessage: "Enter a valid vendor payment amount.",
         overpaymentMessage: "Payment amount cannot be more than the pending vendor bill balance.",
       },
-      state.payments.filter((payment) => payment.vendorBillId === vendorBill.id),
+      effectiveVendorBillPayments(vendorBill.id),
     );
     const payment = {
       id: nextId("pay", ++state.counters.payment),
@@ -2817,6 +2856,305 @@ export function createStore(seed = {}, options = {}) {
     });
   }
 
+  function fromMinor(value) {
+    return Math.round(toNumber(value)) / 100;
+  }
+
+  function postedCustomerPaymentReversalsForPayment(paymentId) {
+    return state.paymentReversals.filter((reversal) => reversal.originalPaymentId === paymentId && normalizeRecordStatus(reversal.status, "posted") === "posted");
+  }
+
+  function postedVendorPaymentReversalsForPayment(paymentId) {
+    return state.vendorPaymentReversals.filter((reversal) => reversal.originalPaymentId === paymentId && normalizeRecordStatus(reversal.status, "posted") === "posted");
+  }
+
+  function reversedMinorForPayment(paymentId, direction) {
+    const collection = direction === "vendor" ? postedVendorPaymentReversalsForPayment(paymentId) : postedCustomerPaymentReversalsForPayment(paymentId);
+    return collection.reduce((sum, reversal) => sum + Math.round(toNumber(reversal.amount) * 100), 0);
+  }
+
+  function effectiveInvoicePayments(invoiceId) {
+    return state.payments
+      .filter((payment) => payment.invoiceId === invoiceId)
+      .map((payment) => ({
+        ...payment,
+        amount: fromMinor(Math.max(0, Math.round(toNumber(payment.amount) * 100) - reversedMinorForPayment(payment.id, "customer"))),
+      }));
+  }
+
+  function effectiveVendorBillPayments(vendorBillId) {
+    return state.payments
+      .filter((payment) => payment.vendorBillId === vendorBillId)
+      .map((payment) => ({
+        ...payment,
+        amount: fromMinor(Math.max(0, Math.round(toNumber(payment.amount) * 100) - reversedMinorForPayment(payment.id, "vendor"))),
+      }));
+  }
+
+  function refreshPaymentReversalState(payment, direction) {
+    const amountMinor = Math.round(toNumber(payment.amount) * 100);
+    const reversedMinor = Math.min(amountMinor, reversedMinorForPayment(payment.id, direction));
+    payment.reversedAmount = fromMinor(reversedMinor);
+    payment.effectiveAmount = fromMinor(Math.max(0, amountMinor - reversedMinor));
+    payment.economicStatus = reversedMinor <= 0 ? "captured" : reversedMinor >= amountMinor ? "fully_reversed" : "partially_reversed";
+    return payment;
+  }
+
+  function postedCustomerRefundsForCreditNote(creditNoteId) {
+    return state.customerRefunds.filter((refund) => refund.sourceCreditNoteId === creditNoteId && normalizeRecordStatus(refund.status, "processed") === "processed");
+  }
+
+  function postedVendorRefundsForVendorCredit(vendorCreditId) {
+    return state.vendorRefunds.filter((refund) => refund.sourceVendorCreditId === vendorCreditId && normalizeRecordStatus(refund.status, "received") === "received");
+  }
+
+  function customerRefundMinorForInvoice(invoiceId, excludeRefundId = "") {
+    const creditNoteIds = new Set(state.creditNotes.filter((note) => note.sourceInvoiceId === invoiceId).map((note) => note.id));
+    return state.customerRefunds
+      .filter((refund) => refund.id !== excludeRefundId && creditNoteIds.has(refund.sourceCreditNoteId) && normalizeRecordStatus(refund.status, "processed") === "processed")
+      .reduce((sum, refund) => sum + Math.round(toNumber(refund.amount) * 100), 0);
+  }
+
+  function vendorRefundMinorForBill(vendorBillId, excludeRefundId = "") {
+    const vendorCreditIds = new Set(state.vendorCredits.filter((credit) => credit.sourceVendorBillId === vendorBillId).map((credit) => credit.id));
+    return state.vendorRefunds
+      .filter((refund) => refund.id !== excludeRefundId && vendorCreditIds.has(refund.sourceVendorCreditId) && normalizeRecordStatus(refund.status, "received") === "received")
+      .reduce((sum, refund) => sum + Math.round(toNumber(refund.amount) * 100), 0);
+  }
+
+  function refundableCustomerCreditMinor(creditNote, excludeRefundId = "") {
+    const invoice = state.invoices.find((entry) => entry.id === creditNote.sourceInvoiceId);
+    if (!invoice) return 0;
+    const paidMinor = effectiveInvoicePayments(invoice.id).reduce((sum, payment) => sum + Math.round(toNumber(payment.amount) * 100), 0);
+    const creditMinor = postedCreditNotesForInvoice(invoice.id).reduce((sum, note) => sum + Math.round(toNumber(note.total) * 100), 0);
+    const refundMinor = customerRefundMinorForInvoice(invoice.id, excludeRefundId);
+    const customerCreditMinor = Math.max(0, paidMinor + creditMinor - Math.round(toNumber(invoice.total) * 100) - refundMinor);
+    const remainingSourceCreditMinor = Math.max(0, Math.round(toNumber(creditNote.total) * 100) - postedCustomerRefundsForCreditNote(creditNote.id)
+      .filter((refund) => refund.id !== excludeRefundId)
+      .reduce((sum, refund) => sum + Math.round(toNumber(refund.amount) * 100), 0));
+    return Math.min(customerCreditMinor, remainingSourceCreditMinor);
+  }
+
+  function recoverableVendorCreditMinor(vendorCredit, excludeRefundId = "") {
+    const bill = state.vendorBills.find((entry) => entry.id === vendorCredit.sourceVendorBillId);
+    if (!bill) return 0;
+    const paidMinor = effectiveVendorBillPayments(bill.id).reduce((sum, payment) => sum + Math.round(toNumber(payment.amount) * 100), 0);
+    const creditMinor = postedVendorCreditsForBill(bill.id).reduce((sum, credit) => sum + Math.round(toNumber(credit.total) * 100), 0);
+    const refundMinor = vendorRefundMinorForBill(bill.id, excludeRefundId);
+    const supplierCreditMinor = Math.max(0, paidMinor + creditMinor - Math.round(toNumber(bill.total) * 100) - refundMinor);
+    const remainingSourceCreditMinor = Math.max(0, Math.round(toNumber(vendorCredit.total) * 100) - postedVendorRefundsForVendorCredit(vendorCredit.id)
+      .filter((refund) => refund.id !== excludeRefundId)
+      .reduce((sum, refund) => sum + Math.round(toNumber(refund.amount) * 100), 0));
+    return Math.min(supplierCreditMinor, remainingSourceCreditMinor);
+  }
+
+  function createCustomerPaymentReversal(input = {}) {
+    const payment = state.payments.find((entry) => entry.id === input.originalPaymentId || entry.id === input.paymentId);
+    if (!payment || !payment.invoiceId) throw new Error("Original customer payment is required for reversal.");
+    const invoice = state.invoices.find((entry) => entry.id === payment.invoiceId);
+    const business = findBusinessByIdOrLegacyOwner(input.businessId || payment.businessId);
+    if (!invoice || !business || payment.businessId !== business.id || invoice.businessId !== business.id) throw new Error("Payment reversal business does not match source payment.");
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    if (idempotencyKey) {
+      const existing = state.paymentReversals.find((reversal) => reversal.businessId === business.id && reversal.idempotencyKey === idempotencyKey);
+      if (existing) return clone(existing);
+    }
+    const remainingMinor = Math.round(toNumber(payment.amount) * 100) - reversedMinorForPayment(payment.id, "customer");
+    const amountMinor = input.amount === undefined ? remainingMinor : Math.round(toNumber(input.amount) * 100);
+    if (amountMinor <= 0) throw new Error("Enter a valid payment reversal amount.");
+    if (amountMinor > remainingMinor) throw new Error("Payment reversal amount cannot exceed unreversed payment amount.");
+    const { journal, event } = sourceJournalAndEvent("payment", payment.id);
+    const reversal = {
+      id: nextId("prev", ++state.counters.paymentReversal),
+      ownerUserId: payment.ownerUserId,
+      businessId: business.id,
+      originalPaymentId: payment.id,
+      invoiceId: invoice.id,
+      paymentDirection: "customer_payment",
+      amount: fromMinor(amountMinor),
+      currency: input.currency?.trim() || payment.currency || invoice.currency || "INR",
+      method: input.method?.trim() || input.mode?.trim() || payment.mode || "manual",
+      reference: input.reference?.trim() || "",
+      providerReference: input.providerReference?.trim() || input.gatewayRefundId?.trim() || "",
+      reason: String(input.reason || "payment_entered_in_error").trim(),
+      status: normalizeRecordStatus(input.status, "posted"),
+      reversalDate: input.reversalDate || new Date().toISOString().slice(0, 10),
+      idempotencyKey,
+      createdByUserId: input.createdByUserId || input.actorUserId || "",
+      reversesFinancialEventId: event?.id || "",
+      reversesJournalId: journal?.id || "",
+      financialEventId: "",
+      journalId: "",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.paymentReversals.push(reversal);
+    if (reversal.status === "posted") {
+      const result = postCustomerPaymentReversed(state, reversal, payment, invoice, business, { lineage: { journal, event } });
+      reversal.financialEventId = result.event?.id || "";
+      reversal.journalId = result.journal?.id || result.event?.journalId || "";
+    }
+    refreshPaymentReversalState(payment, "customer");
+    refreshInvoicePaymentStatus(invoice);
+    persist();
+    return clone(reversal);
+  }
+
+  function createVendorPaymentReversal(input = {}) {
+    const payment = state.payments.find((entry) => entry.id === input.originalPaymentId || entry.id === input.paymentId);
+    if (!payment || !payment.vendorBillId) throw new Error("Original vendor payment is required for reversal.");
+    const bill = state.vendorBills.find((entry) => entry.id === payment.vendorBillId);
+    const business = findBusinessByIdOrLegacyOwner(input.businessId || payment.businessId);
+    if (!bill || !business || payment.businessId !== business.id || bill.businessId !== business.id) throw new Error("Vendor payment reversal business does not match source payment.");
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    if (idempotencyKey) {
+      const existing = state.vendorPaymentReversals.find((reversal) => reversal.businessId === business.id && reversal.idempotencyKey === idempotencyKey);
+      if (existing) return clone(existing);
+    }
+    const remainingMinor = Math.round(toNumber(payment.amount) * 100) - reversedMinorForPayment(payment.id, "vendor");
+    const amountMinor = input.amount === undefined ? remainingMinor : Math.round(toNumber(input.amount) * 100);
+    if (amountMinor <= 0) throw new Error("Enter a valid vendor payment reversal amount.");
+    if (amountMinor > remainingMinor) throw new Error("Vendor payment reversal amount cannot exceed unreversed payment amount.");
+    const { journal, event } = sourceJournalAndEvent("vendor_payment", payment.id);
+    const reversal = {
+      id: nextId("vprev", ++state.counters.vendorPaymentReversal),
+      ownerUserId: payment.ownerUserId,
+      businessId: business.id,
+      originalPaymentId: payment.id,
+      vendorBillId: bill.id,
+      vendorId: bill.vendorId || null,
+      paymentDirection: "vendor_payment",
+      amount: fromMinor(amountMinor),
+      currency: input.currency?.trim() || payment.currency || bill.currency || "INR",
+      method: input.method?.trim() || input.mode?.trim() || payment.mode || "manual",
+      reference: input.reference?.trim() || "",
+      providerReference: input.providerReference?.trim() || "",
+      reason: String(input.reason || "payment_entered_in_error").trim(),
+      status: normalizeRecordStatus(input.status, "posted"),
+      reversalDate: input.reversalDate || new Date().toISOString().slice(0, 10),
+      idempotencyKey,
+      createdByUserId: input.createdByUserId || input.actorUserId || "",
+      reversesFinancialEventId: event?.id || "",
+      reversesJournalId: journal?.id || "",
+      financialEventId: "",
+      journalId: "",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.vendorPaymentReversals.push(reversal);
+    if (reversal.status === "posted") {
+      const result = postVendorPaymentReversed(state, reversal, payment, bill, business, { lineage: { journal, event } });
+      reversal.financialEventId = result.event?.id || "";
+      reversal.journalId = result.journal?.id || result.event?.journalId || "";
+    }
+    refreshPaymentReversalState(payment, "vendor");
+    refreshVendorBillPaymentStatus(bill);
+    persist();
+    return clone(reversal);
+  }
+
+  function createCustomerRefund(input = {}) {
+    const creditNote = state.creditNotes.find((entry) => entry.id === input.sourceCreditNoteId || entry.id === input.creditNoteId);
+    if (!creditNote || normalizeRecordStatus(creditNote.status, "draft") === "draft") throw new Error("Posted source credit note is required for customer refund.");
+    const invoice = state.invoices.find((entry) => entry.id === creditNote.sourceInvoiceId);
+    const customer = state.customers.find((entry) => entry.id === (input.customerId || creditNote.customerId));
+    const business = findBusinessByIdOrLegacyOwner(input.businessId || creditNote.businessId);
+    if (!invoice || !business || creditNote.businessId !== business.id || invoice.businessId !== business.id) throw new Error("Customer refund business does not match source credit note.");
+    if (customer && customer.businessId && customer.businessId !== business.id) throw new Error("Customer does not belong to this business.");
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    if (idempotencyKey) {
+      const existing = state.customerRefunds.find((refund) => refund.businessId === business.id && refund.idempotencyKey === idempotencyKey);
+      if (existing) return clone(existing);
+    }
+    const amountMinor = Math.round(toNumber(input.amount) * 100);
+    if (amountMinor <= 0) throw new Error("Enter a valid customer refund amount.");
+    const availableMinor = refundableCustomerCreditMinor(creditNote);
+    if (amountMinor > availableMinor) throw new Error("Customer refund amount cannot exceed available customer credit balance.");
+    const { journal, event } = sourceJournalAndEvent("sales_credit_note", creditNote.id);
+    const refund = {
+      id: nextId("cref", ++state.counters.customerRefund),
+      ownerUserId: creditNote.ownerUserId,
+      businessId: business.id,
+      customerId: customer?.id || creditNote.customerId || null,
+      sourceCreditNoteId: creditNote.id,
+      sourceInvoiceId: invoice.id,
+      sourcePaymentId: input.sourcePaymentId || "",
+      amount: fromMinor(amountMinor),
+      currency: input.currency?.trim() || creditNote.currency || invoice.currency || "INR",
+      method: input.method?.trim() || input.mode?.trim() || "manual",
+      reference: input.reference?.trim() || "",
+      providerReference: input.providerReference?.trim() || input.gatewayRefundId?.trim() || "",
+      reason: String(input.reason || "customer_credit_refund").trim(),
+      status: normalizeRecordStatus(input.status, "processed"),
+      refundDate: input.refundDate || new Date().toISOString().slice(0, 10),
+      idempotencyKey,
+      createdByUserId: input.createdByUserId || input.actorUserId || "",
+      financialEventId: "",
+      journalId: "",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.customerRefunds.push(refund);
+    if (refund.status === "processed") {
+      const result = postCustomerRefundProcessed(state, refund, creditNote, business, { lineage: { journal, event } });
+      refund.financialEventId = result.event?.id || "";
+      refund.journalId = result.journal?.id || result.event?.journalId || "";
+    }
+    persist();
+    return clone(refund);
+  }
+
+  function createVendorRefund(input = {}) {
+    const vendorCredit = state.vendorCredits.find((entry) => entry.id === input.sourceVendorCreditId || entry.id === input.vendorCreditId);
+    if (!vendorCredit || normalizeRecordStatus(vendorCredit.status, "draft") === "draft") throw new Error("Posted source vendor credit is required for vendor refund.");
+    const bill = state.vendorBills.find((entry) => entry.id === vendorCredit.sourceVendorBillId);
+    const vendor = state.vendors.find((entry) => entry.id === (input.vendorId || vendorCredit.vendorId));
+    const business = findBusinessByIdOrLegacyOwner(input.businessId || vendorCredit.businessId);
+    if (!bill || !business || vendorCredit.businessId !== business.id || bill.businessId !== business.id) throw new Error("Vendor refund business does not match source vendor credit.");
+    if (vendor && vendor.businessId && vendor.businessId !== business.id) throw new Error("Vendor does not belong to this business.");
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    if (idempotencyKey) {
+      const existing = state.vendorRefunds.find((refund) => refund.businessId === business.id && refund.idempotencyKey === idempotencyKey);
+      if (existing) return clone(existing);
+    }
+    const amountMinor = Math.round(toNumber(input.amount) * 100);
+    if (amountMinor <= 0) throw new Error("Enter a valid vendor refund amount.");
+    const availableMinor = recoverableVendorCreditMinor(vendorCredit);
+    if (amountMinor > availableMinor) throw new Error("Vendor refund amount cannot exceed available supplier credit balance.");
+    const { journal, event } = sourceJournalAndEvent("vendor_credit", vendorCredit.id);
+    const refund = {
+      id: nextId("vref", ++state.counters.vendorRefund),
+      ownerUserId: vendorCredit.ownerUserId,
+      businessId: business.id,
+      vendorId: vendor?.id || vendorCredit.vendorId || null,
+      sourceVendorCreditId: vendorCredit.id,
+      sourceVendorBillId: bill.id,
+      sourceVendorPaymentId: input.sourceVendorPaymentId || "",
+      amount: fromMinor(amountMinor),
+      currency: input.currency?.trim() || vendorCredit.currency || bill.currency || "INR",
+      method: input.method?.trim() || input.mode?.trim() || "manual",
+      reference: input.reference?.trim() || "",
+      providerReference: input.providerReference?.trim() || "",
+      reason: String(input.reason || "vendor_credit_recovery").trim(),
+      status: normalizeRecordStatus(input.status, "received"),
+      receivedDate: input.receivedDate || input.refundDate || new Date().toISOString().slice(0, 10),
+      idempotencyKey,
+      createdByUserId: input.createdByUserId || input.actorUserId || "",
+      financialEventId: "",
+      journalId: "",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.vendorRefunds.push(refund);
+    if (refund.status === "received") {
+      const result = postVendorRefundReceived(state, refund, vendorCredit, business, { lineage: { journal, event } });
+      refund.financialEventId = result.event?.id || "";
+      refund.journalId = result.journal?.id || result.event?.journalId || "";
+    }
+    persist();
+    return clone(refund);
+  }
+
   function listPaymentsForUser(user) {
     if (!user || user.role === "admin") return clone(state.payments);
     const invoiceIds = new Set(listInvoicesForUser(user).map((invoice) => invoice.id));
@@ -2845,6 +3183,26 @@ export function createStore(seed = {}, options = {}) {
   function listVendorCreditsForUser(user) {
     if (!user || user.role === "admin") return clone(state.vendorCredits);
     return clone(state.vendorCredits.filter((credit) => credit.ownerUserId === user.id));
+  }
+
+  function listPaymentReversalsForUser(user) {
+    if (!user || user.role === "admin") return clone(state.paymentReversals);
+    return clone(state.paymentReversals.filter((reversal) => reversal.ownerUserId === user.id));
+  }
+
+  function listCustomerRefundsForUser(user) {
+    if (!user || user.role === "admin") return clone(state.customerRefunds);
+    return clone(state.customerRefunds.filter((refund) => refund.ownerUserId === user.id));
+  }
+
+  function listVendorPaymentReversalsForUser(user) {
+    if (!user || user.role === "admin") return clone(state.vendorPaymentReversals);
+    return clone(state.vendorPaymentReversals.filter((reversal) => reversal.ownerUserId === user.id));
+  }
+
+  function listVendorRefundsForUser(user) {
+    if (!user || user.role === "admin") return clone(state.vendorRefunds);
+    return clone(state.vendorRefunds.filter((refund) => refund.ownerUserId === user.id));
   }
 
   function setUserRestriction(userId, updates) {
@@ -2927,6 +3285,10 @@ export function createStore(seed = {}, options = {}) {
       vendorBills: state.vendorBills.length,
       creditNotes: state.creditNotes.length,
       vendorCredits: state.vendorCredits.length,
+      paymentReversals: state.paymentReversals.length,
+      customerRefunds: state.customerRefunds.length,
+      vendorPaymentReversals: state.vendorPaymentReversals.length,
+      vendorRefunds: state.vendorRefunds.length,
       invoices: state.invoices.length,
       purchaseOrders: state.purchaseOrders.length,
       payments: state.payments.length,
@@ -3200,10 +3562,38 @@ export function createStore(seed = {}, options = {}) {
     return null;
   }
 
+  function getPaymentReversal(id, user) {
+    const reversal = state.paymentReversals.find((entry) => entry.id === id);
+    if (!reversal) return null;
+    if (!user || user.role === "admin" || reversal.ownerUserId === user.id) return clone(reversal);
+    return null;
+  }
+
+  function getCustomerRefund(id, user) {
+    const refund = state.customerRefunds.find((entry) => entry.id === id);
+    if (!refund) return null;
+    if (!user || user.role === "admin" || refund.ownerUserId === user.id) return clone(refund);
+    return null;
+  }
+
+  function getVendorPaymentReversal(id, user) {
+    const reversal = state.vendorPaymentReversals.find((entry) => entry.id === id);
+    if (!reversal) return null;
+    if (!user || user.role === "admin" || reversal.ownerUserId === user.id) return clone(reversal);
+    return null;
+  }
+
+  function getVendorRefund(id, user) {
+    const refund = state.vendorRefunds.find((entry) => entry.id === id);
+    if (!refund) return null;
+    if (!user || user.role === "admin" || refund.ownerUserId === user.id) return clone(refund);
+    return null;
+  }
+
   function refreshVendorBillPaymentStatus(vendorBill) {
     Object.assign(vendorBill, calculatePaymentState(
       vendorBill,
-      state.payments.filter((payment) => payment.vendorBillId === vendorBill.id),
+      effectiveVendorBillPayments(vendorBill.id),
     ));
     return vendorBill;
   }
@@ -3572,15 +3962,27 @@ export function createStore(seed = {}, options = {}) {
     createVendorBill,
     createSalesCreditNote,
     createVendorCredit,
+    createCustomerPaymentReversal,
+    createVendorPaymentReversal,
+    createCustomerRefund,
+    createVendorRefund,
     runRecurringInvoiceScheduler,
     listInvoicesForUser,
     listPurchaseOrdersForUser,
     listVendorBillsForUser,
     listCreditNotesForUser,
     listVendorCreditsForUser,
+    listPaymentReversalsForUser,
+    listCustomerRefundsForUser,
+    listVendorPaymentReversalsForUser,
+    listVendorRefundsForUser,
     getVendorBill,
     getCreditNote,
     getVendorCredit,
+    getPaymentReversal,
+    getCustomerRefund,
+    getVendorPaymentReversal,
+    getVendorRefund,
     createSubscription,
     createBillingOrder,
     getBillingOrderByGatewayOrderId,

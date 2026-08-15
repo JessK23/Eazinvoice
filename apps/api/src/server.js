@@ -3252,6 +3252,8 @@ export function createServer(options = {}) {
       ["/reports/vendor-payments", "vendor-payments"],
       ["/reports/credit-notes", "credit-notes"],
       ["/reports/vendor-credits", "vendor-credits"],
+      ["/reports/customer-refunds", "customer-refunds"],
+      ["/reports/vendor-refunds", "vendor-refunds"],
       ["/reports/reconciliation", "reconciliation"],
       ["/reports/financial-bundle", "bundle"],
       ["/accounting/trial-balance", "trial-balance"],
@@ -3499,6 +3501,118 @@ export function createServer(options = {}) {
         });
         if (!credit) sendJson(res, 404, { error: "Vendor credit not found" });
         else sendJson(res, 200, credit);
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/payment-reversals" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listPaymentReversals(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/payment-reversals" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.reverseCustomerPayment(body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/vendor-payment-reversals" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listVendorPaymentReversals(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/vendor-payment-reversals" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.reverseVendorPayment(body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/customer-refunds" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listCustomerRefunds(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/customer-refunds" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.createCustomerRefund(body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/vendor-refunds" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listVendorRefunds(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/vendor-refunds" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.createVendorRefund(body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
       } catch (error) {
         sendJson(res, knownRequestErrorStatus(error), { error: error.message });
       }

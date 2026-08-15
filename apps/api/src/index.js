@@ -42,6 +42,8 @@ import {
   buildExpenseSummary,
   buildCreditNoteRegister,
   buildVendorCreditRegister,
+  buildCustomerRefundRegister,
+  buildVendorRefundRegister,
 } from "./financial-reporting-service.js";
 import { buildAiCommand } from "./ai-assistant.js";
 import { buildAiAgentResponse } from "./ai-agent.js";
@@ -1028,6 +1030,10 @@ export function createApi(deps = {}) {
           return buildCreditNoteRegister(state, businessId, reportOptions);
         case "vendor-credits":
           return buildVendorCreditRegister(state, businessId, reportOptions);
+        case "customer-refunds":
+          return buildCustomerRefundRegister(state, businessId, reportOptions);
+        case "vendor-refunds":
+          return buildVendorRefundRegister(state, businessId, reportOptions);
         case "reconciliation":
           return buildFinancialReconciliation(state, businessId, reportOptions);
         case "bundle":
@@ -1732,6 +1738,66 @@ export function createApi(deps = {}) {
       return store.listPaymentsForUser(workspace.owner);
     },
 
+    reverseCustomerPayment(input = {}, options = {}) {
+      const payment = store.listPaymentsForUser(null).find((entry) => entry.id === input.originalPaymentId || entry.id === input.paymentId);
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || (payment?.ownerUserId ? store.getUserById(payment.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || payment?.ownerUserId,
+        businessId: input.businessId || options.businessId || payment?.businessId || null,
+      }, "writeRecords");
+      if (!payment || payment.businessId !== workspace.businessId || !payment.invoiceId) throw new Error("Customer payment not found in this business.");
+      return store.createCustomerPaymentReversal({
+        ...input,
+        businessId: workspace.businessId,
+        actorUserId: options.user?.id || input.actorUserId || "",
+      });
+    },
+
+    reverseVendorPayment(input = {}, options = {}) {
+      const payment = store.listPaymentsForUser(null).find((entry) => entry.id === input.originalPaymentId || entry.id === input.paymentId);
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || (payment?.ownerUserId ? store.getUserById(payment.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || payment?.ownerUserId,
+        businessId: input.businessId || options.businessId || payment?.businessId || null,
+      }, "writeRecords");
+      if (!payment || payment.businessId !== workspace.businessId || !payment.vendorBillId) throw new Error("Vendor payment not found in this business.");
+      return store.createVendorPaymentReversal({
+        ...input,
+        businessId: workspace.businessId,
+        actorUserId: options.user?.id || input.actorUserId || "",
+      });
+    },
+
+    createCustomerRefund(input = {}, options = {}) {
+      const creditNote = store.getCreditNote(input.sourceCreditNoteId || input.creditNoteId);
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || (creditNote?.ownerUserId ? store.getUserById(creditNote.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || creditNote?.ownerUserId,
+        businessId: input.businessId || options.businessId || creditNote?.businessId || null,
+      }, "writeRecords");
+      if (!creditNote || creditNote.businessId !== workspace.businessId) throw new Error("Credit note not found in this business.");
+      return store.createCustomerRefund({
+        ...input,
+        businessId: workspace.businessId,
+        actorUserId: options.user?.id || input.actorUserId || "",
+      });
+    },
+
+    createVendorRefund(input = {}, options = {}) {
+      const vendorCredit = store.getVendorCredit(input.sourceVendorCreditId || input.vendorCreditId);
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || (vendorCredit?.ownerUserId ? store.getUserById(vendorCredit.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || vendorCredit?.ownerUserId,
+        businessId: input.businessId || options.businessId || vendorCredit?.businessId || null,
+      }, "writeRecords");
+      if (!vendorCredit || vendorCredit.businessId !== workspace.businessId) throw new Error("Vendor credit not found in this business.");
+      return store.createVendorRefund({
+        ...input,
+        businessId: workspace.businessId,
+        actorUserId: options.user?.id || input.actorUserId || "",
+      });
+    },
+
     listPurchaseOrders(user, options = {}) {
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
       if (workspace.businessId) {
@@ -1852,6 +1918,26 @@ export function createApi(deps = {}) {
       const visible = this.getVendorCredit(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
       if (!visible) return null;
       return store.updateVendorCredit(id, updates, this.getUserPlanLimits(workspace.owner, options));
+    },
+    listPaymentReversals(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      if (workspace.businessId) return store.listPaymentReversalsForUser(null).filter((entry) => entry.businessId === workspace.businessId || entry.ownerUserId === workspace.ownerUserId);
+      return store.listPaymentReversalsForUser(workspace.owner);
+    },
+    listCustomerRefunds(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      if (workspace.businessId) return store.listCustomerRefundsForUser(null).filter((entry) => entry.businessId === workspace.businessId || entry.ownerUserId === workspace.ownerUserId);
+      return store.listCustomerRefundsForUser(workspace.owner);
+    },
+    listVendorPaymentReversals(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      if (workspace.businessId) return store.listVendorPaymentReversalsForUser(null).filter((entry) => entry.businessId === workspace.businessId || entry.ownerUserId === workspace.ownerUserId);
+      return store.listVendorPaymentReversalsForUser(workspace.owner);
+    },
+    listVendorRefunds(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      if (workspace.businessId) return store.listVendorRefundsForUser(null).filter((entry) => entry.businessId === workspace.businessId || entry.ownerUserId === workspace.ownerUserId);
+      return store.listVendorRefundsForUser(workspace.owner);
     },
     deletePurchaseOrder(id, user, options = {}) {
       const current = store.getPurchaseOrder(id);

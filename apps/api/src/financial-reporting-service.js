@@ -119,7 +119,14 @@ function reportBase(businessId, source, period, dateBasis, coverage = {}) {
       purchaseExpensePostingComplete: true,
       salesCreditCorrectionsComplete: true,
       purchaseCreditCorrectionsComplete: true,
-      cashRefundWorkflowComplete: false,
+      customerPaymentPostingComplete: true,
+      vendorPaymentPostingComplete: true,
+      paymentReversalComplete: true,
+      customerRefundSettlementComplete: true,
+      vendorRefundSettlementComplete: true,
+      cashRefundWorkflowComplete: true,
+      bankStatementReconciliationComplete: false,
+      gatewaySettlementReconciliationComplete: false,
       inventoryReturnAccountingComplete: false,
       TDSComplete: false,
       inventoryAccountingComplete: false,
@@ -150,13 +157,17 @@ function scopedState(inputState = {}, businessId) {
   const vendorBills = (state.vendorBills || []).filter((bill) => bill.businessId === businessId);
   const creditNotes = (state.creditNotes || []).filter((note) => note.businessId === businessId);
   const vendorCredits = (state.vendorCredits || []).filter((credit) => credit.businessId === businessId);
+  const paymentReversals = (state.paymentReversals || []).filter((reversal) => reversal.businessId === businessId);
+  const customerRefunds = (state.customerRefunds || []).filter((refund) => refund.businessId === businessId);
+  const vendorPaymentReversals = (state.vendorPaymentReversals || []).filter((reversal) => reversal.businessId === businessId);
+  const vendorRefunds = (state.vendorRefunds || []).filter((refund) => refund.businessId === businessId);
   const payments = (state.payments || []).filter((payment) => payment.businessId === businessId);
   const events = (state.financialEvents || []).filter((event) => event.businessId === businessId);
   const customers = (state.customers || []).filter((customer) => customer.businessId === businessId || invoices.some((invoice) => invoice.customerId === customer.id));
   const vendors = (state.vendors || []).filter((vendor) => vendor.businessId === businessId || vendorBills.some((bill) => bill.vendorId === vendor.id));
   const customerById = new Map(customers.map((customer) => [customer.id, customer]));
   const vendorById = new Map(vendors.map((vendor) => [vendor.id, vendor]));
-  return { accounts, accountById, journals, journalById, lines, invoices, vendorBills, creditNotes, vendorCredits, payments, events, customerById, vendorById };
+  return { accounts, accountById, journals, journalById, lines, invoices, vendorBills, creditNotes, vendorCredits, paymentReversals, customerRefunds, vendorPaymentReversals, vendorRefunds, payments, events, customerById, vendorById };
 }
 
 function sourceJournal(scoped, sourceType, sourceId) {
@@ -210,6 +221,22 @@ function postedSalesCreditNotes(scoped, period, dateField = "creditNoteDate") {
 
 function postedVendorCredits(scoped, period, dateField = "vendorCreditDate") {
   return scoped.vendorCredits.filter((credit) => normalizeStatus(credit.status || "draft") !== "draft" && inPeriod(credit[dateField] || credit.createdAt, period));
+}
+
+function postedPaymentReversals(scoped, period) {
+  return scoped.paymentReversals.filter((reversal) => normalizeStatus(reversal.status || "posted") === "posted" && inPeriod(reversal.reversalDate || reversal.createdAt, period));
+}
+
+function postedCustomerRefunds(scoped, period) {
+  return scoped.customerRefunds.filter((refund) => normalizeStatus(refund.status || "processed") === "processed" && inPeriod(refund.refundDate || refund.createdAt, period));
+}
+
+function postedVendorPaymentReversals(scoped, period) {
+  return scoped.vendorPaymentReversals.filter((reversal) => normalizeStatus(reversal.status || "posted") === "posted" && inPeriod(reversal.reversalDate || reversal.createdAt, period));
+}
+
+function postedVendorRefunds(scoped, period) {
+  return scoped.vendorRefunds.filter((refund) => normalizeStatus(refund.status || "received") === "received" && inPeriod(refund.receivedDate || refund.refundDate || refund.createdAt, period));
 }
 
 function capturedVendorPayments(scoped, period) {
@@ -315,12 +342,22 @@ export function buildReceivablesReport(state, businessId, options = {}) {
   const period = normalizePeriod(options);
   const scoped = scopedState(state, businessId);
   const rows = issuedInvoices(scoped, period, "invoiceDate").map((invoice) => {
-    const paidMinor = toMinor(invoice.paidAmount);
+    const grossPaidMinor = scoped.payments
+      .filter((payment) => payment.invoiceId === invoice.id && isCapturedPayment(payment))
+      .reduce((sum, payment) => sum + toMinor(payment.amount), 0);
+    const reversedMinor = scoped.paymentReversals
+      .filter((reversal) => reversal.invoiceId === invoice.id && normalizeStatus(reversal.status || "posted") === "posted")
+      .reduce((sum, reversal) => sum + toMinor(reversal.amount), 0);
+    const paidMinor = Math.max(0, grossPaidMinor - reversedMinor);
     const totalMinor = toMinor(invoice.total);
-    const creditMinor = scoped.creditNotes
+    const invoiceCreditNotes = scoped.creditNotes
       .filter((note) => note.sourceInvoiceId === invoice.id && normalizeStatus(note.status || "draft") !== "draft" && inPeriod(note.creditNoteDate || note.createdAt, period))
-      .reduce((sum, note) => sum + toMinor(note.total), 0);
-    const netPositionMinor = totalMinor - paidMinor - creditMinor;
+    const creditMinor = invoiceCreditNotes.reduce((sum, note) => sum + toMinor(note.total), 0);
+    const creditNoteIds = new Set(invoiceCreditNotes.map((note) => note.id));
+    const refundedMinor = scoped.customerRefunds
+      .filter((refund) => creditNoteIds.has(refund.sourceCreditNoteId) && normalizeStatus(refund.status || "processed") === "processed" && inPeriod(refund.refundDate || refund.createdAt, period))
+      .reduce((sum, refund) => sum + toMinor(refund.amount), 0);
+    const netPositionMinor = totalMinor - paidMinor - creditMinor + refundedMinor;
     const outstandingMinor = Math.max(0, netPositionMinor);
     const customerCreditMinor = Math.max(0, -netPositionMinor);
     const customer = scoped.customerById.get(invoice.customerId) || {};
@@ -334,6 +371,9 @@ export function buildReceivablesReport(state, businessId, options = {}) {
       invoiceTotal: money(totalMinor),
       creditAdjustments: money(creditMinor),
       paidAmount: money(paidMinor),
+      grossPaidAmount: money(grossPaidMinor),
+      paymentReversals: money(reversedMinor),
+      refundsSettled: money(refundedMinor),
       outstanding: money(outstandingMinor),
       customerCreditBalance: money(customerCreditMinor),
       netPosition: money(netPositionMinor),
@@ -524,15 +564,34 @@ export function buildPaymentSummary(state, businessId, options = {}) {
   const scoped = scopedState(state, businessId);
   const payments = capturedPayments(scoped, period);
   const rows = payments.map((payment) => ({
+    documentType: "customer_payment",
     paymentId: payment.id,
     invoiceId: payment.invoiceId || "",
     customerId: payment.customerId || "",
     paymentDate: payment.paymentDate || String(payment.createdAt || "").slice(0, 10),
     amount: money(toMinor(payment.amount)),
+    reversedAmount: money(postedPaymentReversals(scoped, period).filter((reversal) => reversal.originalPaymentId === payment.id).reduce((sum, reversal) => sum + toMinor(reversal.amount), 0)),
+    netEffectiveAmount: money(toMinor(payment.amount) - postedPaymentReversals(scoped, period).filter((reversal) => reversal.originalPaymentId === payment.id).reduce((sum, reversal) => sum + toMinor(reversal.amount), 0)),
     method: payment.method || payment.mode || payment.modeOfPayment || payment.gateway || "manual",
     reference: payment.reference || payment.gatewayPaymentId || "",
     status: payment.status || "captured",
+    economicStatus: payment.economicStatus || "captured",
+    direction: "money_in",
     journalId: sourceJournal(scoped, "payment", payment.id)?.id || "",
+  }));
+  const reversalRows = postedPaymentReversals(scoped, period).map((reversal) => ({
+    documentType: "customer_payment_reversal",
+    reversalId: reversal.id,
+    originalPaymentId: reversal.originalPaymentId,
+    invoiceId: reversal.invoiceId || "",
+    customerId: "",
+    paymentDate: reversal.reversalDate || String(reversal.createdAt || "").slice(0, 10),
+    amount: money(toMinor(reversal.amount)),
+    method: reversal.method || "manual",
+    reference: reversal.reference || reversal.providerReference || "",
+    status: reversal.status || "posted",
+    direction: "reverses_money_in",
+    journalId: sourceJournal(scoped, "customer_payment_reversal", reversal.id)?.id || "",
   }));
   const byMethod = rows.reduce((acc, row) => {
     acc[row.method] = money(toMinor(acc[row.method]) + toMinor(row.amount));
@@ -540,9 +599,11 @@ export function buildPaymentSummary(state, businessId, options = {}) {
   }, {});
   return {
     ...reportBase(businessId, "payment_subledger", period, "payment_date"),
-    rows,
+    rows: rows.concat(reversalRows),
     byMethod,
     totalCaptured: money(addMinor(...rows.map((row) => row.amount))),
+    totalReversed: money(addMinor(...reversalRows.map((row) => row.amount))),
+    netEffectivePayments: money(addMinor(...rows.map((row) => row.amount)) - addMinor(...reversalRows.map((row) => row.amount))),
   };
 }
 
@@ -679,11 +740,21 @@ export function buildVendorPayablesReport(state, businessId, options = {}) {
   const scoped = scopedState(state, businessId);
   const rows = postedVendorBills(scoped, period, "billDate").map((bill) => {
     const totalMinor = toMinor(bill.total);
-    const paidMinor = toMinor(bill.paidAmount);
-    const creditMinor = scoped.vendorCredits
+    const grossPaidMinor = scoped.payments
+      .filter((payment) => payment.vendorBillId === bill.id && isCapturedPayment(payment))
+      .reduce((sum, payment) => sum + toMinor(payment.amount), 0);
+    const reversedMinor = scoped.vendorPaymentReversals
+      .filter((reversal) => reversal.vendorBillId === bill.id && normalizeStatus(reversal.status || "posted") === "posted")
+      .reduce((sum, reversal) => sum + toMinor(reversal.amount), 0);
+    const paidMinor = Math.max(0, grossPaidMinor - reversedMinor);
+    const billVendorCredits = scoped.vendorCredits
       .filter((credit) => credit.sourceVendorBillId === bill.id && normalizeStatus(credit.status || "draft") !== "draft" && inPeriod(credit.vendorCreditDate || credit.createdAt, period))
-      .reduce((sum, credit) => sum + toMinor(credit.total), 0);
-    const netPositionMinor = totalMinor - paidMinor - creditMinor;
+    const creditMinor = billVendorCredits.reduce((sum, credit) => sum + toMinor(credit.total), 0);
+    const vendorCreditIds = new Set(billVendorCredits.map((credit) => credit.id));
+    const recoveredMinor = scoped.vendorRefunds
+      .filter((refund) => vendorCreditIds.has(refund.sourceVendorCreditId) && normalizeStatus(refund.status || "received") === "received" && inPeriod(refund.receivedDate || refund.refundDate || refund.createdAt, period))
+      .reduce((sum, refund) => sum + toMinor(refund.amount), 0);
+    const netPositionMinor = totalMinor - paidMinor - creditMinor + recoveredMinor;
     const outstandingMinor = Math.max(0, netPositionMinor);
     const vendorCreditMinor = Math.max(0, -netPositionMinor);
     const vendor = scoped.vendorById.get(bill.vendorId) || {};
@@ -698,6 +769,9 @@ export function buildVendorPayablesReport(state, businessId, options = {}) {
       billTotal: money(totalMinor),
       creditAdjustments: money(creditMinor),
       paidAmount: money(paidMinor),
+      grossPaidAmount: money(grossPaidMinor),
+      paymentReversals: money(reversedMinor),
+      refundsRecovered: money(recoveredMinor),
       outstanding: money(outstandingMinor),
       vendorCreditBalance: money(vendorCreditMinor),
       netPosition: money(netPositionMinor),
@@ -744,20 +818,89 @@ export function buildVendorPaymentSummary(state, businessId, options = {}) {
   const scoped = scopedState(state, businessId);
   const payments = capturedVendorPayments(scoped, period);
   const rows = payments.map((payment) => ({
+    documentType: "vendor_payment",
     paymentId: payment.id,
     vendorBillId: payment.vendorBillId || "",
     vendorId: payment.vendorId || "",
     paymentDate: payment.paymentDate || String(payment.createdAt || "").slice(0, 10),
     amount: money(toMinor(payment.amount)),
+    reversedAmount: money(postedVendorPaymentReversals(scoped, period).filter((reversal) => reversal.originalPaymentId === payment.id).reduce((sum, reversal) => sum + toMinor(reversal.amount), 0)),
+    netEffectiveAmount: money(toMinor(payment.amount) - postedVendorPaymentReversals(scoped, period).filter((reversal) => reversal.originalPaymentId === payment.id).reduce((sum, reversal) => sum + toMinor(reversal.amount), 0)),
     method: payment.method || payment.mode || payment.modeOfPayment || payment.gateway || "manual",
     reference: payment.reference || payment.gatewayPaymentId || "",
     status: payment.status || "captured",
+    economicStatus: payment.economicStatus || "captured",
+    direction: "money_out",
     journalId: sourceJournal(scoped, "vendor_payment", payment.id)?.id || "",
+  }));
+  const reversalRows = postedVendorPaymentReversals(scoped, period).map((reversal) => ({
+    documentType: "vendor_payment_reversal",
+    reversalId: reversal.id,
+    originalPaymentId: reversal.originalPaymentId,
+    vendorBillId: reversal.vendorBillId || "",
+    vendorId: reversal.vendorId || "",
+    paymentDate: reversal.reversalDate || String(reversal.createdAt || "").slice(0, 10),
+    amount: money(toMinor(reversal.amount)),
+    method: reversal.method || "manual",
+    reference: reversal.reference || reversal.providerReference || "",
+    status: reversal.status || "posted",
+    direction: "reverses_money_out",
+    journalId: sourceJournal(scoped, "vendor_payment_reversal", reversal.id)?.id || "",
   }));
   return {
     ...reportBase(businessId, "vendor_payment_subledger", period, "payment_date"),
-    rows,
+    rows: rows.concat(reversalRows),
     totalCaptured: money(addMinor(...rows.map((row) => row.amount))),
+    totalReversed: money(addMinor(...reversalRows.map((row) => row.amount))),
+    netEffectivePayments: money(addMinor(...rows.map((row) => row.amount)) - addMinor(...reversalRows.map((row) => row.amount))),
+  };
+}
+
+export function buildCustomerRefundRegister(state, businessId, options = {}) {
+  const period = normalizePeriod(options);
+  const scoped = scopedState(state, businessId);
+  const rows = postedCustomerRefunds(scoped, period).map((refund) => ({
+    refundId: refund.id,
+    customerId: refund.customerId || "",
+    sourceCreditNoteId: refund.sourceCreditNoteId || "",
+    sourceInvoiceId: refund.sourceInvoiceId || "",
+    refundDate: refund.refundDate || String(refund.createdAt || "").slice(0, 10),
+    amount: money(toMinor(refund.amount)),
+    method: refund.method || "manual",
+    reference: refund.reference || refund.providerReference || "",
+    status: refund.status || "processed",
+    direction: "money_out",
+    journalId: sourceJournal(scoped, "customer_refund", refund.id)?.id || "",
+    financialEventId: sourceJournal(scoped, "customer_refund", refund.id)?.financialEventId || "",
+  }));
+  return {
+    ...reportBase(businessId, "customer_refund_register", period, "refund_date"),
+    rows,
+    totalRefunded: money(addMinor(...rows.map((row) => row.amount))),
+  };
+}
+
+export function buildVendorRefundRegister(state, businessId, options = {}) {
+  const period = normalizePeriod(options);
+  const scoped = scopedState(state, businessId);
+  const rows = postedVendorRefunds(scoped, period).map((refund) => ({
+    vendorRefundId: refund.id,
+    vendorId: refund.vendorId || "",
+    sourceVendorCreditId: refund.sourceVendorCreditId || "",
+    sourceVendorBillId: refund.sourceVendorBillId || "",
+    receivedDate: refund.receivedDate || refund.refundDate || String(refund.createdAt || "").slice(0, 10),
+    amount: money(toMinor(refund.amount)),
+    method: refund.method || "manual",
+    reference: refund.reference || refund.providerReference || "",
+    status: refund.status || "received",
+    direction: "money_in",
+    journalId: sourceJournal(scoped, "vendor_refund", refund.id)?.id || "",
+    financialEventId: sourceJournal(scoped, "vendor_refund", refund.id)?.financialEventId || "",
+  }));
+  return {
+    ...reportBase(businessId, "vendor_refund_register", period, "received_date"),
+    rows,
+    totalRecovered: money(addMinor(...rows.map((row) => row.amount))),
   };
 }
 
@@ -849,9 +992,11 @@ export function buildFinancialReconciliation(state, businessId, options = {}) {
   const sales = buildSalesReport(state, businessId, options);
   const receivables = buildReceivablesReport(state, businessId, options);
   const payments = buildPaymentSummary(state, businessId, options);
+  const customerRefunds = buildCustomerRefundRegister(state, businessId, options);
   const purchases = buildPurchaseRegister(state, businessId, options);
   const payables = buildVendorPayablesReport(state, businessId, options);
   const vendorPayments = buildVendorPaymentSummary(state, businessId, options);
+  const vendorRefunds = buildVendorRefundRegister(state, businessId, options);
   const gst = buildGstSummary(state, businessId, options);
   const trialBalance = buildTrialBalance(state, businessId, options);
   const issued = issuedInvoices(scoped, period, "invoiceDate");
@@ -859,6 +1004,10 @@ export function buildFinancialReconciliation(state, businessId, options = {}) {
   const postedBills = postedVendorBills(scoped, period, "billDate");
   const postedCredits = postedSalesCreditNotes(scoped, period, "creditNoteDate");
   const postedVendorCreditRecords = postedVendorCredits(scoped, period, "vendorCreditDate");
+  const postedCustomerPaymentReversalRecords = postedPaymentReversals(scoped, period);
+  const postedCustomerRefundRecords = postedCustomerRefunds(scoped, period);
+  const postedVendorPaymentReversalRecords = postedVendorPaymentReversals(scoped, period);
+  const postedVendorRefundRecords = postedVendorRefunds(scoped, period);
   const capturedVendorPaymentRecords = capturedVendorPayments(scoped, period);
   const postedEventsBySource = new Map(scoped.events.filter((event) => event.postingStatus === "posted").map((event) => [`${event.eventType}:${event.sourceId}`, event]));
   const failedEvents = scoped.events.filter((event) => event.postingStatus === "failed");
@@ -874,6 +1023,14 @@ export function buildFinancialReconciliation(state, businessId, options = {}) {
   const missingCreditNoteJournals = postedCredits.filter((note) => !sourceJournal(scoped, "sales_credit_note", note.id));
   const missingVendorCreditEvents = postedVendorCreditRecords.filter((credit) => !postedEventsBySource.has(`vendor_credit_posted:${credit.id}`));
   const missingVendorCreditJournals = postedVendorCreditRecords.filter((credit) => !sourceJournal(scoped, "vendor_credit", credit.id));
+  const missingCustomerPaymentReversalEvents = postedCustomerPaymentReversalRecords.filter((reversal) => !postedEventsBySource.has(`customer_payment_reversed:${reversal.id}`));
+  const missingCustomerPaymentReversalJournals = postedCustomerPaymentReversalRecords.filter((reversal) => !sourceJournal(scoped, "customer_payment_reversal", reversal.id));
+  const missingCustomerRefundEvents = postedCustomerRefundRecords.filter((refund) => !postedEventsBySource.has(`customer_refund_processed:${refund.id}`));
+  const missingCustomerRefundJournals = postedCustomerRefundRecords.filter((refund) => !sourceJournal(scoped, "customer_refund", refund.id));
+  const missingVendorPaymentReversalEvents = postedVendorPaymentReversalRecords.filter((reversal) => !postedEventsBySource.has(`vendor_payment_reversed:${reversal.id}`));
+  const missingVendorPaymentReversalJournals = postedVendorPaymentReversalRecords.filter((reversal) => !sourceJournal(scoped, "vendor_payment_reversal", reversal.id));
+  const missingVendorRefundEvents = postedVendorRefundRecords.filter((refund) => !postedEventsBySource.has(`vendor_refund_received:${refund.id}`));
+  const missingVendorRefundJournals = postedVendorRefundRecords.filter((refund) => !sourceJournal(scoped, "vendor_refund", refund.id));
   const duplicateSourceJournals = Object.values(scoped.journals.filter((journal) => journal.automatic).reduce((groups, journal) => {
     const key = `${journal.sourceType}:${journal.sourceId}`;
     groups[key] = groups[key] || [];
@@ -884,6 +1041,8 @@ export function buildFinancialReconciliation(state, businessId, options = {}) {
   const arLedger = sumJournalLines(scoped, (line) => accountRole(line.account) === "accounts_receivable" && inPeriod(journalDate(line.journal), period));
   const arNetMinor = arLedger.debitMinor - arLedger.creditMinor;
   const bankLedger = sumJournalLines(scoped, (line) => accountRole(line.account) === "bank_clearing" && line.journal?.sourceType === "payment" && inPeriod(journalDate(line.journal), period));
+  const customerPaymentReversalBankLedger = sumJournalLines(scoped, (line) => accountRole(line.account) === "bank_clearing" && line.journal?.sourceType === "customer_payment_reversal" && inPeriod(journalDate(line.journal), period));
+  const customerRefundBankLedger = sumJournalLines(scoped, (line) => accountRole(line.account) === "bank_clearing" && line.journal?.sourceType === "customer_refund" && inPeriod(journalDate(line.journal), period));
   const salesLedger = sumJournalLines(scoped, (line) => ["sales_revenue", "sales_returns"].includes(accountRole(line.account)) && ["invoice", "sales_credit_note"].includes(line.journal?.sourceType) && inPeriod(journalDate(line.journal), period));
   const cgstLedger = sumJournalLines(scoped, (line) => accountRole(line.account) === "output_cgst" && ["invoice", "sales_credit_note"].includes(line.journal?.sourceType) && inPeriod(journalDate(line.journal), period));
   const sgstLedger = sumJournalLines(scoped, (line) => accountRole(line.account) === "output_sgst" && ["invoice", "sales_credit_note"].includes(line.journal?.sourceType) && inPeriod(journalDate(line.journal), period));
@@ -895,6 +1054,8 @@ export function buildFinancialReconciliation(state, businessId, options = {}) {
   const inputSgstLedger = sumJournalLines(scoped, (line) => accountRole(line.account) === "input_sgst" && ["vendor_bill", "vendor_credit"].includes(line.journal?.sourceType) && inPeriod(journalDate(line.journal), period));
   const inputIgstLedger = sumJournalLines(scoped, (line) => accountRole(line.account) === "input_igst" && ["vendor_bill", "vendor_credit"].includes(line.journal?.sourceType) && inPeriod(journalDate(line.journal), period));
   const vendorPaymentBankLedger = sumJournalLines(scoped, (line) => accountRole(line.account) === "bank_clearing" && line.journal?.sourceType === "vendor_payment" && inPeriod(journalDate(line.journal), period));
+  const vendorPaymentReversalBankLedger = sumJournalLines(scoped, (line) => accountRole(line.account) === "bank_clearing" && line.journal?.sourceType === "vendor_payment_reversal" && inPeriod(journalDate(line.journal), period));
+  const vendorRefundBankLedger = sumJournalLines(scoped, (line) => accountRole(line.account) === "bank_clearing" && line.journal?.sourceType === "vendor_refund" && inPeriod(journalDate(line.journal), period));
 
   const journalAmountMismatches = issued.map((invoice) => {
     const journal = sourceJournal(scoped, "invoice", invoice.id);
@@ -928,6 +1089,38 @@ export function buildFinancialReconciliation(state, businessId, options = {}) {
       : 0;
     return buildCheck(`vendor_payment_journal:${payment.id}`, expectedMinor, actualMinor, { sourceType: "vendor_payment", sourceId: payment.id });
   }).filter((check) => check.status !== "reconciled");
+  const customerPaymentReversalAmountMismatches = postedCustomerPaymentReversalRecords.map((reversal) => {
+    const journal = sourceJournal(scoped, "customer_payment_reversal", reversal.id);
+    const expectedMinor = toMinor(reversal.amount);
+    const actualMinor = journal
+      ? scoped.lines.filter((line) => line.journalId === journal.id && accountRole(line.account) === "accounts_receivable").reduce((sum, line) => sum + toMinor(line.debit), 0)
+      : 0;
+    return buildCheck(`customer_payment_reversal_journal:${reversal.id}`, expectedMinor, actualMinor, { sourceType: "customer_payment_reversal", sourceId: reversal.id });
+  }).filter((check) => check.status !== "reconciled");
+  const customerRefundAmountMismatches = postedCustomerRefundRecords.map((refund) => {
+    const journal = sourceJournal(scoped, "customer_refund", refund.id);
+    const expectedMinor = toMinor(refund.amount);
+    const actualMinor = journal
+      ? scoped.lines.filter((line) => line.journalId === journal.id && accountRole(line.account) === "accounts_receivable").reduce((sum, line) => sum + toMinor(line.debit), 0)
+      : 0;
+    return buildCheck(`customer_refund_journal:${refund.id}`, expectedMinor, actualMinor, { sourceType: "customer_refund", sourceId: refund.id });
+  }).filter((check) => check.status !== "reconciled");
+  const vendorPaymentReversalAmountMismatches = postedVendorPaymentReversalRecords.map((reversal) => {
+    const journal = sourceJournal(scoped, "vendor_payment_reversal", reversal.id);
+    const expectedMinor = toMinor(reversal.amount);
+    const actualMinor = journal
+      ? scoped.lines.filter((line) => line.journalId === journal.id && accountRole(line.account) === "accounts_payable").reduce((sum, line) => sum + toMinor(line.credit), 0)
+      : 0;
+    return buildCheck(`vendor_payment_reversal_journal:${reversal.id}`, expectedMinor, actualMinor, { sourceType: "vendor_payment_reversal", sourceId: reversal.id });
+  }).filter((check) => check.status !== "reconciled");
+  const vendorRefundAmountMismatches = postedVendorRefundRecords.map((refund) => {
+    const journal = sourceJournal(scoped, "vendor_refund", refund.id);
+    const expectedMinor = toMinor(refund.amount);
+    const actualMinor = journal
+      ? scoped.lines.filter((line) => line.journalId === journal.id && accountRole(line.account) === "accounts_payable").reduce((sum, line) => sum + toMinor(line.credit), 0)
+      : 0;
+    return buildCheck(`vendor_refund_journal:${refund.id}`, expectedMinor, actualMinor, { sourceType: "vendor_refund", sourceId: refund.id });
+  }).filter((check) => check.status !== "reconciled");
 
   const checks = [
     buildCheck("ar_subledger_vs_control", toMinor(receivables.netReceivableControlBalance), arNetMinor, { expectedSource: "receivables_subledger", actualSource: "accounts_receivable_ledger" }),
@@ -936,12 +1129,16 @@ export function buildFinancialReconciliation(state, businessId, options = {}) {
     buildCheck("sgst_transactions_vs_ledger", toMinor(gst.totals.outputSgst) - postedCredits.reduce((sum, note) => sum + toMinor(note.sgstAmount), 0), sgstLedger.creditMinor - sgstLedger.debitMinor),
     buildCheck("igst_transactions_vs_ledger", toMinor(gst.totals.outputIgst) - postedCredits.reduce((sum, note) => sum + toMinor(note.igstAmount), 0), igstLedger.creditMinor - igstLedger.debitMinor),
     buildCheck("captured_payments_vs_bank_clearing", toMinor(payments.totalCaptured), bankLedger.debitMinor - bankLedger.creditMinor),
+    buildCheck("customer_payment_reversals_vs_bank_clearing", toMinor(payments.totalReversed), customerPaymentReversalBankLedger.creditMinor - customerPaymentReversalBankLedger.debitMinor),
+    buildCheck("customer_refunds_vs_bank_clearing", toMinor(customerRefunds.totalRefunded), customerRefundBankLedger.creditMinor - customerRefundBankLedger.debitMinor),
     buildCheck("ap_subledger_vs_control", toMinor(payables.netPayableControlBalance), apNetMinor, { expectedSource: "vendor_payables_subledger", actualSource: "accounts_payable_ledger" }),
     buildCheck("expense_transactions_vs_ledger", toMinor(purchases.totals.netTaxableValue), expenseLedger.debitMinor - expenseLedger.creditMinor, { expectedSource: "posted_vendor_bill_expenses_less_credits", actualSource: "expense_ledger" }),
     buildCheck("input_cgst_transactions_vs_ledger", toMinor(gst.totals.netInputCgst), inputCgstLedger.debitMinor - inputCgstLedger.creditMinor),
     buildCheck("input_sgst_transactions_vs_ledger", toMinor(gst.totals.netInputSgst), inputSgstLedger.debitMinor - inputSgstLedger.creditMinor),
     buildCheck("input_igst_transactions_vs_ledger", toMinor(gst.totals.netInputIgst), inputIgstLedger.debitMinor - inputIgstLedger.creditMinor),
     buildCheck("vendor_payments_vs_bank_clearing", toMinor(vendorPayments.totalCaptured), vendorPaymentBankLedger.creditMinor - vendorPaymentBankLedger.debitMinor),
+    buildCheck("vendor_payment_reversals_vs_bank_clearing", toMinor(vendorPayments.totalReversed), vendorPaymentReversalBankLedger.debitMinor - vendorPaymentReversalBankLedger.creditMinor),
+    buildCheck("vendor_refunds_vs_bank_clearing", toMinor(vendorRefunds.totalRecovered), vendorRefundBankLedger.debitMinor - vendorRefundBankLedger.creditMinor),
     buildCheck("trial_balance", 0, toMinor(trialBalance.totals.difference)),
   ];
   const structuralIssues = [
@@ -957,12 +1154,24 @@ export function buildFinancialReconciliation(state, businessId, options = {}) {
     ...missingCreditNoteJournals.map((note) => ({ type: "missing_credit_note_journal", sourceType: "sales_credit_note", sourceId: note.id })),
     ...missingVendorCreditEvents.map((credit) => ({ type: "missing_vendor_credit_event", sourceType: "vendor_credit", sourceId: credit.id })),
     ...missingVendorCreditJournals.map((credit) => ({ type: "missing_vendor_credit_journal", sourceType: "vendor_credit", sourceId: credit.id })),
+    ...missingCustomerPaymentReversalEvents.map((reversal) => ({ type: "missing_customer_payment_reversal_event", sourceType: "customer_payment_reversal", sourceId: reversal.id })),
+    ...missingCustomerPaymentReversalJournals.map((reversal) => ({ type: "missing_customer_payment_reversal_journal", sourceType: "customer_payment_reversal", sourceId: reversal.id })),
+    ...missingCustomerRefundEvents.map((refund) => ({ type: "missing_customer_refund_event", sourceType: "customer_refund", sourceId: refund.id })),
+    ...missingCustomerRefundJournals.map((refund) => ({ type: "missing_customer_refund_journal", sourceType: "customer_refund", sourceId: refund.id })),
+    ...missingVendorPaymentReversalEvents.map((reversal) => ({ type: "missing_vendor_payment_reversal_event", sourceType: "vendor_payment_reversal", sourceId: reversal.id })),
+    ...missingVendorPaymentReversalJournals.map((reversal) => ({ type: "missing_vendor_payment_reversal_journal", sourceType: "vendor_payment_reversal", sourceId: reversal.id })),
+    ...missingVendorRefundEvents.map((refund) => ({ type: "missing_vendor_refund_event", sourceType: "vendor_refund", sourceId: refund.id })),
+    ...missingVendorRefundJournals.map((refund) => ({ type: "missing_vendor_refund_journal", sourceType: "vendor_refund", sourceId: refund.id })),
     ...failedEvents.map((event) => ({ type: "failed_financial_event", sourceType: event.sourceType, sourceId: event.sourceId, eventId: event.id, reason: event.failureReason })),
     ...duplicateSourceJournals.map((journalIds) => ({ type: "duplicate_source_journals", journalIds })),
     ...journalAmountMismatches.map((check) => ({ type: "invoice_journal_amount_mismatch", ...check })),
     ...paymentAmountMismatches.map((check) => ({ type: "payment_journal_amount_mismatch", ...check })),
     ...vendorBillAmountMismatches.map((check) => ({ type: "vendor_bill_journal_amount_mismatch", ...check })),
     ...vendorPaymentAmountMismatches.map((check) => ({ type: "vendor_payment_journal_amount_mismatch", ...check })),
+    ...customerPaymentReversalAmountMismatches.map((check) => ({ type: "customer_payment_reversal_journal_amount_mismatch", ...check })),
+    ...customerRefundAmountMismatches.map((check) => ({ type: "customer_refund_journal_amount_mismatch", ...check })),
+    ...vendorPaymentReversalAmountMismatches.map((check) => ({ type: "vendor_payment_reversal_journal_amount_mismatch", ...check })),
+    ...vendorRefundAmountMismatches.map((check) => ({ type: "vendor_refund_journal_amount_mismatch", ...check })),
   ];
   const failedChecks = checks.filter((check) => check.status !== "reconciled");
   const status = failedChecks.length || structuralIssues.length ? "failed" : "reconciled";
@@ -986,6 +1195,14 @@ export function buildFinancialReconciliation(state, businessId, options = {}) {
       missingCreditNoteJournals: missingCreditNoteJournals.length,
       missingVendorCreditEvents: missingVendorCreditEvents.length,
       missingVendorCreditJournals: missingVendorCreditJournals.length,
+      missingCustomerPaymentReversalEvents: missingCustomerPaymentReversalEvents.length,
+      missingCustomerPaymentReversalJournals: missingCustomerPaymentReversalJournals.length,
+      missingCustomerRefundEvents: missingCustomerRefundEvents.length,
+      missingCustomerRefundJournals: missingCustomerRefundJournals.length,
+      missingVendorPaymentReversalEvents: missingVendorPaymentReversalEvents.length,
+      missingVendorPaymentReversalJournals: missingVendorPaymentReversalJournals.length,
+      missingVendorRefundEvents: missingVendorRefundEvents.length,
+      missingVendorRefundJournals: missingVendorRefundJournals.length,
       failedEvents: failedEvents.length,
       duplicateSourceJournalGroups: duplicateSourceJournals.length,
     },
@@ -1009,6 +1226,8 @@ export function buildFinancialReportBundle(state, businessId, options = {}) {
     vendorPayments: buildVendorPaymentSummary(state, businessId, options),
     creditNotes: buildCreditNoteRegister(state, businessId, options),
     vendorCredits: buildVendorCreditRegister(state, businessId, options),
+    customerRefunds: buildCustomerRefundRegister(state, businessId, options),
+    vendorRefunds: buildVendorRefundRegister(state, businessId, options),
     reconciliation: buildFinancialReconciliation(state, businessId, options),
   };
 }
