@@ -315,6 +315,1214 @@ test("invoice item discounts reduce taxable line totals", () => {
   assert.equal(invoice.items[0].discount, 100);
 });
 
+test("P1-1 financial core ignores tampered totals and centralizes GST rounding", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Finance Core", email: "finance-core@example.com" });
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    status: "created",
+    taxRate: 18,
+    gstMode: "intra",
+    subtotal: 1,
+    taxAmount: 1,
+    total: 1,
+    balanceAmount: 1,
+    paidAmount: 999,
+    paymentStatus: "paid",
+    items: [
+      { description: "Consulting", quantity: 2, rate: 1000, discount: 100, gstRate: 18 },
+      { description: "Support", quantity: 1, rate: 499.99, discount: 0, gstRate: 18 },
+    ],
+    discount: 50,
+    shipping: 25,
+    roundOff: 0.01,
+  });
+
+  assert.equal(invoice.subtotal, 2499.99);
+  assert.equal(invoice.discount, 150);
+  assert.equal(invoice.taxAmount, 423);
+  assert.equal(invoice.cgstAmount, 211.5);
+  assert.equal(invoice.sgstAmount, 211.5);
+  assert.equal(invoice.igstAmount, 0);
+  assert.equal(invoice.total, 2798);
+  assert.equal(invoice.balanceAmount, 2798);
+  assert.equal(invoice.paymentStatus, "unpaid");
+  assert.equal(invoice.moneyPrecision, "minor_units_2dp");
+});
+
+test("P1-1 financial core supports inter-state GST and rejects invalid financial input", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "GST Core", email: "gst-core@example.com" });
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    taxRate: 18,
+    gstMode: "inter",
+    items: [{ description: "Inter-state service", quantity: 1, rate: 1000, gstRate: 18 }],
+  });
+
+  assert.equal(invoice.taxAmount, 180);
+  assert.equal(invoice.cgstAmount, 0);
+  assert.equal(invoice.sgstAmount, 0);
+  assert.equal(invoice.igstAmount, 180);
+  assert.equal(invoice.total, 1180);
+
+  assert.throws(
+    () => api.createInvoice({
+      ownerUserId: user.id,
+      taxRate: 18,
+      items: [{ description: "Bad quantity", quantity: -1, rate: 1000, gstRate: 18 }],
+    }),
+    /Quantity cannot be negative/i,
+  );
+  assert.throws(
+    () => api.createInvoice({
+      ownerUserId: user.id,
+      taxRate: 125,
+      items: [{ description: "Bad GST", quantity: 1, rate: 1000, gstRate: 125 }],
+    }),
+    /Tax rate must be between 0 and 100/i,
+  );
+});
+
+test("P1-1 financial numbering is business-specific and duplicate numbers are blocked", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const ownerA = api.createUser({ name: "Number A", email: "number-a@example.com" });
+  const ownerB = api.createUser({ name: "Number B", email: "number-b@example.com" });
+  const businessA = api.listBusinessWorkspaces(ownerA)[0].businessId;
+  const businessB = api.listBusinessWorkspaces(ownerB)[0].businessId;
+
+  const invoiceA = api.createInvoice({
+    ownerUserId: ownerA.id,
+    businessId: businessA,
+    invoiceCode: "INV",
+    invoiceDate: "2026-04-01",
+    items: [{ description: "A", quantity: 1, rate: 100, gstRate: 0 }],
+  });
+  const invoiceB = api.createInvoice({
+    ownerUserId: ownerB.id,
+    businessId: businessB,
+    invoiceCode: "INV",
+    invoiceDate: "2026-04-01",
+    items: [{ description: "B", quantity: 1, rate: 100, gstRate: 0 }],
+  });
+
+  assert.equal(invoiceA.invoiceNumber, "INV/2026/0001");
+  assert.equal(invoiceB.invoiceNumber, "INV/2026/0001");
+  assert.throws(
+    () => api.createInvoice({
+      ownerUserId: ownerA.id,
+      businessId: businessA,
+      invoiceNumber: invoiceA.invoiceNumber,
+      items: [{ description: "Duplicate", quantity: 1, rate: 100, gstRate: 0 }],
+    }),
+    /Invoice number already exists/i,
+  );
+});
+
+test("P1-1 financial payments are authoritative and idempotent", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Payment Core", email: "payment-core@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    taxRate: 0,
+    items: [{ description: "Retainer", quantity: 1, rate: 1000, gstRate: 0 }],
+  });
+
+  const partial = api.recordInvoicePayment(invoice.id, {
+    amount: 400,
+    businessId,
+    idempotencyKey: "pay-retry-1",
+  });
+  const replay = api.recordInvoicePayment(invoice.id, {
+    amount: 400,
+    businessId,
+    idempotencyKey: "pay-retry-1",
+  });
+  assert.throws(
+    () => api.recordInvoicePayment(invoice.id, { amount: 1, businessId: "biz_other" }),
+    /business does not match/i,
+  );
+  const paid = api.recordInvoicePayment(invoice.id, {
+    amount: 600,
+    businessId,
+    idempotencyKey: "pay-retry-2",
+  });
+
+  assert.equal(partial.invoice.paymentStatus, "part_paid");
+  assert.equal(partial.invoice.balanceAmount, 600);
+  assert.equal(replay.idempotentReplay, true);
+  assert.equal(replay.payment.id, partial.payment.id);
+  assert.equal(paid.invoice.paymentStatus, "paid");
+  assert.equal(paid.invoice.paidAmount, 1000);
+  assert.equal(paid.invoice.balanceAmount, 0);
+  assert.equal(api.listPayments(user, { businessId }).length, 2);
+  assert.throws(
+    () => api.recordInvoicePayment(invoice.id, { amount: 1, businessId, idempotencyKey: "pay-over" }),
+    /already fully paid/i,
+  );
+});
+
+test("P1-2 accounting posts non-tax and GST sales invoices with source linkage", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Posting Core", email: "posting-core@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+
+  const nonTax = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "ACCT/2026/0001",
+    taxRate: 0,
+    items: [{ description: "Non-tax service", quantity: 1, rate: 1000, gstRate: 0 }],
+  });
+  const intra = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "ACCT/2026/0002",
+    taxRate: 18,
+    gstMode: "intra",
+    items: [{ description: "Intra GST service", quantity: 1, rate: 1000, gstRate: 18 }],
+  });
+  const inter = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "ACCT/2026/0003",
+    taxRate: 18,
+    gstMode: "inter",
+    items: [{ description: "Inter GST service", quantity: 1, rate: 1000, gstRate: 18 }],
+  });
+
+  const ledger = api.listAccountingEventLedger(user, { businessId });
+  const invoiceEvents = ledger.financialEvents.filter((event) => event.eventType === "invoice_issued");
+  assert.equal(invoiceEvents.length, 3);
+
+  const nonTaxJournal = ledger.journals.find((journal) => journal.sourceId === nonTax.id);
+  assert.equal(nonTaxJournal.businessId, businessId);
+  assert.equal(nonTaxJournal.sourceType, "invoice");
+  assert.equal(nonTaxJournal.financialEventId, invoiceEvents.find((event) => event.sourceId === nonTax.id).id);
+  assert.equal(nonTaxJournal.totalDebit, 1000);
+  assert.equal(nonTaxJournal.totalCredit, 1000);
+  assert.deepEqual(nonTaxJournal.lines.map((line) => [line.accountCode, line.debit, line.credit]), [
+    ["1100", 1000, 0],
+    ["4100", 0, 1000],
+  ]);
+
+  const intraLines = ledger.journals.find((journal) => journal.sourceId === intra.id).lines;
+  assert.deepEqual(intraLines.map((line) => [line.accountCode, line.debit, line.credit]), [
+    ["1100", 1180, 0],
+    ["4100", 0, 1000],
+    ["2201", 0, 90],
+    ["2202", 0, 90],
+  ]);
+
+  const interLines = ledger.journals.find((journal) => journal.sourceId === inter.id).lines;
+  assert.deepEqual(interLines.map((line) => [line.accountCode, line.debit, line.credit]), [
+    ["1100", 1180, 0],
+    ["4100", 0, 1000],
+    ["2203", 0, 180],
+  ]);
+});
+
+test("P1-2 accounting posts captured invoice payments once per economic event", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Payment Posting", email: "payment-posting@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    taxRate: 18,
+    gstMode: "intra",
+    items: [{ description: "Taxable service", quantity: 1, rate: 1000, gstRate: 18 }],
+  });
+
+  const partial = api.recordInvoicePayment(invoice.id, { amount: 500, businessId, idempotencyKey: "rzp_pay_1" });
+  const replay = api.recordInvoicePayment(invoice.id, { amount: 500, businessId, idempotencyKey: "rzp_pay_1" });
+  const full = api.recordInvoicePayment(invoice.id, { amount: 680, businessId, idempotencyKey: "rzp_pay_2" });
+
+  assert.equal(replay.idempotentReplay, true);
+  assert.equal(replay.payment.id, partial.payment.id);
+  assert.equal(full.invoice.paymentStatus, "paid");
+
+  const ledger = api.listAccountingEventLedger(user, { businessId });
+  const paymentEvents = ledger.financialEvents.filter((event) => event.eventType === "payment_captured");
+  const paymentJournals = ledger.journals.filter((journal) => journal.sourceType === "payment");
+  assert.equal(paymentEvents.length, 2);
+  assert.equal(paymentJournals.length, 2);
+  assert.deepEqual(paymentJournals[0].lines.map((line) => [line.accountCode, line.debit, line.credit]), [
+    ["1110", 500, 0],
+    ["1100", 0, 500],
+  ]);
+  assert.deepEqual(paymentJournals[1].lines.map((line) => [line.accountCode, line.debit, line.credit]), [
+    ["1110", 680, 0],
+    ["1100", 0, 680],
+  ]);
+});
+
+test("P1-2 accounting is idempotent for invoice issue and skips drafts", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Draft Posting", email: "draft-posting@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const draft = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "draft",
+    taxRate: 0,
+    items: [{ description: "Draft", quantity: 1, rate: 1000, gstRate: 0 }],
+  });
+
+  assert.equal(api.listAccountingEventLedger(user, { businessId }).journals.length, 0);
+  api.updateInvoice(draft.id, { status: "created" }, { user, businessId });
+  api.updateInvoice(draft.id, { notes: "Retry safe issue update" }, { user, businessId });
+  const ledger = api.listAccountingEventLedger(user, { businessId });
+  assert.equal(ledger.financialEvents.filter((event) => event.eventType === "invoice_issued").length, 1);
+  assert.equal(ledger.journals.filter((journal) => journal.sourceType === "invoice").length, 1);
+});
+
+test("P1-2 accounting rejects cross-business accounts, unbalanced journals, and posted invoice edits", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const ownerA = api.createUser({ name: "Account A", email: "account-a@example.com" });
+  const ownerB = api.createUser({ name: "Account B", email: "account-b@example.com" });
+  const businessA = api.listBusinessWorkspaces(ownerA)[0].businessId;
+  const businessB = api.listBusinessWorkspaces(ownerB)[0].businessId;
+  const accountA = api.listAccountingEventLedger(ownerA, { businessId: businessA }).accounts.find((account) => account.accountCode === "1100");
+  const accountB = api.listAccountingEventLedger(ownerB, { businessId: businessB }).accounts.find((account) => account.accountCode === "4100");
+
+  assert.throws(
+    () => api.createManualAccountingJournal(ownerA, {
+      businessId: businessA,
+      lines: [
+        { accountId: accountA.id, debit: 100 },
+        { accountId: accountB.id, credit: 100 },
+      ],
+    }),
+    /does not belong/i,
+  );
+  assert.throws(
+    () => api.createManualAccountingJournal(ownerA, {
+      businessId: businessA,
+      lines: [
+        { accountId: accountA.id, debit: 100 },
+        { accountCode: "4100", credit: 99 },
+      ],
+    }),
+    /debit and credit totals must match/i,
+  );
+
+  const invoice = api.createInvoice({
+    ownerUserId: ownerA.id,
+    businessId: businessA,
+    status: "created",
+    taxRate: 0,
+    items: [{ description: "Posted", quantity: 1, rate: 1000, gstRate: 0 }],
+  });
+  assert.throws(
+    () => api.updateInvoice(invoice.id, { items: [{ description: "Changed", quantity: 1, rate: 500, gstRate: 0 }] }, { user: ownerA, businessId: businessA }),
+    /Posted invoices cannot be financially edited/i,
+  );
+});
+
+test("P1-2 accounting reconciliation detects missing source postings", () => {
+  const seed = {
+    users: [{ id: "usr_seed", name: "Recon User", email: "recon@example.com", role: "user" }],
+    businesses: [{ id: "biz_seed", ownerUserId: "usr_seed", legacyOwnerUserId: "usr_seed", name: "Recon Business", status: "active" }],
+    invoices: [{
+      id: "inv_seed",
+      ownerUserId: "usr_seed",
+      businessId: "biz_seed",
+      status: "created",
+      invoiceNumber: "RECON/2026/0001",
+      invoiceDate: "2026-08-15",
+      currency: "INR",
+      subtotal: 1000,
+      discount: 0,
+      taxableAmount: 1000,
+      taxAmount: 0,
+      total: 1000,
+      paidAmount: 0,
+      balanceAmount: 1000,
+      items: [{ description: "Seed", quantity: 1, rate: 1000, gstRate: 0 }],
+    }],
+    counters: { user: 1, business: 1, invoice: 1 },
+  };
+  const api = createApi({ store: createStore(seed, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.getUserById("usr_seed");
+  const ledger = api.listAccountingEventLedger(user, { businessId: "biz_seed" });
+  assert.equal(ledger.reconciliation.missingInvoicePostings.length, 1);
+  assert.equal(ledger.reconciliation.missingInvoicePostings[0].id, "inv_seed");
+});
+
+test("P1-3 financial reports reconcile the intra-state GST golden scenario", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Reporting Intra", email: "reporting-intra@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "P13/INTRA/001",
+    invoiceDate: "2026-08-01",
+    dueDate: "2026-08-31",
+    gstMode: "intra",
+    items: [{ description: "Taxable consulting", quantity: 1, rate: 10000, gstRate: 18 }],
+  });
+  api.recordInvoicePayment(invoice.id, {
+    businessId,
+    amount: 5000,
+    paymentDate: "2026-08-10",
+    mode: "razorpay",
+    reference: "safe-ref-5000",
+    idempotencyKey: "p13-intra-pay-1",
+  });
+
+  const bundle = api.getFinancialReport(user, "bundle", { businessId, from: "2026-08-01", to: "2026-08-31", asOf: "2026-09-10" });
+  assert.equal(bundle.sales.totals.taxableValue, 10000);
+  assert.equal(bundle.sales.totals.outputTax, 1800);
+  assert.equal(bundle.sales.totals.grossInvoiceValue, 11800);
+  assert.equal(bundle.gst.totals.cgst, 900);
+  assert.equal(bundle.gst.totals.sgst, 900);
+  assert.equal(bundle.gst.totals.igst, 0);
+  assert.equal(bundle.receivables.totalOutstanding, 6800);
+  assert.equal(bundle.payments.totalCaptured, 5000);
+  assert.equal(bundle.profitLoss.revenue, 10000);
+  assert.equal(bundle.profitLoss.expenses, 0);
+  assert.equal(bundle.profitLoss.profit, 10000);
+
+  const accountBalances = Object.fromEntries(bundle.trialBalance.rows.map((row) => [row.accountCode, row]));
+  assert.equal(accountBalances["1100"].netBalance, 6800);
+  assert.equal(accountBalances["1110"].netBalance, 5000);
+  assert.equal(accountBalances["4100"].netBalance, 10000);
+  assert.equal(accountBalances["2201"].netBalance, 900);
+  assert.equal(accountBalances["2202"].netBalance, 900);
+  assert.equal(bundle.trialBalance.integrity.status, "reconciled");
+  assert.equal(bundle.reconciliation.status, "reconciled");
+  assert.equal(bundle.reconciliation.checks.every((check) => check.status === "reconciled"), true);
+});
+
+test("P1-3 reports support inter-state GST, non-tax sales, and ledger date filters", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Reporting GST", email: "reporting-gst@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "P13/INTER/001",
+    invoiceDate: "2026-08-03",
+    gstMode: "inter",
+    items: [{ description: "Inter-state consulting", quantity: 1, rate: 10000, gstRate: 18 }],
+  });
+  api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "P13/NT/001",
+    invoiceDate: "2026-09-03",
+    gstMode: "intra",
+    items: [{ description: "Non-tax sale", quantity: 1, rate: 5000, gstRate: 0 }],
+  });
+  api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "draft",
+    invoiceNumber: "P13/DRAFT/001",
+    invoiceDate: "2026-08-03",
+    gstMode: "inter",
+    items: [{ description: "Draft should not report", quantity: 1, rate: 9999, gstRate: 18 }],
+  });
+
+  const augustGst = api.getFinancialReport(user, "gst-summary", { businessId, from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(augustGst.totals.taxableValue, 10000);
+  assert.equal(augustGst.totals.cgst, 0);
+  assert.equal(augustGst.totals.sgst, 0);
+  assert.equal(augustGst.totals.igst, 1800);
+
+  const septemberSales = api.getFinancialReport(user, "sales", { businessId, from: "2026-09-01", to: "2026-09-30" });
+  assert.equal(septemberSales.totals.taxableValue, 5000);
+  assert.equal(septemberSales.totals.nonTaxableSales, 5000);
+  assert.equal(septemberSales.totals.outputTax, 0);
+
+  const augustProfitLoss = api.getFinancialReport(user, "profit-loss", { businessId, from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(augustProfitLoss.revenue, 10000);
+  const septemberProfitLoss = api.getFinancialReport(user, "profit-loss", { businessId, from: "2026-09-01", to: "2026-09-30" });
+  assert.equal(septemberProfitLoss.revenue, 5000);
+});
+
+test("P1-3 general ledger preserves account filters and source traceability", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Ledger Report", email: "ledger-report@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "P13/GL/001",
+    invoiceDate: "2026-08-05",
+    items: [{ description: "Ledger trace", quantity: 1, rate: 1000, gstRate: 0 }],
+  });
+  api.recordInvoicePayment(invoice.id, { businessId, amount: 400, paymentDate: "2026-08-06", idempotencyKey: "p13-gl-pay" });
+
+  const arLedger = api.getFinancialReport(user, "general-ledger", { businessId, accountCode: "1100", from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(arLedger.rows.length, 2);
+  assert.deepEqual(arLedger.rows.map((row) => [row.sourceType, row.sourceId, row.accountCode, row.debit, row.credit, row.runningBalance]), [
+    ["invoice", invoice.id, "1100", 1000, 0, 1000],
+    ["payment", arLedger.rows[1].sourceId, "1100", 0, 400, 600],
+  ]);
+  assert.ok(arLedger.rows[0].journalId);
+  assert.ok(arLedger.rows[0].financialEventId);
+});
+
+test("P1-3 receivables ageing uses invoice subledger and remaining outstanding only", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Ageing Report", email: "ageing-report@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const current = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "P13/AGE/CURRENT",
+    invoiceDate: "2026-08-01",
+    dueDate: "2026-09-30",
+    items: [{ description: "Current", quantity: 1, rate: 1000, gstRate: 0 }],
+  });
+  const tenDays = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "P13/AGE/10",
+    invoiceDate: "2026-08-01",
+    dueDate: "2026-08-31",
+    items: [{ description: "Ten days", quantity: 1, rate: 10000, gstRate: 0 }],
+  });
+  const fortyFive = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "P13/AGE/45",
+    invoiceDate: "2026-07-01",
+    dueDate: "2026-07-27",
+    items: [{ description: "Forty five days", quantity: 1, rate: 20000, gstRate: 0 }],
+  });
+  const seventyFive = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "P13/AGE/75",
+    invoiceDate: "2026-06-01",
+    dueDate: "2026-06-27",
+    items: [{ description: "Seventy five days", quantity: 1, rate: 15000, gstRate: 0 }],
+  });
+  const ninetyFive = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "P13/AGE/95",
+    invoiceDate: "2026-05-01",
+    dueDate: "2026-06-07",
+    items: [{ description: "Ninety five days", quantity: 1, rate: 30000, gstRate: 0 }],
+  });
+  api.recordInvoicePayment(seventyFive.id, { businessId, amount: 9000, paymentDate: "2026-08-01", idempotencyKey: "p13-age-partial" });
+  api.recordInvoicePayment(current.id, { businessId, amount: 1000, paymentDate: "2026-08-01", idempotencyKey: "p13-age-paid" });
+
+  const ageing = api.getFinancialReport(user, "ageing", { businessId, asOf: "2026-09-10" });
+  assert.equal(ageing.buckets.current, 0);
+  assert.equal(ageing.buckets.days_1_30, 10000);
+  assert.equal(ageing.buckets.days_31_60, 20000);
+  assert.equal(ageing.buckets.days_61_90, 6000);
+  assert.equal(ageing.buckets.days_90_plus, 30000);
+  assert.equal(ageing.totalOutstanding, 66000);
+  assert.equal(ageing.rows.some((row) => row.invoiceId === current.id), false);
+  assert.equal(ageing.rows.find((row) => row.invoiceId === seventyFive.id).outstanding, 6000);
+  assert.equal(api.getFinancialReport(user, "receivables", { businessId }).totalOutstanding, 66000);
+  assert.equal(api.getFinancialReport(user, "reconciliation", { businessId }).status, "reconciled");
+  assert.ok(tenDays.id);
+  assert.ok(fortyFive.id);
+  assert.ok(ninetyFive.id);
+});
+
+test("P1-3 payment reports are idempotent and reconcile to payment journals", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Payment Report", email: "payment-report@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "P13/PAY/001",
+    invoiceDate: "2026-08-01",
+    items: [{ description: "Payment report", quantity: 1, rate: 1000, gstRate: 0 }],
+  });
+  api.recordInvoicePayment(invoice.id, { businessId, amount: 400, paymentDate: "2026-08-15", mode: "razorpay", idempotencyKey: "p13-pay-report" });
+  api.recordInvoicePayment(invoice.id, { businessId, amount: 400, paymentDate: "2026-08-15", mode: "razorpay", idempotencyKey: "p13-pay-report" });
+
+  const payments = api.getFinancialReport(user, "payments", { businessId, from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(payments.totalCaptured, 400);
+  assert.equal(payments.rows.length, 1);
+  assert.equal(payments.byMethod.razorpay, 400);
+  assert.equal(api.getFinancialReport(user, "reconciliation", { businessId }).checks.find((check) => check.id === "captured_payments_vs_bank_clearing").status, "reconciled");
+});
+
+test("P1-3 reporting detects missing postings and one-minor-unit mismatches without repair", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Reporting Mismatch", email: "reporting-mismatch@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "P13/MM/001",
+    invoiceDate: "2026-08-01",
+    items: [{ description: "Mismatch", quantity: 1, rate: 1000, gstRate: 0 }],
+  });
+  const accountReceivable = api.listAccountingEventLedger(user, { businessId }).accounts.find((account) => account.accountCode === "1100");
+  api.createManualAccountingJournal(user, {
+    businessId,
+    journalDate: "2026-08-01",
+    narration: "One minor unit mismatch fixture",
+    lines: [
+      { accountId: accountReceivable.id, debit: 0.01 },
+      { accountCode: "4100", credit: 0.01 },
+    ],
+  });
+
+  const mismatch = api.getFinancialReport(user, "reconciliation", { businessId });
+  const arCheck = mismatch.checks.find((check) => check.id === "ar_subledger_vs_control");
+  assert.equal(mismatch.status, "failed");
+  assert.equal(arCheck.difference, 0.01);
+  assert.equal(api.getFinancialReport(user, "receivables", { businessId }).totalOutstanding, 1000);
+
+  const seed = {
+    users: [{ id: "usr_p13_seed", name: "Seed", email: "p13-seed@example.com", role: "user" }],
+    businesses: [{ id: "biz_p13_seed", ownerUserId: "usr_p13_seed", legacyOwnerUserId: "usr_p13_seed", name: "Seed Biz", status: "active" }],
+    invoices: [{
+      id: "inv_p13_seed",
+      ownerUserId: "usr_p13_seed",
+      businessId: "biz_p13_seed",
+      status: "created",
+      invoiceNumber: "P13/SEED/001",
+      invoiceDate: "2026-08-01",
+      dueDate: "2026-08-31",
+      currency: "INR",
+      total: 1000,
+      paidAmount: 0,
+      balanceAmount: 1000,
+      cgstAmount: 0,
+      sgstAmount: 0,
+      igstAmount: 0,
+      items: [{ description: "Seed", quantity: 1, rate: 1000, gstRate: 0 }],
+    }],
+    counters: { user: 1, business: 1, invoice: 1 },
+  };
+  const seededApi = createApi({ store: createStore(seed, { persist: false, useSupabaseEmailOtp: false }) });
+  const seededRecon = seededApi.getFinancialReport(seededApi.getUserById("usr_p13_seed"), "reconciliation", { businessId: "biz_p13_seed" });
+  assert.equal(seededRecon.status, "failed");
+  assert.equal(seededRecon.summary.missingInvoiceEvents, 1);
+  assert.equal(seededRecon.summary.missingInvoiceJournals, 1);
+  assert.ok(invoice.id);
+});
+
+test("P1-3 reporting endpoints enforce canonical business access", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const ownerA = api.createUser({ name: "Report A", email: "report-a@example.com" });
+  const ownerB = api.createUser({ name: "Report B", email: "report-b@example.com" });
+  const businessA = api.listBusinessWorkspaces(ownerA)[0].businessId;
+  const businessB = api.listBusinessWorkspaces(ownerB)[0].businessId;
+  api.createInvoice({
+    ownerUserId: ownerB.id,
+    businessId: businessB,
+    status: "created",
+    invoiceNumber: "P13/TENANT/001",
+    invoiceDate: "2026-08-01",
+    items: [{ description: "Private", quantity: 1, rate: 1000, gstRate: 0 }],
+  });
+
+  assert.throws(() => api.getFinancialReport(ownerA, "profit-loss", { businessId: businessB }), /access|business/i);
+  assert.throws(() => api.getFinancialReport(ownerA, "trial-balance", { businessId: businessB }), /access|business/i);
+  assert.throws(() => api.getFinancialReport(ownerA, "general-ledger", { businessId: businessB }), /access|business/i);
+  assert.throws(() => api.getFinancialReport(ownerA, "receivables", { businessId: businessB }), /access|business/i);
+  assert.throws(() => api.getFinancialReport(ownerA, "ageing", { businessId: businessB }), /access|business/i);
+  assert.throws(() => api.getFinancialReport(ownerA, "payments", { businessId: businessB }), /access|business/i);
+  assert.throws(() => api.getFinancialReport(ownerA, "gst-summary", { businessId: businessB }), /access|business/i);
+  assert.throws(() => api.getFinancialReport(ownerA, "reconciliation", { businessId: businessB }), /access|business/i);
+  assert.equal(api.getFinancialReport(ownerA, "profit-loss", { businessId: businessA }).businessId, businessA);
+});
+
+test("P1-4 purchase orders do not create accounting impact", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "PO Safety", email: "po-safety@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  api.createPurchaseOrder({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    poNumber: "PO/P14/001",
+    items: [{ description: "Operational commitment", quantity: 1, rate: 50000, gstRate: 18 }],
+  });
+
+  const ledger = api.listAccountingEventLedger(user, { businessId });
+  assert.equal(ledger.financialEvents.length, 0);
+  assert.equal(ledger.journals.length, 0);
+  assert.equal(api.getFinancialReport(user, "profit-loss", { businessId }).expenses, 0);
+  assert.equal(api.getFinancialReport(user, "vendor-payables", { businessId }).totalOutstanding, 0);
+});
+
+test("P1-4 vendor bills post expense, input GST, A/P, and idempotent vendor payments", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Purchase Posting", email: "purchase-posting@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const vendor = api.createVendor({ name: "GST Vendor", businessId }, { user, businessId });
+  const draft = api.createVendorBill({
+    ownerUserId: user.id,
+    businessId,
+    vendorId: vendor.id,
+    vendorBillNumber: "VB-DRAFT",
+    status: "draft",
+    billDate: "2026-08-01",
+    items: [{ description: "Draft purchase", quantity: 1, rate: 9999, gstRate: 18 }],
+  }, { user, businessId });
+  assert.equal(api.listAccountingEventLedger(user, { businessId }).journals.length, 0);
+
+  const bill = api.updateVendorBill(draft.id, {
+    status: "posted",
+    vendorBillNumber: "VB-INTRA-001",
+    billDate: "2026-08-01",
+    dueDate: "2026-08-31",
+    gstMode: "intra",
+    items: [{ description: "Taxable operating expense", quantity: 1, rate: 10000, gstRate: 18 }],
+  }, { user, businessId });
+  api.updateVendorBill(bill.id, { notes: "Non-financial edit" }, { user, businessId });
+  const partial = api.recordVendorBillPayment(bill.id, { businessId, amount: 5000, paymentDate: "2026-08-10", mode: "bank", idempotencyKey: "p14-vpay-1" }, { user, businessId });
+  const replay = api.recordVendorBillPayment(bill.id, { businessId, amount: 5000, paymentDate: "2026-08-10", mode: "bank", idempotencyKey: "p14-vpay-1" }, { user, businessId });
+
+  assert.equal(replay.idempotentReplay, true);
+  assert.equal(replay.payment.id, partial.payment.id);
+  assert.equal(partial.vendorBill.paymentStatus, "part_paid");
+  assert.equal(partial.vendorBill.balanceAmount, 6800);
+
+  const ledger = api.listAccountingEventLedger(user, { businessId });
+  const billJournal = ledger.journals.find((journal) => journal.sourceType === "vendor_bill" && journal.sourceId === bill.id);
+  assert.deepEqual(billJournal.lines.map((line) => [line.accountCode, line.debit, line.credit]), [
+    ["5100", 10000, 0],
+    ["2211", 900, 0],
+    ["2212", 900, 0],
+    ["2100", 0, 11800],
+  ]);
+  const paymentJournal = ledger.journals.find((journal) => journal.sourceType === "vendor_payment" && journal.sourceId === partial.payment.id);
+  assert.deepEqual(paymentJournal.lines.map((line) => [line.accountCode, line.debit, line.credit]), [
+    ["2100", 5000, 0],
+    ["1110", 0, 5000],
+  ]);
+
+  const purchase = api.getFinancialReport(user, "purchase-register", { businessId, from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(purchase.totals.taxableValue, 10000);
+  assert.equal(purchase.totals.inputCgst, 900);
+  assert.equal(purchase.totals.inputSgst, 900);
+  assert.equal(purchase.totals.inputIgst, 0);
+  assert.equal(api.getFinancialReport(user, "vendor-payables", { businessId }).totalOutstanding, 6800);
+  assert.equal(api.getFinancialReport(user, "vendor-payments", { businessId }).totalCaptured, 5000);
+  assert.equal(api.getFinancialReport(user, "reconciliation", { businessId }).status, "reconciled");
+});
+
+test("P1-4 inter-state, non-tax purchases and full P&L flow through ledger reports", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Full PL", email: "full-pl@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const vendor = api.createVendor({ name: "Expense Vendor", businessId }, { user, businessId });
+  api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceDate: "2026-08-01",
+    gstMode: "intra",
+    items: [{ description: "Sale", quantity: 1, rate: 10000, gstRate: 18 }],
+  });
+  api.createVendorBill({
+    ownerUserId: user.id,
+    businessId,
+    vendorId: vendor.id,
+    vendorBillNumber: "VB-INTER-001",
+    status: "posted",
+    billDate: "2026-08-02",
+    gstMode: "inter",
+    items: [{ description: "Inter-state expense", quantity: 1, rate: 10000, gstRate: 18 }],
+  }, { user, businessId });
+  api.createVendorBill({
+    ownerUserId: user.id,
+    businessId,
+    vendorId: vendor.id,
+    vendorBillNumber: "VB-NONTAX-001",
+    status: "posted",
+    billDate: "2026-09-02",
+    gstMode: "intra",
+    items: [{ description: "Non-tax expense", quantity: 1, rate: 5000, gstRate: 0 }],
+  }, { user, businessId });
+
+  const augustGst = api.getFinancialReport(user, "gst-summary", { businessId, from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(augustGst.totals.inputCgst, 0);
+  assert.equal(augustGst.totals.inputSgst, 0);
+  assert.equal(augustGst.totals.inputIgst, 1800);
+  const septemberPurchase = api.getFinancialReport(user, "purchase-register", { businessId, from: "2026-09-01", to: "2026-09-30" });
+  assert.equal(septemberPurchase.totals.taxableValue, 5000);
+  assert.equal(septemberPurchase.totals.inputTax, 0);
+  const augustPl = api.getFinancialReport(user, "profit-loss", { businessId, from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(augustPl.revenue, 10000);
+  assert.equal(augustPl.expenses, 10000);
+  assert.equal(augustPl.profit, 0);
+  const septemberPl = api.getFinancialReport(user, "profit-loss", { businessId, from: "2026-09-01", to: "2026-09-30" });
+  assert.equal(septemberPl.revenue, 0);
+  assert.equal(septemberPl.expenses, 5000);
+  assert.equal(api.getFinancialReport(user, "trial-balance", { businessId }).integrity.status, "reconciled");
+});
+
+test("P1-4 payables ageing, overpayment, duplicate references, and posted edit protection are enforced", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "AP Guard", email: "ap-guard@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const vendor = api.createVendor({ name: "Guard Vendor", businessId }, { user, businessId });
+  const bill = api.createVendorBill({
+    ownerUserId: user.id,
+    businessId,
+    vendorId: vendor.id,
+    vendorBillNumber: "VB-GUARD-001",
+    status: "posted",
+    billDate: "2026-06-01",
+    dueDate: "2026-06-15",
+    items: [{ description: "Guard expense", quantity: 1, rate: 10000, gstRate: 0 }],
+  }, { user, businessId });
+  api.recordVendorBillPayment(bill.id, { businessId, amount: 4000, paymentDate: "2026-06-20", idempotencyKey: "p14-guard-pay" }, { user, businessId });
+
+  const ageing = api.getFinancialReport(user, "payables-ageing", { businessId, asOf: "2026-09-20" });
+  assert.equal(ageing.buckets.days_90_plus, 6000);
+  assert.equal(ageing.totalOutstanding, 6000);
+  assert.throws(
+    () => api.recordVendorBillPayment(bill.id, { businessId, amount: 7000, idempotencyKey: "p14-overpay" }, { user, businessId }),
+    /pending vendor bill balance/i,
+  );
+  assert.throws(
+    () => api.createVendorBill({
+      ownerUserId: user.id,
+      businessId,
+      vendorId: vendor.id,
+      vendorBillNumber: "VB-GUARD-001",
+      status: "posted",
+      items: [{ description: "Duplicate", quantity: 1, rate: 1, gstRate: 0 }],
+    }, { user, businessId }),
+    /already exists/i,
+  );
+  assert.throws(
+    () => api.updateVendorBill(bill.id, { items: [{ description: "Changed", quantity: 1, rate: 1, gstRate: 0 }] }, { user, businessId }),
+    /Posted vendor bills cannot be financially edited/i,
+  );
+});
+
+test("P1-4 full golden scenario reconciles sales, expense, payments, GST, A/R, A/P, and P&L", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Golden Business", email: "golden-business@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const vendor = api.createVendor({ name: "Golden Vendor", businessId }, { user, businessId });
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceDate: "2026-08-01",
+    dueDate: "2026-08-31",
+    gstMode: "intra",
+    items: [{ description: "Golden sale", quantity: 1, rate: 10000, gstRate: 18 }],
+  });
+  api.recordInvoicePayment(invoice.id, { businessId, amount: 5000, paymentDate: "2026-08-10", idempotencyKey: "p14-golden-customer-pay" }, { user, businessId });
+  const bill = api.createVendorBill({
+    ownerUserId: user.id,
+    businessId,
+    vendorId: vendor.id,
+    vendorBillNumber: "VB-GOLDEN-001",
+    status: "posted",
+    billDate: "2026-08-02",
+    dueDate: "2026-08-31",
+    gstMode: "intra",
+    items: [{ description: "Golden expense", quantity: 1, rate: 4000, gstRate: 18 }],
+  }, { user, businessId });
+  api.recordVendorBillPayment(bill.id, { businessId, amount: 2000, paymentDate: "2026-08-11", idempotencyKey: "p14-golden-vendor-pay" }, { user, businessId });
+
+  const bundle = api.getFinancialReport(user, "bundle", { businessId, from: "2026-08-01", to: "2026-08-31", asOf: "2026-09-15" });
+  assert.equal(bundle.profitLoss.revenue, 10000);
+  assert.equal(bundle.profitLoss.expenses, 4000);
+  assert.equal(bundle.profitLoss.profit, 6000);
+  assert.equal(bundle.receivables.totalOutstanding, 6800);
+  assert.equal(bundle.vendorPayables.totalOutstanding, 2720);
+  assert.equal(bundle.gst.totals.outputCgst, 900);
+  assert.equal(bundle.gst.totals.outputSgst, 900);
+  assert.equal(bundle.gst.totals.inputCgst, 360);
+  assert.equal(bundle.gst.totals.inputSgst, 360);
+  assert.equal(bundle.payments.totalCaptured, 5000);
+  assert.equal(bundle.vendorPayments.totalCaptured, 2000);
+  assert.equal(bundle.trialBalance.integrity.status, "reconciled");
+  assert.equal(bundle.reconciliation.status, "reconciled");
+  assert.equal(bundle.reconciliation.checks.every((check) => check.status === "reconciled"), true);
+});
+
+test("P1-4 purchase-side reconciliation detects A/P mismatch and tenant isolation blocks cross-business access", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const ownerA = api.createUser({ name: "Purchase A", email: "purchase-a@example.com" });
+  const ownerB = api.createUser({ name: "Purchase B", email: "purchase-b@example.com" });
+  const businessA = api.listBusinessWorkspaces(ownerA)[0].businessId;
+  const businessB = api.listBusinessWorkspaces(ownerB)[0].businessId;
+  const vendorA = api.createVendor({ name: "Vendor A", businessId: businessA }, { user: ownerA, businessId: businessA });
+  const vendorB = api.createVendor({ name: "Vendor B", businessId: businessB }, { user: ownerB, businessId: businessB });
+  assert.throws(
+    () => api.createVendorBill({
+      ownerUserId: ownerA.id,
+      businessId: businessA,
+      vendorId: vendorB.id,
+      status: "posted",
+      items: [{ description: "Cross", quantity: 1, rate: 1000, gstRate: 0 }],
+    }, { user: ownerA, businessId: businessA }),
+    /Vendor does not belong/i,
+  );
+  const bill = api.createVendorBill({
+    ownerUserId: ownerA.id,
+    businessId: businessA,
+    vendorId: vendorA.id,
+    vendorBillNumber: "VB-MM-001",
+    status: "posted",
+    billDate: "2026-08-01",
+    items: [{ description: "Mismatch", quantity: 1, rate: 1000, gstRate: 0 }],
+  }, { user: ownerA, businessId: businessA });
+  const apAccount = api.listAccountingEventLedger(ownerA, { businessId: businessA }).accounts.find((account) => account.accountCode === "2100");
+  api.createManualAccountingJournal(ownerA, {
+    businessId: businessA,
+    journalDate: "2026-08-01",
+    narration: "A/P one minor unit mismatch fixture",
+    lines: [
+      { accountCode: "5100", debit: 0.01 },
+      { accountId: apAccount.id, credit: 0.01 },
+    ],
+  }, { businessId: businessA });
+
+  const reconciliation = api.getFinancialReport(ownerA, "reconciliation", { businessId: businessA });
+  const apCheck = reconciliation.checks.find((check) => check.id === "ap_subledger_vs_control");
+  assert.equal(reconciliation.status, "failed");
+  assert.equal(apCheck.difference, 0.01);
+  assert.throws(() => api.getFinancialReport(ownerA, "vendor-payables", { businessId: businessB }), /access|business/i);
+  assert.throws(() => api.getVendorBill(bill.id, ownerB, { businessId: businessA }), /access|business/i);
+});
+
+test("P1-5 sales credit notes post append-only corrections and reconcile A/R, GST, P&L, and registers", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Credit Note Sales", email: "credit-note-sales@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "P15/S/CN/001",
+    invoiceDate: "2026-08-01",
+    dueDate: "2026-08-31",
+    gstMode: "intra",
+    items: [{ description: "Taxable sale", quantity: 1, rate: 10000, gstRate: 18 }],
+  });
+  api.recordInvoicePayment(invoice.id, { businessId, amount: 5000, paymentDate: "2026-08-05", idempotencyKey: "p15-sales-pay" }, { user, businessId });
+  const draft = api.createSalesCreditNote({
+    businessId,
+    sourceInvoiceId: invoice.id,
+    status: "draft",
+    creditNoteDate: "2026-08-10",
+    reason: "rate_adjustment",
+    items: [{ description: "Commercial adjustment", quantity: 1, rate: 2000, gstRate: 18 }],
+  }, { user, businessId });
+  assert.equal(api.listAccountingEventLedger(user, { businessId }).journals.filter((journal) => journal.sourceType === "sales_credit_note").length, 0);
+
+  const posted = api.updateCreditNote(draft.id, { status: "posted" }, { user, businessId });
+  const ledger = api.listAccountingEventLedger(user, { businessId });
+  const creditJournal = ledger.journals.find((journal) => journal.sourceType === "sales_credit_note" && journal.sourceId === posted.id);
+  assert.deepEqual(creditJournal.lines.map((line) => [line.accountCode, line.debit, line.credit]), [
+    ["4200", 2000, 0],
+    ["2201", 180, 0],
+    ["2202", 180, 0],
+    ["1100", 0, 2360],
+  ]);
+  assert.ok(creditJournal.reversesJournalId);
+  assert.ok(creditJournal.correctsDocumentId);
+  assert.equal(api.getInvoice(invoice.id, user, { businessId }).total, 11800);
+
+  const bundle = api.getFinancialReport(user, "bundle", { businessId, from: "2026-08-01", to: "2026-08-31", asOf: "2026-08-31" });
+  assert.equal(bundle.sales.totals.taxableValue, 10000);
+  assert.equal(bundle.sales.totals.creditAdjustments, 2000);
+  assert.equal(bundle.sales.totals.netTaxableValue, 8000);
+  assert.equal(bundle.gst.totals.outputTax, 1800);
+  assert.equal(bundle.gst.totals.outputTaxAdjustments, 360);
+  assert.equal(bundle.gst.totals.netOutputTax, 1440);
+  assert.equal(bundle.receivables.totalOutstanding, 4440);
+  assert.equal(bundle.receivables.netReceivableControlBalance, 4440);
+  assert.equal(bundle.profitLoss.revenue, 8000);
+  assert.equal(bundle.creditNotes.rows.length, 1);
+  assert.equal(api.getFinancialReport(user, "credit-notes", { businessId }).totals.grossCredit, 2360);
+  assert.equal(bundle.reconciliation.status, "reconciled");
+  assert.equal(bundle.reconciliation.summary.missingCreditNoteEvents, 0);
+  assert.equal(bundle.reconciliation.summary.missingCreditNoteJournals, 0);
+
+  assert.throws(
+    () => api.updateCreditNote(posted.id, { items: [{ description: "Rewrite", quantity: 1, rate: 1, gstRate: 18 }] }, { user, businessId }),
+    /Posted credit notes cannot be financially edited/i,
+  );
+});
+
+test("P1-5 fully paid sales credits become customer credit balances without rewriting the original invoice", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Paid Credit", email: "paid-credit@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceDate: "2026-08-01",
+    gstMode: "intra",
+    items: [{ description: "Paid sale", quantity: 1, rate: 10000, gstRate: 18 }],
+  });
+  api.recordInvoicePayment(invoice.id, { businessId, amount: 11800, paymentDate: "2026-08-02", idempotencyKey: "p15-paid-full" }, { user, businessId });
+  api.createSalesCreditNote({
+    businessId,
+    sourceInvoiceId: invoice.id,
+    status: "posted",
+    creditNoteDate: "2026-08-03",
+    items: [{ description: "After-payment concession", quantity: 1, rate: 2000, gstRate: 18 }],
+  }, { user, businessId });
+
+  const receivables = api.getFinancialReport(user, "receivables", { businessId });
+  assert.equal(receivables.totalOutstanding, 0);
+  assert.equal(receivables.customerCreditBalance, 2360);
+  assert.equal(receivables.netReceivableControlBalance, -2360);
+  assert.equal(api.getInvoice(invoice.id, user, { businessId }).total, 11800);
+  assert.equal(api.getFinancialReport(user, "ageing", { businessId, asOf: "2026-08-31" }).customerCreditBalance, 2360);
+  assert.equal(api.getFinancialReport(user, "reconciliation", { businessId }).status, "reconciled");
+});
+
+test("P1-5 full sales reversals are period-aware linked journals", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Full Reversal", email: "full-reversal@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceNumber: "P15/FULL/001",
+    invoiceDate: "2026-04-20",
+    gstMode: "inter",
+    items: [{ description: "April sale", quantity: 1, rate: 10000, gstRate: 18 }],
+  });
+  const reversal = api.createSalesCreditNote({
+    businessId,
+    sourceInvoiceId: invoice.id,
+    status: "posted",
+    fullReversal: true,
+    creditNoteDate: "2026-06-05",
+    reason: "invoice_cancelled_after_issue",
+    items: [{ description: "Full reversal", quantity: 1, rate: 10000, gstRate: 18 }],
+  }, { user, businessId });
+
+  assert.equal(api.getFinancialReport(user, "profit-loss", { businessId, from: "2026-04-01", to: "2026-04-30" }).revenue, 10000);
+  assert.equal(api.getFinancialReport(user, "profit-loss", { businessId, from: "2026-06-01", to: "2026-06-30" }).revenue, -10000);
+  assert.equal(api.getFinancialReport(user, "profit-loss", { businessId, from: "2026-04-01", to: "2026-06-30" }).revenue, 0);
+  assert.equal(api.getInvoice(invoice.id, user, { businessId }).status, "created");
+  const journals = api.listAccountingEventLedger(user, { businessId }).journals;
+  assert.equal(journals.filter((journal) => journal.sourceId === invoice.id || journal.sourceId === reversal.id).length, 2);
+  assert.equal(journals.find((journal) => journal.sourceId === reversal.id).postingRule, "sales_invoice_full_reversal");
+});
+
+test("P1-5 vendor credits post controlled purchase corrections and reconcile A/P, input GST, expenses, and registers", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Vendor Credit", email: "vendor-credit@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const vendor = api.createVendor({ name: "P15 Vendor", businessId }, { user, businessId });
+  const bill = api.createVendorBill({
+    ownerUserId: user.id,
+    businessId,
+    vendorId: vendor.id,
+    vendorBillNumber: "P15/VB/001",
+    status: "posted",
+    billDate: "2026-08-01",
+    dueDate: "2026-08-31",
+    gstMode: "intra",
+    items: [{ description: "Taxable expense", quantity: 1, rate: 4000, gstRate: 18 }],
+  }, { user, businessId });
+  api.recordVendorBillPayment(bill.id, { businessId, amount: 2000, paymentDate: "2026-08-05", idempotencyKey: "p15-vendor-pay" }, { user, businessId });
+  const credit = api.createVendorCredit({
+    businessId,
+    sourceVendorBillId: bill.id,
+    status: "posted",
+    vendorCreditDate: "2026-08-08",
+    items: [{ description: "Vendor adjustment", quantity: 1, rate: 1000, gstRate: 18 }],
+  }, { user, businessId });
+
+  const creditJournal = api.listAccountingEventLedger(user, { businessId }).journals.find((journal) => journal.sourceType === "vendor_credit" && journal.sourceId === credit.id);
+  assert.deepEqual(creditJournal.lines.map((line) => [line.accountCode, line.debit, line.credit]), [
+    ["2100", 1180, 0],
+    ["5200", 0, 1000],
+    ["2211", 0, 90],
+    ["2212", 0, 90],
+  ]);
+  assert.ok(creditJournal.reversesJournalId);
+
+  const bundle = api.getFinancialReport(user, "bundle", { businessId, from: "2026-08-01", to: "2026-08-31", asOf: "2026-08-31" });
+  assert.equal(bundle.vendorPayables.totalOutstanding, 1540);
+  assert.equal(bundle.vendorPayables.netPayableControlBalance, 1540);
+  assert.equal(bundle.purchaseRegister.totals.taxableValue, 4000);
+  assert.equal(bundle.purchaseRegister.totals.creditAdjustments, 1000);
+  assert.equal(bundle.purchaseRegister.totals.netTaxableValue, 3000);
+  assert.equal(bundle.gst.totals.inputTax, 720);
+  assert.equal(bundle.gst.totals.inputTaxAdjustments, 180);
+  assert.equal(bundle.gst.totals.netInputTax, 540);
+  assert.equal(bundle.profitLoss.expenses, 3000);
+  assert.equal(bundle.vendorCredits.totals.grossCredit, 1180);
+  assert.equal(api.getFinancialReport(user, "vendor-credits", { businessId }).rows.length, 1);
+  assert.equal(bundle.reconciliation.status, "reconciled");
+  assert.equal(bundle.reconciliation.summary.missingVendorCreditEvents, 0);
+  assert.equal(bundle.reconciliation.summary.missingVendorCreditJournals, 0);
+});
+
+test("P1-5 fully paid vendor credits become supplier credit balances without rewriting the source bill", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Paid Vendor Credit", email: "paid-vendor-credit@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const vendor = api.createVendor({ name: "Paid Vendor", businessId }, { user, businessId });
+  const bill = api.createVendorBill({
+    ownerUserId: user.id,
+    businessId,
+    vendorId: vendor.id,
+    vendorBillNumber: "P15/VB/PAID",
+    status: "posted",
+    billDate: "2026-08-01",
+    gstMode: "intra",
+    items: [{ description: "Paid expense", quantity: 1, rate: 4000, gstRate: 18 }],
+  }, { user, businessId });
+  api.recordVendorBillPayment(bill.id, { businessId, amount: 4720, paymentDate: "2026-08-02", idempotencyKey: "p15-vendor-paid-full" }, { user, businessId });
+  api.createVendorCredit({
+    businessId,
+    sourceVendorBillId: bill.id,
+    status: "posted",
+    vendorCreditDate: "2026-08-03",
+    items: [{ description: "Post-payment vendor credit", quantity: 1, rate: 1000, gstRate: 18 }],
+  }, { user, businessId });
+
+  const payables = api.getFinancialReport(user, "vendor-payables", { businessId });
+  assert.equal(payables.totalOutstanding, 0);
+  assert.equal(payables.vendorCreditBalance, 1180);
+  assert.equal(payables.netPayableControlBalance, -1180);
+  assert.equal(api.getVendorBill(bill.id, user, { businessId }).total, 4720);
+  assert.equal(api.getFinancialReport(user, "payables-ageing", { businessId, asOf: "2026-08-31" }).vendorCreditBalance, 1180);
+  assert.equal(api.getFinancialReport(user, "reconciliation", { businessId }).status, "reconciled");
+});
+
+test("P1-5 correction controls enforce idempotency, over-credit limits, immutability, and tenant isolation", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const ownerA = api.createUser({ name: "Correction A", email: "correction-a@example.com" });
+  const ownerB = api.createUser({ name: "Correction B", email: "correction-b@example.com" });
+  const businessA = api.listBusinessWorkspaces(ownerA)[0].businessId;
+  const businessB = api.listBusinessWorkspaces(ownerB)[0].businessId;
+  const invoiceA = api.createInvoice({
+    ownerUserId: ownerA.id,
+    businessId: businessA,
+    status: "created",
+    invoiceDate: "2026-08-01",
+    items: [{ description: "Tenant sale", quantity: 1, rate: 1000, gstRate: 0 }],
+  });
+  const invoiceB = api.createInvoice({
+    ownerUserId: ownerB.id,
+    businessId: businessB,
+    status: "created",
+    invoiceDate: "2026-08-01",
+    items: [{ description: "Private sale", quantity: 1, rate: 1000, gstRate: 0 }],
+  });
+  const first = api.createSalesCreditNote({
+    businessId: businessA,
+    sourceInvoiceId: invoiceA.id,
+    status: "posted",
+    idempotencyKey: "p15-credit-once",
+    items: [{ description: "Once", quantity: 1, rate: 300, gstRate: 0 }],
+  }, { user: ownerA, businessId: businessA });
+  const replay = api.createSalesCreditNote({
+    businessId: businessA,
+    sourceInvoiceId: invoiceA.id,
+    status: "posted",
+    idempotencyKey: "p15-credit-once",
+    items: [{ description: "Once", quantity: 1, rate: 300, gstRate: 0 }],
+  }, { user: ownerA, businessId: businessA });
+  assert.equal(replay.id, first.id);
+  assert.equal(api.listAccountingEventLedger(ownerA, { businessId: businessA }).journals.filter((journal) => journal.sourceType === "sales_credit_note").length, 1);
+  assert.throws(
+    () => api.createSalesCreditNote({
+      businessId: businessA,
+      sourceInvoiceId: invoiceA.id,
+      status: "posted",
+      items: [{ description: "Too much", quantity: 1, rate: 800, gstRate: 0 }],
+    }, { user: ownerA, businessId: businessA }),
+    /exceeds remaining creditable invoice amount/i,
+  );
+  const draftTooLarge = api.createSalesCreditNote({
+    businessId: businessA,
+    sourceInvoiceId: invoiceA.id,
+    status: "draft",
+    items: [{ description: "Draft too large", quantity: 1, rate: 800, gstRate: 0 }],
+  }, { user: ownerA, businessId: businessA });
+  assert.throws(
+    () => api.updateCreditNote(draftTooLarge.id, { status: "posted" }, { user: ownerA, businessId: businessA }),
+    /exceeds remaining creditable invoice amount/i,
+  );
+  assert.throws(
+    () => api.createSalesCreditNote({
+      businessId: businessA,
+      sourceInvoiceId: invoiceB.id,
+      status: "posted",
+      items: [{ description: "Cross", quantity: 1, rate: 100, gstRate: 0 }],
+    }, { user: ownerA, businessId: businessA }),
+    /access|business/i,
+  );
+  assert.throws(() => api.getFinancialReport(ownerA, "credit-notes", { businessId: businessB }), /access|business/i);
+
+  const vendor = api.createVendor({ name: "Control Vendor", businessId: businessA }, { user: ownerA, businessId: businessA });
+  const bill = api.createVendorBill({
+    ownerUserId: ownerA.id,
+    businessId: businessA,
+    vendorId: vendor.id,
+    vendorBillNumber: "P15/CTRL/VB",
+    status: "posted",
+    billDate: "2026-08-01",
+    items: [{ description: "Control bill", quantity: 1, rate: 1000, gstRate: 0 }],
+  }, { user: ownerA, businessId: businessA });
+  const vendorCredit = api.createVendorCredit({
+    businessId: businessA,
+    sourceVendorBillId: bill.id,
+    status: "posted",
+    idempotencyKey: "p15-vendor-credit-once",
+    items: [{ description: "Vendor once", quantity: 1, rate: 300, gstRate: 0 }],
+  }, { user: ownerA, businessId: businessA });
+  assert.equal(api.createVendorCredit({
+    businessId: businessA,
+    sourceVendorBillId: bill.id,
+    status: "posted",
+    idempotencyKey: "p15-vendor-credit-once",
+    items: [{ description: "Vendor once", quantity: 1, rate: 300, gstRate: 0 }],
+  }, { user: ownerA, businessId: businessA }).id, vendorCredit.id);
+  assert.throws(
+    () => api.updateVendorCredit(vendorCredit.id, { items: [{ description: "Rewrite", quantity: 1, rate: 1, gstRate: 0 }] }, { user: ownerA, businessId: businessA }),
+    /Posted vendor credits cannot be financially edited/i,
+  );
+  assert.throws(
+    () => api.createVendorCredit({
+      businessId: businessA,
+      sourceVendorBillId: bill.id,
+      status: "posted",
+      items: [{ description: "Too much vendor", quantity: 1, rate: 800, gstRate: 0 }],
+    }, { user: ownerA, businessId: businessA }),
+    /exceeds remaining creditable bill amount/i,
+  );
+  assert.throws(() => api.getFinancialReport(ownerA, "vendor-credits", { businessId: businessB }), /access|business/i);
+});
+
 test("manual payments update invoice payment status", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const user = api.createUser({ name: "Pay User", email: "pay@example.com" });
@@ -2710,11 +3918,32 @@ test("business tier unlocks team approvals and API keys", () => {
 
   const apiKey = api.createApiKey(user, { label: "WordPress site" });
   assert.match(apiKey.token, /^eaz_live_/);
+  assert.equal(apiKey.tokenHash, undefined);
+  assert.equal(apiKey.tokenPrefix, apiKey.token.slice(0, 12));
   const listedKeys = api.listApiKeys(user);
   assert.equal(listedKeys[0].token, "");
+  assert.equal(listedKeys[0].tokenHash, undefined);
   assert.equal(listedKeys[0].tokenPreview, apiKey.tokenPreview);
+  assert.equal(api.validateWordPressConnection({
+    accountEmail: "business@example.com",
+    apiKey: apiKey.token,
+  }).ok, true);
+  assert.throws(
+    () => api.validateWordPressConnection({
+      accountEmail: "business@example.com",
+      apiKey: "eaz_live_invalid",
+    }),
+    /Invalid or revoked WordPress API key/,
+  );
   const revoked = api.revokeApiKey(user, apiKey.id);
   assert.equal(revoked.status, "revoked");
+  assert.throws(
+    () => api.validateWordPressConnection({
+      accountEmail: "business@example.com",
+      apiKey: apiKey.token,
+    }),
+    /Invalid or revoked WordPress API key/,
+  );
 
   const settings = api.updateBusinessSettings(user, {
     emailSettings: {
@@ -2891,6 +4120,31 @@ test("business tier unlocks team approvals and API keys", () => {
     () => api.listTeamMembers(invitee, { workspaceOwnerUserId: user.id }),
     /Business workspace access denied/,
   );
+});
+
+test("api keys are hashed at rest and plaintext keys migrate safely", () => {
+  const store = createStore({
+    apiKeys: [{
+      id: "key_0099",
+      ownerUserId: "usr_0001",
+      companyId: null,
+      label: "Legacy integration",
+      token: "eaz_live_legacy_plaintext_key",
+      scopes: ["invoices:write"],
+      status: "active",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      revokedAt: null,
+    }],
+    counters: { apiKey: 99 },
+  }, { persist: false, useSupabaseEmailOtp: false });
+
+  const state = store.exportState();
+  assert.equal(state.apiKeys[0].token, undefined);
+  assert.match(state.apiKeys[0].tokenHash, /^[a-f0-9]{64}$/);
+  assert.equal(state.apiKeys[0].tokenPrefix, "eaz_live_leg");
+  assert.equal(state.apiKeys[0].tokenHashAlgorithm, "hmac-sha256");
+  assert.equal(store.findActiveApiKeyByToken("eaz_live_legacy_plaintext_key").id, "key_0099");
+  assert.equal(store.findActiveApiKeyByToken("eaz_live_wrong"), null);
 });
 
 test("entity-aware compliance engine distinguishes company and freelancer obligations", () => {
@@ -4090,6 +5344,419 @@ test("security hardening blocks public uploads and cross-user business records",
   }
 });
 
+test("P0-2 tenant isolation protects business membership resources and direct IDs", async () => {
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const api = createApi({ store });
+  const server = createServer({ store, persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body, previewPlan = "business" } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(previewPlan ? { "X-Eazinvoice-Plan-Preview": previewPlan } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  async function signup(name, email, phone) {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      previewPlan: "",
+      body: { mode: "signup", email, phone },
+    });
+    const created = await request("/auth/signup", {
+      method: "POST",
+      previewPlan: "",
+      body: { name, email, password: "SecurePass123", phone, otp: otp.payload.devOtp },
+    });
+    assert.equal(created.response.status, 201);
+    return created.payload;
+  }
+
+  try {
+    const ownerA = await signup("Owner A", "owner-a@example.com", "9200000001");
+    const ownerB = await signup("Owner B", "owner-b@example.com", "9200000002");
+    const accountantA = await signup("Accountant A", "accountant-a@example.com", "9200000003");
+    const viewerA = await signup("Viewer A", "viewer-a@example.com", "9200000004");
+    [ownerA, ownerB].forEach((principal) => {
+      api.createSubscription({
+        userId: principal.user.id,
+        subscriberName: principal.user.name,
+        subscriberType: "company",
+        plan: "business",
+        amount: 11988,
+        billingCycle: "yearly",
+        status: "active",
+      });
+    });
+
+    await request("/business/team", {
+      method: "POST",
+      token: ownerA.token,
+      body: { name: "Accountant A", email: " ACCOUNTANT-A@EXAMPLE.COM ", role: "accountant" },
+    });
+    await request("/business/team", {
+      method: "POST",
+      token: ownerA.token,
+      body: { name: "Viewer A", email: "viewer-a@example.com", role: "viewer" },
+    });
+
+    const businessBSettings = await request("/business/settings", {
+      method: "PATCH",
+      token: ownerB.token,
+      body: {
+        emailSettings: {
+          smtpHost: "smtp.business-b.example",
+          smtpPort: "465",
+          smtpUser: "finance-b@example.com",
+          smtpPass: "smtp-secret-b",
+          fromEmail: "finance-b@example.com",
+        },
+        paymentSettings: {
+          keyId: "rzp_test_business_b",
+          keySecret: "razorpay-secret-b",
+          webhookSecret: "webhook-secret-b",
+          paymentLinkEnabled: true,
+        },
+        complianceProfile: {
+          legalName: "Business B LLP",
+          gstRegistered: true,
+          gstin: "27ABCDE1234F1Z5",
+          pan: "ABCDE1234F",
+          state: "Maharashtra",
+          address: "Pune",
+          placeOfBusiness: "Pune",
+        },
+      },
+    });
+    assert.equal(businessBSettings.response.status, 200);
+
+    const customerB = await request("/customers", {
+      method: "POST",
+      token: ownerB.token,
+      body: { name: "Business B Customer", email: "customer-b@example.com" },
+    });
+    const vendorB = await request("/vendors", {
+      method: "POST",
+      token: ownerB.token,
+      body: { name: "Business B Vendor", email: "vendor-b@example.com" },
+    });
+    const invoiceB = await request("/invoices", {
+      method: "POST",
+      token: ownerB.token,
+      body: {
+        customerId: customerB.payload.id,
+        billToName: "Business B Customer",
+        invoiceDate: "2026-08-01",
+        status: "created",
+        items: [{ description: "Private B revenue", quantity: 1, rate: 1000, gstRate: 18 }],
+      },
+    });
+    assert.equal(invoiceB.response.status, 201);
+    const paymentB = await request(`/invoices/${invoiceB.payload.id}/payments`, {
+      method: "POST",
+      token: ownerB.token,
+      body: { amount: 100, mode: "UPI" },
+    });
+    assert.equal(paymentB.response.status, 201);
+    const reportB = await request("/reports", {
+      method: "POST",
+      token: ownerB.token,
+      body: { title: "Business B Report", type: "summary" },
+    });
+    assert.equal(reportB.response.status, 201);
+    const apiKeyB = await request("/business/api-keys", {
+      method: "POST",
+      token: ownerB.token,
+      body: { label: "Business B WordPress" },
+    });
+    assert.equal(apiKeyB.response.status, 201);
+    assert.match(apiKeyB.payload.businessId, /^biz_/);
+    const businessBId = apiKeyB.payload.businessId;
+
+    const ownerBCanonicalInvoices = await request(`/invoices?businessId=${businessBId}`, { token: ownerB.token });
+    assert.equal(ownerBCanonicalInvoices.response.status, 200);
+    assert.equal(ownerBCanonicalInvoices.payload.some((entry) => entry.id === invoiceB.payload.id), true);
+
+    const deniedRequests = [
+      request(`/invoices?businessId=${businessBId}`, { token: ownerA.token }),
+      request(`/business/api-keys?businessId=${businessBId}`, { token: ownerA.token }),
+      request(`/invoices?workspaceOwnerUserId=${ownerB.user.id}`, { token: ownerA.token }),
+      request(`/invoices/${invoiceB.payload.id}`, { token: ownerA.token }),
+      request(`/invoices/${invoiceB.payload.id}`, {
+        method: "PATCH",
+        token: ownerA.token,
+        body: { notes: "IDOR attempt", workspaceOwnerUserId: ownerB.user.id },
+      }),
+      request(`/customers?workspaceOwnerUserId=${ownerB.user.id}`, { token: ownerA.token }),
+      request(`/customers/${customerB.payload.id}`, {
+        method: "PATCH",
+        token: ownerA.token,
+        body: { name: "Hijacked", workspaceOwnerUserId: ownerB.user.id },
+      }),
+      request(`/vendors?workspaceOwnerUserId=${ownerB.user.id}`, { token: ownerA.token }),
+      request(`/vendors/${vendorB.payload.id}`, {
+        method: "PATCH",
+        token: ownerA.token,
+        body: { name: "Hijacked", workspaceOwnerUserId: ownerB.user.id },
+      }),
+      request(`/payments?workspaceOwnerUserId=${ownerB.user.id}`, { token: ownerA.token }),
+      request(`/reports?workspaceOwnerUserId=${ownerB.user.id}`, { token: ownerA.token }),
+      request(`/business/compliance-dashboard?workspaceOwnerUserId=${ownerB.user.id}`, { token: ownerA.token }),
+      request(`/accounting/summary?workspaceOwnerUserId=${ownerB.user.id}`, { token: ownerA.token }),
+      request(`/business/api-keys?workspaceOwnerUserId=${ownerB.user.id}`, { token: ownerA.token }),
+      request(`/business/audit-events?workspaceOwnerUserId=${ownerB.user.id}`, { token: ownerA.token }),
+      request(`/business/settings?workspaceOwnerUserId=${ownerB.user.id}`, { token: ownerA.token }),
+      request(`/business/team?workspaceOwnerUserId=${ownerB.user.id}`, { token: ownerA.token }),
+    ];
+    const denied = await Promise.all(deniedRequests);
+    denied.forEach(({ response, payload }) => {
+      assert.notEqual(response.status, 200);
+      assert.match(payload.error || "", /access denied|not found|team role cannot perform/i);
+    });
+
+    const accountantInvoiceRead = await request(`/invoices/${invoiceB.payload.id}`, {
+      token: accountantA.token,
+      body: null,
+    });
+    assert.equal(accountantInvoiceRead.response.status, 404);
+
+    const accountantSettingsDenied = await request("/business/settings", {
+      method: "PATCH",
+      token: accountantA.token,
+      body: {
+        workspaceOwnerUserId: ownerA.user.id,
+        paymentSettings: { keyId: "rzp_test_hijack", keySecret: "secret" },
+      },
+    });
+    assert.notEqual(accountantSettingsDenied.response.status, 200);
+    assert.match(accountantSettingsDenied.payload.error, /team role cannot perform/i);
+
+    const viewerWriteDenied = await request("/customers", {
+      method: "POST",
+      token: viewerA.token,
+      body: { workspaceOwnerUserId: ownerA.user.id, name: "Viewer Write" },
+    });
+    assert.notEqual(viewerWriteDenied.response.status, 201);
+    assert.match(viewerWriteDenied.payload.error, /team role cannot perform/i);
+
+    const pluginAAgainstB = await request("/wordpress/connection", {
+      method: "POST",
+      previewPlan: "",
+      body: {
+        accountEmail: ownerA.user.email,
+        apiKey: apiKeyB.payload.token,
+        businessId: ownerA.user.id,
+        workspaceOwnerUserId: ownerA.user.id,
+      },
+    });
+    assert.equal(pluginAAgainstB.response.status, 401);
+    assert.match(pluginAAgainstB.payload.error, /does not belong/i);
+
+    const pluginB = await request("/wordpress/connection", {
+      method: "POST",
+      previewPlan: "",
+      body: {
+        accountEmail: ownerB.user.email,
+        apiKey: apiKeyB.payload.token,
+      },
+    });
+    assert.equal(pluginB.response.status, 200);
+    assert.equal(pluginB.payload.account.email, ownerB.user.email);
+    assert.equal(pluginB.payload.apiKey.id, apiKeyB.payload.id);
+    assert.match(pluginB.payload.business.id, /^biz_/);
+    assert.equal(pluginB.payload.apiKey.businessId, pluginB.payload.business.id);
+
+    const pluginBWrongBusiness = await request("/wordpress/connection", {
+      method: "POST",
+      previewPlan: "",
+      body: {
+        accountEmail: ownerB.user.email,
+        apiKey: apiKeyB.payload.token,
+        businessId: ownerA.user.id,
+      },
+    });
+    assert.equal(pluginBWrongBusiness.response.status, 401);
+    assert.match(pluginBWrongBusiness.payload.error, /supplied business/i);
+
+    const revokedB = await request(`/business/api-keys/${apiKeyB.payload.id}`, {
+      method: "DELETE",
+      token: ownerB.token,
+    });
+    assert.equal(revokedB.response.status, 200);
+    const pluginBRevoked = await request("/wordpress/connection", {
+      method: "POST",
+      previewPlan: "",
+      body: { accountEmail: ownerB.user.email, apiKey: apiKeyB.payload.token },
+    });
+    assert.equal(pluginBRevoked.response.status, 401);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("P0-2A canonical business identity survives multi-business use and ownership transfer", () => {
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const api = createApi({ store, persist: false, useSupabaseEmailOtp: false });
+  const ownerA = api.createUser({ name: "Owner A", email: "owner-a-p02a@example.com", emailVerified: true });
+  const ownerB = api.createUser({ name: "Owner B", email: "owner-b-p02a@example.com", emailVerified: true });
+  api.createSubscription({
+    userId: ownerA.id,
+    subscriberName: ownerA.name,
+    subscriberType: "individual",
+    plan: "business",
+    amount: 9999,
+  });
+
+  const [primaryWorkspace] = api.listBusinessWorkspaces(ownerA);
+  assert.match(primaryWorkspace.businessId, /^biz_/);
+  assert.equal(primaryWorkspace.ownerUserId, ownerA.id);
+
+  const secondBusiness = api.createBusiness(ownerA, { name: "Owner A Second Books" });
+  const ownerWorkspaces = api.listBusinessWorkspaces(ownerA);
+  assert.equal(ownerWorkspaces.filter((workspace) => workspace.source === "owned").length, 2);
+  assert.notEqual(secondBusiness.id, primaryWorkspace.businessId);
+
+  const customer = api.createCustomer({
+    name: "Continuity Customer",
+    businessId: primaryWorkspace.businessId,
+  }, { user: ownerA, previewPlan: "business", businessId: primaryWorkspace.businessId });
+  const invoice = api.createInvoice({
+    customerId: customer.id,
+    billToName: customer.name,
+    status: "created",
+    businessId: primaryWorkspace.businessId,
+    items: [{ description: "Architecture continuity", quantity: 1, rate: 500, gstRate: 18 }],
+  }, { user: ownerA, previewPlan: "business", businessId: primaryWorkspace.businessId });
+  const payment = api.recordInvoicePayment(invoice.id, {
+    amount: 100,
+    businessId: primaryWorkspace.businessId,
+  }, { user: ownerA, previewPlan: "business", businessId: primaryWorkspace.businessId });
+  const report = api.createReport({
+    title: "Continuity Report",
+    businessId: primaryWorkspace.businessId,
+  });
+  const apiKey = api.createApiKey(ownerA, {
+    label: "Canonical Business WordPress",
+    businessId: primaryWorkspace.businessId,
+  }, { previewPlan: "business", businessId: primaryWorkspace.businessId });
+
+  assert.equal(customer.businessId, primaryWorkspace.businessId);
+  assert.equal(invoice.businessId, primaryWorkspace.businessId);
+  assert.equal(payment.payment.businessId, primaryWorkspace.businessId);
+  assert.equal(report.businessId, primaryWorkspace.businessId);
+  assert.equal(apiKey.businessId, primaryWorkspace.businessId);
+
+  const transferred = api.transferBusinessOwnership(ownerA, primaryWorkspace.businessId, ownerB.id, {
+    keepPreviousOwnerAsAdmin: false,
+  });
+  assert.equal(transferred.id, primaryWorkspace.businessId);
+  assert.equal(transferred.legacyOwnerUserId, ownerA.id);
+  assert.equal(transferred.ownerUserId, ownerB.id);
+
+  const ownerBWorkspaces = api.listBusinessWorkspaces(ownerB);
+  assert.equal(ownerBWorkspaces.some((workspace) => workspace.businessId === primaryWorkspace.businessId), true);
+  assert.equal(api.listInvoices(ownerB, { previewPlan: "business", businessId: primaryWorkspace.businessId }).some((entry) => entry.id === invoice.id), true);
+  assert.equal(api.listPayments(ownerB, { previewPlan: "business", businessId: primaryWorkspace.businessId }).some((entry) => entry.id === payment.payment.id), true);
+  assert.equal(api.listReports(ownerB, { previewPlan: "business", businessId: primaryWorkspace.businessId }).some((entry) => entry.id === report.id), true);
+  assert.equal(api.listApiKeys(ownerB, { previewPlan: "business", businessId: primaryWorkspace.businessId }).some((entry) => entry.id === apiKey.id), true);
+
+  assert.throws(
+    () => api.listInvoices(ownerA, { previewPlan: "business", businessId: primaryWorkspace.businessId }),
+    /access denied/i,
+  );
+
+  const wordpress = api.validateWordPressConnection({
+    accountEmail: ownerB.email,
+    apiKey: apiKey.token,
+    businessId: primaryWorkspace.businessId,
+  });
+  assert.equal(wordpress.business.id, primaryWorkspace.businessId);
+  assert.equal(wordpress.apiKey.businessId, primaryWorkspace.businessId);
+  assert.equal(wordpress.account.email, ownerB.email);
+});
+
+test("canonical email identity blocks duplicate verified accounts safely", async () => {
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ store, persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  try {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email: "  Case.User@Example.COM  ", phone: "9300000001" },
+    });
+    assert.equal(otp.response.status, 200);
+    assert.equal(otp.payload.email, "case.user@example.com");
+
+    const signup = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "Case User",
+        email: "  Case.User@Example.COM  ",
+        password: "SecurePass123",
+        phone: "9300000001",
+        otp: otp.payload.devOtp,
+      },
+    });
+    assert.equal(signup.response.status, 201);
+    assert.equal(signup.payload.user.email, "case.user@example.com");
+    assert.equal(signup.payload.user.canonicalEmail, "case.user@example.com");
+
+    const duplicateOtp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email: "CASE.USER@example.com", phone: "9300000002" },
+    });
+    assert.equal(duplicateOtp.response.status, 409);
+
+    const loginOtp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "login", email: " case.user@example.com ", phone: "9300000001" },
+    });
+    assert.equal(loginOtp.response.status, 200);
+    const login = await request("/auth/login", {
+      method: "POST",
+      body: {
+        email: "CASE.USER@example.com",
+        password: "SecurePass123",
+        otp: loginOtp.payload.devOtp,
+      },
+    });
+    assert.equal(login.response.status, 200);
+    assert.equal(login.payload.user.id, signup.payload.user.id);
+
+    assert.throws(
+      () => store.createUser({
+        name: "Duplicate Verified",
+        email: " case.user@example.com ",
+        emailVerified: true,
+      }),
+      /verified account already exists/i,
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("document email sharing is paid-tier gated for invoices and PO/WO records", async () => {
   const previousEmailSmtpHost = process.env.EMAIL_SMTP_HOST;
   const previousEmailSmtpPort = process.env.EMAIL_SMTP_PORT;
@@ -4343,6 +6010,118 @@ test("wordpress connection validates active api keys and blocks mismatched accou
     const mismatchPayload = await mismatch.json();
     assert.equal(mismatch.status, 401);
     assert.match(mismatchPayload.error, /does not belong/i);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("cors allowlist accepts approved origins and rejects unknown browser origins", async () => {
+  const server = createServer({
+    persist: false,
+    useSupabaseEmailOtp: false,
+    corsAllowedOrigins: ["https://app.eazinvoice.test"],
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const allowed = await fetch(`${baseUrl}/health`, {
+      headers: { Origin: "https://app.eazinvoice.test" },
+    });
+    assert.equal(allowed.status, 200);
+    assert.equal(allowed.headers.get("access-control-allow-origin"), "https://app.eazinvoice.test");
+
+    const preflight = await fetch(`${baseUrl}/health`, {
+      method: "OPTIONS",
+      headers: {
+        Origin: "https://app.eazinvoice.test",
+        "Access-Control-Request-Method": "GET",
+      },
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get("access-control-allow-origin"), "https://app.eazinvoice.test");
+    assert.match(preflight.headers.get("access-control-allow-methods") || "", /OPTIONS/);
+
+    const unknown = await fetch(`${baseUrl}/health`, {
+      headers: { Origin: "https://unknown.example" },
+    });
+    assert.equal(unknown.status, 200);
+    assert.equal(unknown.headers.get("access-control-allow-origin"), null);
+
+    const serverToServer = await fetch(`${baseUrl}/health`);
+    assert.equal(serverToServer.status, 200);
+    assert.equal(serverToServer.headers.get("access-control-allow-origin"), null);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("api key creation audit events contain only safe key metadata", async () => {
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const api = createApi({ store });
+  const server = createServer({ store, persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const otpResponse = await fetch(`${baseUrl}/auth/email-otp/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "signup", email: "audit-api-key@example.com", phone: "9100001999" }),
+    });
+    const otp = await otpResponse.json();
+    const signupResponse = await fetch(`${baseUrl}/auth/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Audit API Key",
+        email: "audit-api-key@example.com",
+        password: "securepass123",
+        phone: "9100001999",
+        otp: otp.devOtp,
+      }),
+    });
+    const signup = await signupResponse.json();
+    assert.equal(signupResponse.status, 201);
+
+    api.createSubscription({
+      userId: signup.user.id,
+      subscriberName: signup.user.name,
+      subscriberType: "company",
+      plan: "business",
+      amount: 11988,
+      billingCycle: "yearly",
+      status: "active",
+    });
+
+    const createdResponse = await fetch(`${baseUrl}/business/api-keys`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${signup.token}`,
+      },
+      body: JSON.stringify({ label: "WordPress audit site" }),
+    });
+    const created = await createdResponse.json();
+    assert.equal(createdResponse.status, 201);
+    assert.match(created.token, /^eaz_live_/);
+    assert.equal(created.tokenHash, undefined);
+
+    const stateText = JSON.stringify(store.exportState());
+    assert.equal(stateText.includes(created.token), false);
+
+    const user = api.getUserById(signup.user.id);
+    const events = api.listBusinessAuditEvents(user, { category: "api_key", limit: 10 });
+    const event = events.find((entry) => entry.action === "api_key.created");
+    assert.ok(event);
+    assert.equal(JSON.stringify(event).includes(created.token), false);
+    assert.equal(JSON.stringify(event).includes("eaz_live_"), false);
+    assert.equal(event.metadata.apiKeyId, created.id);
+    assert.equal(event.metadata.status, "active");
+    assert.equal(event.metadata.tokenPreview, undefined);
+    assert.equal(event.metadata.tokenPrefix, undefined);
+    assert.equal(event.metadata.token, undefined);
+    assert.deepEqual(event.metadata.scopes, created.scopes);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

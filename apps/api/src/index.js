@@ -24,6 +24,25 @@ import {
   getLedgerAccounts,
 } from "./postgres-accounting.js";
 import { summarizePostgresReports } from "./postgres-reporting.js";
+import {
+  buildAgeingReport,
+  buildFinancialReconciliation,
+  buildFinancialReportBundle,
+  buildGeneralLedger,
+  buildGstSummary,
+  buildPaymentSummary,
+  buildPayablesAgeingReport,
+  buildProfitLoss,
+  buildPurchaseRegister,
+  buildReceivablesReport,
+  buildSalesReport,
+  buildTrialBalance,
+  buildVendorPayablesReport,
+  buildVendorPaymentSummary,
+  buildExpenseSummary,
+  buildCreditNoteRegister,
+  buildVendorCreditRegister,
+} from "./financial-reporting-service.js";
 import { buildAiCommand } from "./ai-assistant.js";
 import { buildAiAgentResponse } from "./ai-agent.js";
 import { tryBuildAiCommandWithLlm } from "./ai-llm.js";
@@ -120,7 +139,7 @@ export function createApi(deps = {}) {
     },
 
     resolveWorkspaceFeatureUser(user, options = {}, permission = "read") {
-      if (!options.workspaceOwnerUserId || options.workspaceOwnerUserId === user?.id) return user;
+      if (!options.businessId && (!options.workspaceOwnerUserId || options.workspaceOwnerUserId === user?.id)) return user;
       return this.resolveRecordsWorkspaceAccess(user, options, permission).owner;
     },
 
@@ -133,7 +152,7 @@ export function createApi(deps = {}) {
     requireBusinessWorkspaceAccess(user, options = {}, permission = "read") {
       if (!user?.id) throw new Error("Authentication required");
       const ownerUserId = options.workspaceOwnerUserId || options.ownerUserId || user.id;
-      const access = store.getBusinessWorkspaceAccess(user, ownerUserId);
+      const access = store.getBusinessWorkspaceAccess(user, ownerUserId, options.businessId || null);
       if (!access) throw new Error("Business workspace access denied");
       const owner = store.getUserById(access.ownerUserId);
       if (!owner) throw new Error("Business workspace owner not found");
@@ -149,12 +168,15 @@ export function createApi(deps = {}) {
 
     resolveRecordsWorkspaceAccess(user, options = {}, permission = "read") {
       const ownerUserId = options.workspaceOwnerUserId || options.ownerUserId || user?.id || null;
+      const business = options.businessId ? store.getBusinessById(options.businessId) : null;
       if (!user?.id) {
         return {
-          ownerUserId,
-          owner: ownerUserId ? (store.getUserById(ownerUserId) || { id: ownerUserId }) : null,
+          ownerUserId: business?.ownerUserId || ownerUserId,
+          businessId: business?.id || null,
+          owner: business?.ownerUserId ? (store.getUserById(business.ownerUserId) || { id: business.ownerUserId }) : ownerUserId ? (store.getUserById(ownerUserId) || { id: ownerUserId }) : null,
           access: {
-            ownerUserId,
+            ownerUserId: business?.ownerUserId || ownerUserId,
+            businessId: business?.id || null,
             permissions: {
               read: true,
               writeRecords: true,
@@ -163,12 +185,18 @@ export function createApi(deps = {}) {
           },
         };
       }
-      if (ownerUserId === user.id || (user.role === "admin" && !options.workspaceOwnerUserId)) {
+      if (
+        (!options.businessId && (ownerUserId === user.id || (user.role === "admin" && !options.workspaceOwnerUserId)))
+        || (business && (business.ownerUserId === user.id || user.role === "admin"))
+      ) {
+        const owned = business || store.getBusinessById(user.id);
         return {
-          ownerUserId: user.id,
-          owner: user,
+          ownerUserId: owned?.ownerUserId || user.id,
+          businessId: owned?.id || null,
+          owner: owned?.ownerUserId && owned.ownerUserId !== user.id ? (store.getUserById(owned.ownerUserId) || user) : user,
           access: {
-            ownerUserId: user.id,
+            ownerUserId: owned?.ownerUserId || user.id,
+            businessId: owned?.id || null,
             permissions: {
               read: true,
               writeRecords: true,
@@ -180,9 +208,11 @@ export function createApi(deps = {}) {
       const access = this.requireBusinessWorkspaceAccess(user, {
         ...options,
         workspaceOwnerUserId: ownerUserId,
+        businessId: options.businessId || null,
       }, permission);
       return {
         ownerUserId: access.ownerUserId,
+        businessId: access.businessId || null,
         owner: access.owner,
         access,
       };
@@ -224,13 +254,22 @@ export function createApi(deps = {}) {
     },
 
     createCompany(input) {
-      return store.createCompany(input);
+      const ownerUserId = input.ownerUserId || input.workspaceOwnerUserId || input.userId || null;
+      const business = input.businessId ? store.getBusinessById(input.businessId) : null;
+      return store.createCompany({
+        ...input,
+        ownerUserId: business?.ownerUserId || ownerUserId,
+        businessId: business?.id || input.businessId || null,
+      });
     },
 
     listCompanies(user, options = {}) {
-      if (!options.workspaceOwnerUserId && (!user || user.role === "admin")) return store.listCompanies();
+      if (!options.businessId && !options.workspaceOwnerUserId && (!user || user.role === "admin")) return store.listCompanies();
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
-      return store.listCompanies().filter((company) => company.ownerUserId === workspace.ownerUserId);
+      return store.listCompanies().filter((company) => (
+        (workspace.businessId && company.businessId === workspace.businessId)
+        || company.ownerUserId === workspace.ownerUserId
+      ));
     },
 
     updateCompanyKyc(companyId, updates) {
@@ -243,7 +282,7 @@ export function createApi(deps = {}) {
           workspaceOwnerUserId: options.workspaceOwnerUserId || updates.workspaceOwnerUserId || null,
         }, "manageSettings");
         const company = store.listCompanies().find((entry) => entry.id === companyId);
-        if (!company || company.ownerUserId !== workspace.ownerUserId) return null;
+        if (!company || !((workspace.businessId && company.businessId === workspace.businessId) || company.ownerUserId === workspace.ownerUserId)) return null;
       }
       return store.updateCompany(companyId, updates);
     },
@@ -256,14 +295,22 @@ export function createApi(deps = {}) {
       return store.createCustomer({
         ...input,
         ownerUserId: workspace.ownerUserId,
+        businessId: workspace.businessId,
       });
     },
 
     listCustomers(user, options = {}) {
-      if (!options.workspaceOwnerUserId && (!user || user.role === "admin")) return store.listCustomers();
+      if (!options.businessId && !options.workspaceOwnerUserId && (!user || user.role === "admin")) return store.listCustomers();
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
-      const companyIds = new Set(store.listCompanies().filter((company) => company.ownerUserId === workspace.ownerUserId).map((company) => company.id));
-      return store.listCustomers().filter((customer) => customer.ownerUserId === workspace.ownerUserId || companyIds.has(customer.companyId));
+      const companyIds = new Set(store.listCompanies().filter((company) => (
+        (workspace.businessId && company.businessId === workspace.businessId)
+        || company.ownerUserId === workspace.ownerUserId
+      )).map((company) => company.id));
+      return store.listCustomers().filter((customer) => (
+        (workspace.businessId && customer.businessId === workspace.businessId)
+        || customer.ownerUserId === workspace.ownerUserId
+        || companyIds.has(customer.companyId)
+      ));
     },
 
     getCustomer(id, user, options = {}) {
@@ -273,8 +320,11 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: options.workspaceOwnerUserId || current.ownerUserId,
       }, "read");
-      const companyIds = new Set(store.listCompanies().filter((company) => company.ownerUserId === workspace.ownerUserId).map((company) => company.id));
-      if (current.ownerUserId !== workspace.ownerUserId && !companyIds.has(current.companyId)) return null;
+      const companyIds = new Set(store.listCompanies().filter((company) => (
+        (workspace.businessId && company.businessId === workspace.businessId)
+        || company.ownerUserId === workspace.ownerUserId
+      )).map((company) => company.id));
+      if (!((workspace.businessId && current.businessId === workspace.businessId) || current.ownerUserId === workspace.ownerUserId || companyIds.has(current.companyId))) return null;
       return current;
     },
 
@@ -285,7 +335,7 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: updates.workspaceOwnerUserId || options.workspaceOwnerUserId || current.ownerUserId,
       }, "writeRecords");
-      const visible = this.getCustomer(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId });
+      const visible = this.getCustomer(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
       if (!visible) return null;
       return store.updateCustomer(id, {
         ...updates,
@@ -300,7 +350,7 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: options.workspaceOwnerUserId || current.ownerUserId,
       }, "writeRecords");
-      const visible = this.getCustomer(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId });
+      const visible = this.getCustomer(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
       if (!visible) return null;
       return store.deleteCustomer(id);
     },
@@ -312,7 +362,7 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: options.workspaceOwnerUserId || current.ownerUserId,
       }, "writeRecords");
-      const visible = this.getCustomer(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId });
+      const visible = this.getCustomer(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
       if (!visible) return null;
       return store.reactivateCustomer(id);
     },
@@ -325,14 +375,22 @@ export function createApi(deps = {}) {
       return store.createVendor({
         ...input,
         ownerUserId: workspace.ownerUserId,
+        businessId: workspace.businessId,
       });
     },
 
     listVendors(user, options = {}) {
-      if (!options.workspaceOwnerUserId && (!user || user.role === "admin")) return store.listVendors();
+      if (!options.businessId && !options.workspaceOwnerUserId && (!user || user.role === "admin")) return store.listVendors();
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
-      const companyIds = new Set(store.listCompanies().filter((company) => company.ownerUserId === workspace.ownerUserId).map((company) => company.id));
-      return store.listVendors().filter((vendor) => vendor.ownerUserId === workspace.ownerUserId || companyIds.has(vendor.companyId));
+      const companyIds = new Set(store.listCompanies().filter((company) => (
+        (workspace.businessId && company.businessId === workspace.businessId)
+        || company.ownerUserId === workspace.ownerUserId
+      )).map((company) => company.id));
+      return store.listVendors().filter((vendor) => (
+        (workspace.businessId && vendor.businessId === workspace.businessId)
+        || vendor.ownerUserId === workspace.ownerUserId
+        || companyIds.has(vendor.companyId)
+      ));
     },
 
     getVendor(id, user, options = {}) {
@@ -342,8 +400,11 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: options.workspaceOwnerUserId || current.ownerUserId,
       }, "read");
-      const companyIds = new Set(store.listCompanies().filter((company) => company.ownerUserId === workspace.ownerUserId).map((company) => company.id));
-      if (current.ownerUserId !== workspace.ownerUserId && !companyIds.has(current.companyId)) return null;
+      const companyIds = new Set(store.listCompanies().filter((company) => (
+        (workspace.businessId && company.businessId === workspace.businessId)
+        || company.ownerUserId === workspace.ownerUserId
+      )).map((company) => company.id));
+      if (!((workspace.businessId && current.businessId === workspace.businessId) || current.ownerUserId === workspace.ownerUserId || companyIds.has(current.companyId))) return null;
       return current;
     },
 
@@ -354,7 +415,7 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: updates.workspaceOwnerUserId || options.workspaceOwnerUserId || current.ownerUserId,
       }, "writeRecords");
-      const visible = this.getVendor(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId });
+      const visible = this.getVendor(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
       if (!visible) return null;
       return store.updateVendor(id, {
         ...updates,
@@ -369,7 +430,7 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: options.workspaceOwnerUserId || current.ownerUserId,
       }, "writeRecords");
-      const visible = this.getVendor(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId });
+      const visible = this.getVendor(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
       if (!visible) return null;
       return store.deleteVendor(id);
     },
@@ -381,7 +442,7 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: options.workspaceOwnerUserId || current.ownerUserId,
       }, "writeRecords");
-      const visible = this.getVendor(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId });
+      const visible = this.getVendor(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
       if (!visible) return null;
       return store.reactivateVendor(id);
     },
@@ -395,6 +456,7 @@ export function createApi(deps = {}) {
       return store.createInvoice({
         ...input,
         ownerUserId: workspace.ownerUserId,
+        businessId: workspace.businessId,
       }, this.getUserPlanLimits(workspace.owner, options));
     },
 
@@ -444,6 +506,51 @@ export function createApi(deps = {}) {
       return store.createPurchaseOrder({
         ...input,
         ownerUserId: workspace.ownerUserId,
+        businessId: workspace.businessId,
+      }, this.getUserPlanLimits(workspace.owner, options));
+    },
+
+    createVendorBill(input, options = {}) {
+      const actor = options.user || (input.actorUserId ? store.getUserById(input.actorUserId) : null) || (input.ownerUserId ? store.getUserById(input.ownerUserId) : null);
+      const workspace = this.resolveRecordsWorkspaceAccess(actor, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || input.ownerUserId,
+        businessId: input.businessId || options.businessId || null,
+      }, "writeRecords");
+      return store.createVendorBill({
+        ...input,
+        ownerUserId: workspace.ownerUserId,
+        businessId: workspace.businessId,
+      }, this.getUserPlanLimits(workspace.owner, options));
+    },
+
+    createSalesCreditNote(input, options = {}) {
+      const sourceInvoice = store.getInvoice(input.sourceInvoiceId || input.invoiceId);
+      const actor = options.user || (input.actorUserId ? store.getUserById(input.actorUserId) : null) || (sourceInvoice?.ownerUserId ? store.getUserById(sourceInvoice.ownerUserId) : null) || (input.ownerUserId ? store.getUserById(input.ownerUserId) : null);
+      const workspace = this.resolveRecordsWorkspaceAccess(actor, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || sourceInvoice?.ownerUserId || input.ownerUserId,
+        businessId: input.businessId || options.businessId || sourceInvoice?.businessId || null,
+      }, "writeRecords");
+      return store.createSalesCreditNote({
+        ...input,
+        ownerUserId: workspace.ownerUserId,
+        businessId: workspace.businessId,
+      }, this.getUserPlanLimits(workspace.owner, options));
+    },
+
+    createVendorCredit(input, options = {}) {
+      const sourceBill = store.getVendorBill(input.sourceVendorBillId || input.vendorBillId);
+      const actor = options.user || (input.actorUserId ? store.getUserById(input.actorUserId) : null) || (sourceBill?.ownerUserId ? store.getUserById(sourceBill.ownerUserId) : null) || (input.ownerUserId ? store.getUserById(input.ownerUserId) : null);
+      const workspace = this.resolveRecordsWorkspaceAccess(actor, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || sourceBill?.ownerUserId || input.ownerUserId,
+        businessId: input.businessId || options.businessId || sourceBill?.businessId || null,
+      }, "writeRecords");
+      return store.createVendorCredit({
+        ...input,
+        ownerUserId: workspace.ownerUserId,
+        businessId: workspace.businessId,
       }, this.getUserPlanLimits(workspace.owner, options));
     },
 
@@ -484,6 +591,7 @@ export function createApi(deps = {}) {
         email,
         role: requestedRole,
         ownerUserId: access.ownerUserId,
+        businessId: access.businessId,
         invitedByUserId: user.id,
       });
     },
@@ -509,6 +617,16 @@ export function createApi(deps = {}) {
     listBusinessWorkspaces(user) {
       if (!user?.id) throw new Error("Authentication required");
       return store.listBusinessWorkspacesForUser(user);
+    },
+
+    createBusiness(user, input = {}) {
+      return store.createBusinessForUser(user, input);
+    },
+
+    transferBusinessOwnership(user, businessId, newOwnerUserId, input = {}) {
+      const access = this.requireBusinessWorkspaceAccess(user, { businessId }, "manageSettings");
+      if (access.role !== "owner" && access.role !== "admin") throw new Error("Only a business owner can transfer ownership");
+      return store.transferBusinessOwnership(businessId, newOwnerUserId, input);
     },
 
     getBusinessSettings(user, options = {}) {
@@ -558,10 +676,12 @@ export function createApi(deps = {}) {
       const access = this.requireBusinessWorkspaceAccess(user, {
         ...options,
         workspaceOwnerUserId: targetOwnerUserId,
+        businessId: input.businessId || options.businessId || null,
       }, "read");
       return store.recordBusinessAuditEvent(user, {
         ...input,
         ownerUserId: access.ownerUserId,
+        businessId: access.businessId,
         companyId: input.companyId || options.companyId || access.companyId || null,
         workspaceRole: input.workspaceRole || access.role || "",
       });
@@ -804,42 +924,135 @@ export function createApi(deps = {}) {
 
     getAccountingSummary(user, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
-      return getAccountingSummary(user, options);
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return getAccountingSummary(workspace.owner, options);
     },
 
     getLedgerAccounts(user, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
-      return getLedgerAccounts(user, options);
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return getLedgerAccounts(workspace.owner, options);
     },
 
     createLedgerAccount(user, input = {}, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
-      return createLedgerAccount(user, input, options);
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user.id,
+      }, "writeRecords");
+      return createLedgerAccount(workspace.owner, input, options);
     },
 
     getJournalEntries(user, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
-      return getJournalEntries(user, options);
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return getJournalEntries(workspace.owner, options);
     },
 
     createJournalEntry(user, input = {}, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
-      return createJournalEntry(user, input, options);
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user.id,
+      }, "writeRecords");
+      return createJournalEntry(workspace.owner, input, options);
+    },
+
+    listAccountingEventLedger(user, options = {}) {
+      if (!user?.id) throw new Error("Authentication required");
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return {
+        businessId: workspace.businessId,
+        accounts: store.listLedgerAccountsForBusiness(workspace.businessId || workspace.ownerUserId),
+        financialEvents: store.listFinancialEventsForBusiness(workspace.businessId || workspace.ownerUserId),
+        journals: store.listAccountingJournalsForBusiness(workspace.businessId || workspace.ownerUserId),
+        reconciliation: store.reconcileAccountingForBusiness(workspace.businessId || workspace.ownerUserId),
+      };
+    },
+
+    createManualAccountingJournal(user, input = {}, options = {}) {
+      if (!user?.id) throw new Error("Authentication required");
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        businessId: input.businessId || options.businessId || null,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user.id,
+      }, "writeRecords");
+      return store.createManualAccountingJournal({
+        ...input,
+        businessId: workspace.businessId || input.businessId,
+      });
+    },
+
+    getFinancialReport(user, reportType, options = {}) {
+      if (!user?.id) throw new Error("Authentication required");
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      const businessId = workspace.businessId || options.businessId;
+      if (!businessId) throw new Error("Business is required for financial reporting.");
+      const state = store.exportState();
+      const reportOptions = {
+        from: options.from,
+        to: options.to,
+        asOf: options.asOf,
+        accountId: options.accountId,
+        accountCode: options.accountCode,
+        includeSettled: options.includeSettled,
+      };
+      switch (reportType) {
+        case "profit-loss":
+          return buildProfitLoss(state, businessId, reportOptions);
+        case "trial-balance":
+          return buildTrialBalance(state, businessId, reportOptions);
+        case "general-ledger":
+          return buildGeneralLedger(state, businessId, reportOptions);
+        case "receivables":
+          return buildReceivablesReport(state, businessId, reportOptions);
+        case "ageing":
+          return buildAgeingReport(state, businessId, reportOptions);
+        case "sales":
+          return buildSalesReport(state, businessId, reportOptions);
+        case "gst-summary":
+          return buildGstSummary(state, businessId, reportOptions);
+        case "payments":
+          return buildPaymentSummary(state, businessId, reportOptions);
+        case "purchase-register":
+          return buildPurchaseRegister(state, businessId, reportOptions);
+        case "expense-summary":
+          return buildExpenseSummary(state, businessId, reportOptions);
+        case "vendor-payables":
+          return buildVendorPayablesReport(state, businessId, reportOptions);
+        case "payables-ageing":
+          return buildPayablesAgeingReport(state, businessId, reportOptions);
+        case "vendor-payments":
+          return buildVendorPaymentSummary(state, businessId, reportOptions);
+        case "credit-notes":
+          return buildCreditNoteRegister(state, businessId, reportOptions);
+        case "vendor-credits":
+          return buildVendorCreditRegister(state, businessId, reportOptions);
+        case "reconciliation":
+          return buildFinancialReconciliation(state, businessId, reportOptions);
+        case "bundle":
+          return buildFinancialReportBundle(state, businessId, reportOptions);
+        default:
+          throw new Error("Unknown financial report type.");
+      }
     },
 
     getBookEntries(user, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
-      return getBookEntries(user, options);
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return getBookEntries(workspace.owner, options);
     },
 
     getGstComplianceSummary(user, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
-      return getGstComplianceSummary(user, options);
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return getGstComplianceSummary(workspace.owner, options);
     },
 
     getLedgerAccountEntries(user, accountId, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
-      return getLedgerAccountEntries(user, accountId, options);
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return getLedgerAccountEntries(workspace.owner, accountId, options);
     },
 
     updateComplianceTask(user, taskId, input = {}, options = {}) {
@@ -926,7 +1139,7 @@ export function createApi(deps = {}) {
 
     listApiKeys(user, options = {}) {
       const targetOwnerUserId = options.workspaceOwnerUserId || user?.id;
-      if (targetOwnerUserId === user?.id) {
+      if (!options.businessId && targetOwnerUserId === user?.id) {
         this.requireFeature(user, "apiAccess", options);
         return store.listApiKeysForUser(user);
       }
@@ -937,27 +1150,31 @@ export function createApi(deps = {}) {
     createApiKey(user, input = {}, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
       const targetOwnerUserId = input.workspaceOwnerUserId || options.workspaceOwnerUserId || user.id;
-      if (targetOwnerUserId === user.id) {
+      if (!input.businessId && !options.businessId && targetOwnerUserId === user.id) {
         this.requireFeature(user, "apiAccess", options);
+        const business = store.getBusinessById(input.businessId || user.id);
         return store.createApiKey({
           ...input,
           ownerUserId: user.id,
+          businessId: business?.id || input.businessId || null,
         });
       }
       const access = this.requireBusinessWorkspaceAccess(user, {
         ...options,
         workspaceOwnerUserId: targetOwnerUserId,
+        businessId: input.businessId || options.businessId || null,
       }, "apiAccess");
       return store.createApiKey({
         ...input,
         ownerUserId: access.ownerUserId,
+        businessId: access.businessId,
       });
     },
 
     revokeApiKey(user, apiKeyId, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
       const targetOwnerUserId = options.workspaceOwnerUserId || user.id;
-      if (targetOwnerUserId === user.id) {
+      if (!options.businessId && targetOwnerUserId === user.id) {
         this.requireFeature(user, "apiAccess", options);
         const key = store.revokeApiKey(apiKeyId, user);
         if (!key) throw new Error("API key not found");
@@ -978,10 +1195,19 @@ export function createApi(deps = {}) {
       if (!apiKey) throw new Error("WordPress API key is required.");
       const key = store.findActiveApiKeyByToken(apiKey);
       if (!key) throw new Error("Invalid or revoked WordPress API key.");
-      const owner = store.getUserById(key.ownerUserId);
+      const business = store.getBusinessById(key.businessId || key.ownerUserId);
+      const owner = store.getUserById(business?.ownerUserId || key.ownerUserId);
       if (!owner) throw new Error("API key owner was not found.");
       if (accountEmail && owner.email.toLowerCase() !== accountEmail) {
         throw new Error("API key does not belong to the supplied EazInvoice account email.");
+      }
+      const suppliedBusinessId = String(input.businessId || "").trim();
+      const suppliedWorkspaceOwnerUserId = String(input.workspaceOwnerUserId || input.ownerUserId || "").trim();
+      if (suppliedBusinessId && suppliedBusinessId !== business?.id) {
+        throw new Error("API key does not belong to the supplied business.");
+      }
+      if (suppliedWorkspaceOwnerUserId && suppliedWorkspaceOwnerUserId !== business?.legacyOwnerUserId && suppliedWorkspaceOwnerUserId !== business?.ownerUserId) {
+        throw new Error("API key does not belong to the supplied workspace owner.");
       }
       const plan = this.getFreePlanSummary(owner);
       return {
@@ -989,6 +1215,11 @@ export function createApi(deps = {}) {
         account: {
           name: owner.name,
           email: owner.email,
+        },
+        business: {
+          id: business?.id || "",
+          name: business?.name || owner.name || owner.email,
+          legacyOwnerUserId: business?.legacyOwnerUserId || key.ownerUserId,
         },
         plan: {
           id: plan.plan,
@@ -1006,6 +1237,7 @@ export function createApi(deps = {}) {
         },
         apiKey: {
           id: key.id,
+          businessId: business?.id || key.businessId || "",
           label: key.label,
           tokenPreview: key.tokenPreview,
           scopes: key.scopes || [],
@@ -1374,7 +1606,12 @@ export function createApi(deps = {}) {
     },
 
     createReport(input) {
-      return store.createReport(input);
+      const business = input.businessId ? store.getBusinessById(input.businessId) : null;
+      return store.createReport({
+        ...input,
+        ownerUserId: business?.ownerUserId || input.ownerUserId || input.workspaceOwnerUserId || null,
+        businessId: business?.id || input.businessId || null,
+      });
     },
 
     listSubscriptions() {
@@ -1411,6 +1648,9 @@ export function createApi(deps = {}) {
 
     listReports(user, options = {}) {
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      if (workspace.businessId) {
+        return store.listReportsForUser(null).filter((report) => report.businessId === workspace.businessId || report.ownerUserId === workspace.ownerUserId);
+      }
       return store.listReportsForUser(workspace.owner);
     },
 
@@ -1425,11 +1665,16 @@ export function createApi(deps = {}) {
 
     listInvoices(user, options = {}) {
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      if (workspace.businessId) {
+        return store.listInvoices().filter((invoice) => invoice.businessId === workspace.businessId || invoice.ownerUserId === workspace.ownerUserId);
+      }
       return store.listInvoicesForUser(workspace.owner);
     },
 
     getInvoice(id, user, options = {}) {
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      const invoice = store.listInvoices().find((entry) => entry.id === id);
+      if (workspace.businessId && invoice && (invoice.businessId === workspace.businessId || invoice.ownerUserId === workspace.ownerUserId)) return invoice;
       return store.getInvoice(id, workspace.owner);
     },
     updateInvoice(id, updates, options = {}) {
@@ -1439,7 +1684,7 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: updates.workspaceOwnerUserId || options.workspaceOwnerUserId || current?.ownerUserId,
       }, "writeRecords");
-      const visible = store.getInvoice(id, workspace.owner);
+      const visible = this.getInvoice(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
       if (!visible) return null;
       return store.updateInvoice(id, updates, this.getUserPlanLimits(workspace.owner, options));
     },
@@ -1449,7 +1694,9 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: options.workspaceOwnerUserId || current?.ownerUserId,
       }, "writeRecords");
-      return store.deleteInvoice(id, workspace.owner);
+      const visible = this.getInvoice(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
+      if (!visible) return null;
+      return store.deleteInvoice(id, visible.ownerUserId ? store.getUserById(visible.ownerUserId) : workspace.owner);
     },
     recordInvoicePayment(id, input = {}, options = {}) {
       const current = store.getInvoice(id);
@@ -1457,7 +1704,7 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || current?.ownerUserId,
       }, "writeRecords");
-      const visible = store.getInvoice(id, workspace.owner);
+      const visible = this.getInvoice(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
       if (!visible) return null;
       return store.recordInvoicePayment(id, input);
     },
@@ -1468,7 +1715,7 @@ export function createApi(deps = {}) {
           ...options,
           workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || invoice.ownerUserId,
         }, "writeRecords");
-        const visible = store.getInvoice(id, workspace.owner);
+        const visible = this.getInvoice(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
         if (!visible) return null;
         this.requireFeature(workspace.owner, "razorpayCollections", options);
       }
@@ -1479,16 +1726,24 @@ export function createApi(deps = {}) {
     },
     listPayments(user, options = {}) {
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      if (workspace.businessId) {
+        return store.listPaymentsForUser(null).filter((payment) => payment.businessId === workspace.businessId || payment.ownerUserId === workspace.ownerUserId);
+      }
       return store.listPaymentsForUser(workspace.owner);
     },
 
     listPurchaseOrders(user, options = {}) {
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      if (workspace.businessId) {
+        return store.listPurchaseOrdersForUser(null).filter((purchaseOrder) => purchaseOrder.businessId === workspace.businessId || purchaseOrder.ownerUserId === workspace.ownerUserId);
+      }
       return store.listPurchaseOrdersForUser(workspace.owner);
     },
 
     getPurchaseOrder(id, user, options = {}) {
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      const purchaseOrder = store.listPurchaseOrdersForUser(null).find((entry) => entry.id === id);
+      if (workspace.businessId && purchaseOrder && (purchaseOrder.businessId === workspace.businessId || purchaseOrder.ownerUserId === workspace.ownerUserId)) return purchaseOrder;
       return store.getPurchaseOrder(id, workspace.owner);
     },
     updatePurchaseOrder(id, updates, options = {}) {
@@ -1498,7 +1753,7 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: updates.workspaceOwnerUserId || options.workspaceOwnerUserId || current?.ownerUserId,
       }, "writeRecords");
-      const visible = store.getPurchaseOrder(id, workspace.owner);
+      const visible = this.getPurchaseOrder(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
       if (!visible) return null;
       return store.updatePurchaseOrder(id, updates, this.getUserPlanLimits(workspace.owner, options));
     },
@@ -1508,9 +1763,95 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || current?.ownerUserId,
       }, "writeRecords");
-      const visible = store.getPurchaseOrder(id, workspace.owner);
+      const visible = this.getPurchaseOrder(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
       if (!visible) return null;
       return store.recordPurchaseOrderPayment(id, input);
+    },
+    listVendorBills(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      if (workspace.businessId) {
+        return store.listVendorBillsForUser(null).filter((bill) => bill.businessId === workspace.businessId || bill.ownerUserId === workspace.ownerUserId);
+      }
+      return store.listVendorBillsForUser(workspace.owner);
+    },
+    getVendorBill(id, user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      const bill = store.listVendorBillsForUser(null).find((entry) => entry.id === id);
+      if (workspace.businessId && bill && (bill.businessId === workspace.businessId || bill.ownerUserId === workspace.ownerUserId)) return bill;
+      return store.getVendorBill(id, workspace.owner);
+    },
+    updateVendorBill(id, updates = {}, options = {}) {
+      const actor = options.user || (updates.actorUserId ? store.getUserById(updates.actorUserId) : null);
+      const current = store.getVendorBill(id);
+      const workspace = this.resolveRecordsWorkspaceAccess(actor || (current?.ownerUserId ? store.getUserById(current.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: updates.workspaceOwnerUserId || options.workspaceOwnerUserId || current?.ownerUserId,
+        businessId: updates.businessId || options.businessId || current?.businessId || null,
+      }, "writeRecords");
+      const visible = this.getVendorBill(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
+      if (!visible) return null;
+      return store.updateVendorBill(id, updates, this.getUserPlanLimits(workspace.owner, options));
+    },
+    recordVendorBillPayment(id, input = {}, options = {}) {
+      const current = store.getVendorBill(id);
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || (current?.ownerUserId ? store.getUserById(current.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || current?.ownerUserId,
+        businessId: input.businessId || options.businessId || current?.businessId || null,
+      }, "writeRecords");
+      const visible = this.getVendorBill(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
+      if (!visible) return null;
+      return store.recordVendorBillPayment(id, input);
+    },
+    listCreditNotes(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      if (workspace.businessId) {
+        return store.listCreditNotesForUser(null).filter((note) => note.businessId === workspace.businessId || note.ownerUserId === workspace.ownerUserId);
+      }
+      return store.listCreditNotesForUser(workspace.owner);
+    },
+    getCreditNote(id, user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      const note = store.listCreditNotesForUser(null).find((entry) => entry.id === id);
+      if (workspace.businessId && note && (note.businessId === workspace.businessId || note.ownerUserId === workspace.ownerUserId)) return note;
+      return store.getCreditNote(id, workspace.owner);
+    },
+    updateCreditNote(id, updates = {}, options = {}) {
+      const actor = options.user || (updates.actorUserId ? store.getUserById(updates.actorUserId) : null);
+      const current = store.getCreditNote(id);
+      const workspace = this.resolveRecordsWorkspaceAccess(actor || (current?.ownerUserId ? store.getUserById(current.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: updates.workspaceOwnerUserId || options.workspaceOwnerUserId || current?.ownerUserId,
+        businessId: updates.businessId || options.businessId || current?.businessId || null,
+      }, "writeRecords");
+      const visible = this.getCreditNote(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
+      if (!visible) return null;
+      return store.updateCreditNote(id, updates, this.getUserPlanLimits(workspace.owner, options));
+    },
+    listVendorCredits(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      if (workspace.businessId) {
+        return store.listVendorCreditsForUser(null).filter((credit) => credit.businessId === workspace.businessId || credit.ownerUserId === workspace.ownerUserId);
+      }
+      return store.listVendorCreditsForUser(workspace.owner);
+    },
+    getVendorCredit(id, user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      const credit = store.listVendorCreditsForUser(null).find((entry) => entry.id === id);
+      if (workspace.businessId && credit && (credit.businessId === workspace.businessId || credit.ownerUserId === workspace.ownerUserId)) return credit;
+      return store.getVendorCredit(id, workspace.owner);
+    },
+    updateVendorCredit(id, updates = {}, options = {}) {
+      const actor = options.user || (updates.actorUserId ? store.getUserById(updates.actorUserId) : null);
+      const current = store.getVendorCredit(id);
+      const workspace = this.resolveRecordsWorkspaceAccess(actor || (current?.ownerUserId ? store.getUserById(current.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: updates.workspaceOwnerUserId || options.workspaceOwnerUserId || current?.ownerUserId,
+        businessId: updates.businessId || options.businessId || current?.businessId || null,
+      }, "writeRecords");
+      const visible = this.getVendorCredit(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
+      if (!visible) return null;
+      return store.updateVendorCredit(id, updates, this.getUserPlanLimits(workspace.owner, options));
     },
     deletePurchaseOrder(id, user, options = {}) {
       const current = store.getPurchaseOrder(id);
@@ -1518,7 +1859,9 @@ export function createApi(deps = {}) {
         ...options,
         workspaceOwnerUserId: options.workspaceOwnerUserId || current?.ownerUserId,
       }, "writeRecords");
-      return store.deletePurchaseOrder(id, workspace.owner);
+      const visible = this.getPurchaseOrder(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
+      if (!visible) return null;
+      return store.deletePurchaseOrder(id, visible.ownerUserId ? store.getUserById(visible.ownerUserId) : workspace.owner);
     },
 
     listRestrictedUsers() {

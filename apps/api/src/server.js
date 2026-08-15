@@ -610,13 +610,53 @@ function securityHeaders(extra = {}) {
   };
 }
 
+const DEFAULT_CORS_ALLOWED_ORIGINS = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "http://localhost:5173",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:3001",
+  "http://127.0.0.1:5173",
+  "http://10.0.2.2:3001",
+  "https://localhost",
+  "capacitor://localhost",
+  "ionic://localhost",
+  "https://www.eazinvoice.com",
+];
+
+function parseCorsAllowedOrigins(value) {
+  return String(value || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
+
+function configuredCorsAllowedOrigins(options = {}) {
+  const configured = Array.isArray(options.corsAllowedOrigins)
+    ? options.corsAllowedOrigins
+    : parseCorsAllowedOrigins(options.corsAllowedOrigins || process.env.CORS_ALLOWED_ORIGINS);
+  const publicUrl = process.env.EAZINVOICE_PUBLIC_URL ? [process.env.EAZINVOICE_PUBLIC_URL] : [];
+  return new Set([...DEFAULT_CORS_ALLOWED_ORIGINS, ...publicUrl, ...configured]);
+}
+
+function corsHeadersForRequest(req, allowedOrigins) {
+  const origin = String(req.headers.origin || "").trim();
+  const headers = {
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Eazinvoice-Plan-Preview",
+    "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
+  };
+  if (origin && allowedOrigins.has(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+    headers.Vary = "Origin";
+  }
+  return headers;
+}
+
 function sendJson(res, status, payload) {
   res.writeHead(status, {
     ...securityHeaders(),
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Eazinvoice-Plan-Preview",
-    "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
+    ...(res.eazinvoiceCorsHeaders || {}),
   });
   res.end(JSON.stringify(payload));
 }
@@ -1267,7 +1307,7 @@ async function tryServeStatic(urlPath, res) {
     res.writeHead(200, {
       ...securityHeaders(),
       "Content-Type": contentType(filePath),
-      "Access-Control-Allow-Origin": "*",
+      ...(res.eazinvoiceCorsHeaders || {}),
       "Cache-Control": "no-store",
     });
     res.end(data);
@@ -1294,6 +1334,7 @@ export function createServer(options = {}) {
   const authEmailOtpSender = options.authEmailOtpSender ?? sendSmtpMail;
   const businessSmtpSender = options.businessSmtpSender ?? sendSmtpMail;
   const rateBuckets = new Map();
+  const corsAllowedOrigins = configuredCorsAllowedOrigins(options);
 
   function isRateLimited(req, url) {
     const sensitive = [
@@ -1824,6 +1865,7 @@ export function createServer(options = {}) {
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://localhost");
+      res.eazinvoiceCorsHeaders = corsHeadersForRequest(req, corsAllowedOrigins);
 
     if ((url.pathname === "/" || url.pathname === "/index.html") && (req.method === "GET" || req.method === "HEAD")) {
       res.writeHead(302, {
@@ -2085,12 +2127,16 @@ export function createServer(options = {}) {
 
     if (url.pathname === "/auth/google" && req.method === "POST") {
       const body = await readBody(req);
-      const user = promoteAdmin(api.createUser({
-        name: body.name ?? "Google User",
-        email: body.email ?? "google-user@example.com",
-        role: adminRoleForEmail(body.email) ? "admin" : "user",
-        permissions: adminPermissionsForEmail(body.email),
-      }));
+      const existing = api.getUserByEmail(body.email ?? "");
+      const user = promoteAdmin(existing
+        ? api.updateUserAuthDetails(existing.id, { emailVerified: true })
+        : api.createUser({
+          name: body.name ?? "Google User",
+          email: body.email ?? "google-user@example.com",
+          emailVerified: true,
+          role: adminRoleForEmail(body.email) ? "admin" : "user",
+          permissions: adminPermissionsForEmail(body.email),
+        }));
       const token = sessions.create(user);
       sendJson(res, 200, { user, token, provider: "google" });
       return;
@@ -2175,12 +2221,16 @@ export function createServer(options = {}) {
         return;
       }
 
-      const user = api.createUser({
-        name: profile.name || profile.email || "Google User",
-        email: profile.email || "google-user@example.com",
-        role: adminRoleForEmail(profile.email) ? "admin" : "user",
-        permissions: adminPermissionsForEmail(profile.email),
-      });
+      const existing = api.getUserByEmail(profile.email || "");
+      const user = existing
+        ? promoteAdmin(api.updateUserAuthDetails(existing.id, { emailVerified: true }))
+        : promoteAdmin(api.createUser({
+          name: profile.name || profile.email || "Google User",
+          email: profile.email || "google-user@example.com",
+          emailVerified: true,
+          role: adminRoleForEmail(profile.email) ? "admin" : "user",
+          permissions: adminPermissionsForEmail(profile.email),
+        }));
       const token = sessions.create(user);
       const destination = new URL(`${getPublicBaseUrl()}/apps/web/index.html`);
       destination.searchParams.set("token", token);
@@ -2657,6 +2707,7 @@ export function createServer(options = {}) {
       sendJson(res, 200, api.listCustomers(user, {
         previewPlan,
         workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
       }));
       return;
     }
@@ -2667,7 +2718,8 @@ export function createServer(options = {}) {
       sendJson(res, 201, api.createCustomer({
         ...body,
         ownerUserId: body.workspaceOwnerUserId || user.id,
-      }, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null }));
+        businessId: body.businessId || null,
+      }, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null, businessId: body.businessId || null }));
       return;
     }
 
@@ -2677,6 +2729,7 @@ export function createServer(options = {}) {
       const existing = api.getCustomer(customerId, user, {
         previewPlan,
         workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        businessId: body.businessId || null,
       });
       if (!existing) {
         sendJson(res, 404, { error: "Customer not found or not available in this workspace." });
@@ -2686,6 +2739,7 @@ export function createServer(options = {}) {
         user,
         previewPlan,
         workspaceOwnerUserId: body.workspaceOwnerUserId || existing.ownerUserId || null,
+        businessId: body.businessId || existing.businessId || null,
       });
       sendJson(res, 200, customer);
       return;
@@ -2696,6 +2750,7 @@ export function createServer(options = {}) {
       const customer = api.deleteCustomer(customerId, user, {
         previewPlan,
         workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
       });
       if (!customer) {
         sendJson(res, 404, { error: "Customer not found or not available in this workspace." });
@@ -2713,6 +2768,7 @@ export function createServer(options = {}) {
         const customer = api.reactivateCustomer(customerId, user, {
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: body.businessId || url.searchParams.get("businessId") || null,
         });
         if (!customer) {
           sendJson(res, 404, { error: "Customer not found or not available in this workspace." });
@@ -2727,6 +2783,7 @@ export function createServer(options = {}) {
       sendJson(res, 200, api.listVendors(user, {
         previewPlan,
         workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
       }));
       return;
     }
@@ -2736,7 +2793,8 @@ export function createServer(options = {}) {
       sendJson(res, 201, api.createVendor({
         ...body,
         ownerUserId: body.workspaceOwnerUserId || user.id,
-      }, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null }));
+        businessId: body.businessId || null,
+      }, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null, businessId: body.businessId || null }));
       return;
     }
 
@@ -2746,6 +2804,7 @@ export function createServer(options = {}) {
       const existing = api.getVendor(vendorId, user, {
         previewPlan,
         workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        businessId: body.businessId || null,
       });
       if (!existing) {
         sendJson(res, 404, { error: "Vendor not found or not available in this workspace." });
@@ -2755,6 +2814,7 @@ export function createServer(options = {}) {
         user,
         previewPlan,
         workspaceOwnerUserId: body.workspaceOwnerUserId || existing.ownerUserId || null,
+        businessId: body.businessId || existing.businessId || null,
       });
       sendJson(res, 200, vendor);
       return;
@@ -2765,6 +2825,7 @@ export function createServer(options = {}) {
       const vendor = api.deleteVendor(vendorId, user, {
         previewPlan,
         workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
       });
       if (!vendor) {
         sendJson(res, 404, { error: "Vendor not found or not available in this workspace." });
@@ -2782,6 +2843,7 @@ export function createServer(options = {}) {
         const vendor = api.reactivateVendor(vendorId, user, {
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: body.businessId || url.searchParams.get("businessId") || null,
         });
         if (!vendor) {
           sendJson(res, 404, { error: "Vendor not found or not available in this workspace." });
@@ -3176,21 +3238,53 @@ export function createServer(options = {}) {
       return;
     }
 
-    if (url.pathname === "/reports" && req.method === "GET") {
-      if (usePostgresDashboardReports(options)) {
-        try {
-          sendJson(res, 200, await api.summarizePostgresReports(user, Object.fromEntries(url.searchParams.entries())));
-        } catch (error) {
-          sendJson(res, 500, {
-            available: false,
-            error: error.message,
-          });
-        }
-        return;
+    const financialReportRoutes = new Map([
+      ["/reports/profit-loss", "profit-loss"],
+      ["/reports/receivables", "receivables"],
+      ["/reports/ageing", "ageing"],
+      ["/reports/sales", "sales"],
+      ["/reports/gst-summary", "gst-summary"],
+      ["/reports/payments", "payments"],
+      ["/reports/purchase-register", "purchase-register"],
+      ["/reports/expense-summary", "expense-summary"],
+      ["/reports/vendor-payables", "vendor-payables"],
+      ["/reports/payables-ageing", "payables-ageing"],
+      ["/reports/vendor-payments", "vendor-payments"],
+      ["/reports/credit-notes", "credit-notes"],
+      ["/reports/vendor-credits", "vendor-credits"],
+      ["/reports/reconciliation", "reconciliation"],
+      ["/reports/financial-bundle", "bundle"],
+      ["/accounting/trial-balance", "trial-balance"],
+      ["/accounting/general-ledger", "general-ledger"],
+    ]);
+    if (financialReportRoutes.has(url.pathname) && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.getFinancialReport(user, financialReportRoutes.get(url.pathname), {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+          from: url.searchParams.get("from") || "",
+          to: url.searchParams.get("to") || "",
+          asOf: url.searchParams.get("asOf") || "",
+          accountId: url.searchParams.get("accountId") || "",
+          accountCode: url.searchParams.get("accountCode") || "",
+          includeSettled: url.searchParams.get("includeSettled") === "true",
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
       }
-      sendJson(res, 200, api.listReports(user, {
-        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
-      }));
+      return;
+    }
+
+    if (url.pathname === "/reports" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listReports(user, {
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
       return;
     }
 
@@ -3199,11 +3293,215 @@ export function createServer(options = {}) {
       const workspace = api.resolveRecordsWorkspaceAccess(user, {
         previewPlan,
         workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        businessId: body.businessId || null,
       }, "writeRecords");
       sendJson(res, 201, api.createReport({
         ...body,
         ownerUserId: workspace.ownerUserId,
+        businessId: workspace.businessId,
       }));
+      return;
+    }
+
+    if (url.pathname === "/vendor-bills" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listVendorBills(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/vendor-bills" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.createVendorBill(body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/vendor-bills/") && url.pathname.endsWith("/payments") && req.method === "POST") {
+      try {
+        const id = decodeURIComponent(url.pathname.split("/")[2] || "");
+        const body = await readBody(req);
+        sendJson(res, 201, api.recordVendorBillPayment(id, body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/vendor-bills/") && req.method === "GET") {
+      try {
+        const id = decodeURIComponent(url.pathname.split("/")[2] || "");
+        const bill = api.getVendorBill(id, user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        });
+        if (!bill) sendJson(res, 404, { error: "Vendor bill not found" });
+        else sendJson(res, 200, bill);
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/vendor-bills/") && req.method === "PATCH") {
+      try {
+        const id = decodeURIComponent(url.pathname.split("/")[2] || "");
+        const body = await readBody(req);
+        const bill = api.updateVendorBill(id, body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        });
+        if (!bill) sendJson(res, 404, { error: "Vendor bill not found" });
+        else sendJson(res, 200, bill);
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/credit-notes" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listCreditNotes(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/credit-notes" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.createSalesCreditNote(body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/credit-notes/") && req.method === "GET") {
+      try {
+        const id = decodeURIComponent(url.pathname.split("/")[2] || "");
+        const note = api.getCreditNote(id, user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        });
+        if (!note) sendJson(res, 404, { error: "Credit note not found" });
+        else sendJson(res, 200, note);
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/credit-notes/") && req.method === "PATCH") {
+      try {
+        const id = decodeURIComponent(url.pathname.split("/")[2] || "");
+        const body = await readBody(req);
+        const note = api.updateCreditNote(id, body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        });
+        if (!note) sendJson(res, 404, { error: "Credit note not found" });
+        else sendJson(res, 200, note);
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/vendor-credits" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listVendorCredits(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/vendor-credits" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.createVendorCredit(body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/vendor-credits/") && req.method === "GET") {
+      try {
+        const id = decodeURIComponent(url.pathname.split("/")[2] || "");
+        const credit = api.getVendorCredit(id, user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        });
+        if (!credit) sendJson(res, 404, { error: "Vendor credit not found" });
+        else sendJson(res, 200, credit);
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/vendor-credits/") && req.method === "PATCH") {
+      try {
+        const id = decodeURIComponent(url.pathname.split("/")[2] || "");
+        const body = await readBody(req);
+        const credit = api.updateVendorCredit(id, body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        });
+        if (!credit) sendJson(res, 404, { error: "Vendor credit not found" });
+        else sendJson(res, 200, credit);
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
       return;
     }
 
@@ -3212,6 +3510,7 @@ export function createServer(options = {}) {
         sendJson(res, 200, api.listTeamMembers(user, {
           previewPlan,
           workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
         }));
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
@@ -3233,6 +3532,7 @@ export function createServer(options = {}) {
         sendJson(res, 200, api.listBusinessAuditEvents(user, {
           previewPlan,
           workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
           companyId: url.searchParams.get("companyId") || null,
           category: url.searchParams.get("category") || "",
           action: url.searchParams.get("action") || "",
@@ -3253,6 +3553,7 @@ export function createServer(options = {}) {
         sendJson(res, 200, api.listBusinessNotifications(user, {
           previewPlan,
           workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
           companyId: url.searchParams.get("companyId") || null,
         }));
       } catch (error) {
@@ -3471,7 +3772,7 @@ export function createServer(options = {}) {
               smtpHost: body.emailSettings.smtpHost,
               smtpPort: body.emailSettings.smtpPort,
               fromEmail: body.emailSettings.fromEmail,
-              smtpPass: body.emailSettings.smtpPass,
+              smtpPassConfigured: Boolean(settings.emailSettings?.smtpPassConfigured),
             },
           }, { previewPlan }, "business-settings-email-audit");
         }
@@ -3488,8 +3789,8 @@ export function createServer(options = {}) {
             metadata: {
               keyId: body.paymentSettings.keyId,
               paymentLinkEnabled: body.paymentSettings.paymentLinkEnabled,
-              keySecret: body.paymentSettings.keySecret,
-              webhookSecret: body.paymentSettings.webhookSecret,
+              keySecretConfigured: Boolean(settings.paymentSettings?.keySecretConfigured),
+              webhookSecretConfigured: Boolean(settings.paymentSettings?.webhookSecretConfigured),
             },
           }, { previewPlan }, "business-settings-gateway-audit");
         }
@@ -4008,10 +4309,11 @@ export function createServer(options = {}) {
 
     if (url.pathname === "/business/api-keys" && req.method === "GET") {
       try {
-        sendJson(res, 200, api.listApiKeys(user, {
-          previewPlan,
-          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
-        }));
+      sendJson(res, 200, api.listApiKeys(user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
+      }));
       } catch (error) {
         sendJson(res, /business/i.test(error.message) ? 402 : 400, { error: error.message });
       }
@@ -4021,9 +4323,10 @@ export function createServer(options = {}) {
     if (url.pathname === "/business/api-keys" && req.method === "POST") {
       try {
         const body = await readBody(req);
-        const apiKey = api.createApiKey(user, body, { previewPlan });
+        const apiKey = api.createApiKey(user, body, { previewPlan, businessId: body.businessId || null });
         await recordBusinessAudit(user, {
           ownerUserId: body.workspaceOwnerUserId || apiKey.ownerUserId || user.id,
+          businessId: body.businessId || apiKey.businessId || null,
           companyId: body.companyId || apiKey.companyId || null,
           category: "api_key",
           action: "api_key.created",
@@ -4032,7 +4335,11 @@ export function createServer(options = {}) {
           targetId: apiKey.id,
           targetLabel: apiKey.label,
           message: `API key created for ${apiKey.label}.`,
-          metadata: { scopes: apiKey.scopes, tokenPreview: apiKey.tokenPreview, token: apiKey.token },
+          metadata: {
+            scopes: apiKey.scopes,
+            apiKeyId: apiKey.id,
+            status: apiKey.status,
+          },
         }, { previewPlan }, "business-api-key-create-audit");
         const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-api-key-create");
         sendJson(res, 201, { ...apiKey, businessWorkspaceSync });
@@ -4048,9 +4355,11 @@ export function createServer(options = {}) {
         const apiKey = api.revokeApiKey(user, id, {
           previewPlan,
           workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
         });
         await recordBusinessAudit(user, {
           ownerUserId: url.searchParams.get("workspaceOwnerUserId") || apiKey.ownerUserId || user.id,
+          businessId: url.searchParams.get("businessId") || apiKey.businessId || null,
           companyId: apiKey.companyId || null,
           category: "api_key",
           action: "api_key.revoked",
@@ -4059,7 +4368,7 @@ export function createServer(options = {}) {
           targetId: apiKey.id,
           targetLabel: apiKey.label,
           message: `API key revoked for ${apiKey.label}.`,
-          metadata: { tokenPreview: apiKey.tokenPreview },
+          metadata: { apiKeyId: apiKey.id, status: apiKey.status },
         }, { previewPlan }, "business-api-key-revoke-audit");
         const businessWorkspaceSync = await syncBusinessWorkspaceRows("business-api-key-revoke");
         sendJson(res, 200, { ...apiKey, businessWorkspaceSync });
@@ -4202,6 +4511,7 @@ export function createServer(options = {}) {
       sendJson(res, 200, api.listInvoices(user, {
         previewPlan,
         workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
       }));
       return;
     }
@@ -4210,6 +4520,7 @@ export function createServer(options = {}) {
       sendJson(res, 200, api.listPayments(user, {
         previewPlan,
         workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
       }));
       return;
     }
@@ -4228,7 +4539,8 @@ export function createServer(options = {}) {
         const invoice = api.createInvoice({
           ...body,
           ownerUserId: workspace.ownerUserId,
-        }, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId });
+          businessId: workspace.businessId,
+        }, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
         const reportSync = await syncInvoiceReportRows(invoice, "invoice-create");
         sendJson(res, 201, { ...invoice, reportSync });
       } catch (error) {
@@ -4270,6 +4582,7 @@ export function createServer(options = {}) {
       const invoice = api.getInvoice(id, user, {
         previewPlan,
         workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
       });
       if (!invoice) {
         sendJson(res, 404, { error: "Not found" });
@@ -4285,6 +4598,7 @@ export function createServer(options = {}) {
       const existing = api.getInvoice(id, user, {
         previewPlan,
         workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        businessId: body.businessId || null,
       });
       if (!existing) {
         sendJson(res, 404, { error: "Not found" });
@@ -4309,9 +4623,11 @@ export function createServer(options = {}) {
           notes: body.notes,
           paymentDate: body.paymentDate,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
-        }, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null });
+          businessId: body.businessId || null,
+        }, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null, businessId: body.businessId || null });
         await recordBusinessAudit(user, {
           ownerUserId: body.workspaceOwnerUserId || recorded.invoice.ownerUserId || user.id,
+          businessId: body.businessId || recorded.invoice.businessId || null,
           companyId: recorded.invoice.companyId || null,
           category: "payment",
           action: "payment.invoice_recorded",
@@ -4449,6 +4765,7 @@ export function createServer(options = {}) {
       sendJson(res, 200, api.listPurchaseOrders(user, {
         previewPlan,
         workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
       }));
       return;
     }
@@ -4458,13 +4775,15 @@ export function createServer(options = {}) {
       const workspace = api.resolveRecordsWorkspaceAccess(user, {
         previewPlan,
         workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        businessId: body.businessId || null,
       }, "writeRecords");
       const entitlement = await resolveWriteEntitlement(api, workspace.owner, previewPlan, options);
       try {
         const purchaseOrder = api.createPurchaseOrder({
           ...body,
           ownerUserId: workspace.ownerUserId,
-        }, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId });
+          businessId: workspace.businessId,
+        }, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
         const reportSync = await syncPurchaseOrderReportRows(purchaseOrder, "purchase-order-create");
         sendJson(res, 201, { ...purchaseOrder, reportSync });
       } catch (error) {
@@ -4478,6 +4797,7 @@ export function createServer(options = {}) {
       const purchaseOrder = api.getPurchaseOrder(id, user, {
         previewPlan,
         workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
       });
       if (!purchaseOrder) {
         sendJson(res, 404, { error: "Not found" });

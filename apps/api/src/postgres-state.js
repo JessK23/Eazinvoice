@@ -2,9 +2,13 @@ import { withPostgresClient } from "./postgres.js";
 
 export const STATE_COLLECTIONS = [
   "users",
+  "businesses",
   "companies",
   "customers",
   "vendors",
+  "vendorBills",
+  "creditNotes",
+  "vendorCredits",
   "invoices",
   "purchaseOrders",
   "payments",
@@ -16,6 +20,10 @@ export const STATE_COLLECTIONS = [
   "teamMembers",
   "approvalRequests",
   "apiKeys",
+  "ledgerAccounts",
+  "financialEvents",
+  "accountingJournals",
+  "accountingJournalLines",
   "businessSettings",
   "businessAuditEvents",
 ];
@@ -56,9 +64,13 @@ export function idForRecord(recordType, record, index) {
 
 const COUNTER_COLLECTIONS = {
   user: "users",
+  business: "businesses",
   company: "companies",
   customer: "customers",
   vendor: "vendors",
+  vendorBill: "vendorBills",
+  creditNote: "creditNotes",
+  vendorCredit: "vendorCredits",
   invoice: "invoices",
   purchaseOrder: "purchaseOrders",
   payment: "payments",
@@ -70,15 +82,22 @@ const COUNTER_COLLECTIONS = {
   teamMember: "teamMembers",
   approvalRequest: "approvalRequests",
   apiKey: "apiKeys",
+  ledgerAccount: "ledgerAccounts",
+  financialEvent: "financialEvents",
+  accountingJournal: "accountingJournals",
   businessSetting: "businessSettings",
   businessAuditEvent: "businessAuditEvents",
 };
 
 const COUNTER_PREFIXES = {
   user: "usr",
+  business: "biz",
   company: "cmp",
   customer: "cus",
   vendor: "ven",
+  vendorBill: "vbill",
+  creditNote: "cn",
+  vendorCredit: "vcred",
   invoice: "inv",
   purchaseOrder: "po",
   payment: "pay",
@@ -90,6 +109,9 @@ const COUNTER_PREFIXES = {
   teamMember: "tm",
   approvalRequest: "apr",
   apiKey: "key",
+  ledgerAccount: "acct",
+  financialEvent: "fev",
+  accountingJournal: "ajrnl",
   businessSetting: "bs",
   businessAuditEvent: "baud",
 };

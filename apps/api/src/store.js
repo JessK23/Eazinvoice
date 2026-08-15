@@ -7,10 +7,33 @@ import {
   normalizeComplianceProfile,
   summarizeComplianceTasks,
 } from "./compliance-engine.js";
+import {
+  ensureDefaultAccountingAccounts,
+  postInvoiceIssued,
+  postPaymentCaptured,
+  postVendorBillPosted,
+  postVendorPaymentCaptured,
+  postSalesCreditNotePosted,
+  postVendorCreditPosted,
+  publicJournalWithLines,
+  reconcileAccountingPostings,
+  validateBalancedJournal,
+} from "./accounting-service.js";
+import {
+  calculateFinancialDocument,
+  calculatePaymentState,
+  normalizeFinancialItems,
+  paymentIdempotencyKey,
+  validatePaymentApplication,
+} from "./financial-service.js";
 
 function clone(value) {
   if (value === undefined) return undefined;
   return JSON.parse(JSON.stringify(value));
+}
+
+function canonicalEmail(email) {
+  return String(email || "").trim().toLowerCase();
 }
 
 function nextId(prefix, counter) {
@@ -113,6 +136,37 @@ function formatDateOnly(date) {
   return date.toISOString().slice(0, 10);
 }
 
+const API_KEY_HASH_ALGORITHM = "hmac-sha256";
+
+function apiKeyHashSecret() {
+  return process.env.API_KEY_HASH_SECRET
+    || process.env.EAZINVOICE_API_KEY_HASH_SECRET
+    || process.env.ADMIN_ACCESS_KEY
+    || "eazinvoice-development-api-key-hash-secret";
+}
+
+function hashApiKeyToken(token) {
+  return crypto
+    .createHmac("sha256", apiKeyHashSecret())
+    .update(String(token || "").trim(), "utf8")
+    .digest("hex");
+}
+
+function tokenPreview(token) {
+  const value = String(token || "").trim();
+  return `${value.slice(0, 12)}...${value.slice(-4)}`;
+}
+
+function tokenPrefix(token) {
+  return String(token || "").trim().slice(0, 12);
+}
+
+function secureStringEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left || ""), "utf8");
+  const rightBuffer = Buffer.from(String(right || ""), "utf8");
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
 function normalizeRecurringFrequency(value) {
   const normalized = String(value || "monthly").trim().toLowerCase();
   return ["weekly", "monthly", "quarterly", "yearly"].includes(normalized) ? normalized : "monthly";
@@ -151,9 +205,13 @@ export function createStore(seed = {}, options = {}) {
   const persisted = usePersistence ? persistenceAdapter.load() : {};
   const state = {
     users: [],
+    businesses: [],
     companies: [],
     customers: [],
     vendors: [],
+    vendorBills: [],
+    creditNotes: [],
+    vendorCredits: [],
     invoices: [],
     purchaseOrders: [],
     payments: [],
@@ -165,14 +223,22 @@ export function createStore(seed = {}, options = {}) {
     teamMembers: [],
     approvalRequests: [],
     apiKeys: [],
+    ledgerAccounts: [],
+    financialEvents: [],
+    accountingJournals: [],
+    accountingJournalLines: [],
     businessSettings: [],
     complianceTasks: [],
     businessAuditEvents: [],
     counters: {
       user: 0,
+      business: 0,
       company: 0,
       customer: 0,
       vendor: 0,
+      vendorBill: 0,
+      creditNote: 0,
+      vendorCredit: 0,
       invoice: 0,
       purchaseOrder: 0,
       payment: 0,
@@ -184,6 +250,9 @@ export function createStore(seed = {}, options = {}) {
       teamMember: 0,
       approvalRequest: 0,
       apiKey: 0,
+      ledgerAccount: 0,
+      financialEvent: 0,
+      accountingJournal: 0,
       businessSetting: 0,
       complianceTask: 0,
       businessAuditEvent: 0,
@@ -194,9 +263,13 @@ export function createStore(seed = {}, options = {}) {
 
   state.counters = {
     user: 0,
+    business: 0,
     company: 0,
     customer: 0,
     vendor: 0,
+    vendorBill: 0,
+    creditNote: 0,
+    vendorCredit: 0,
     invoice: 0,
     purchaseOrder: 0,
     payment: 0,
@@ -208,6 +281,9 @@ export function createStore(seed = {}, options = {}) {
     teamMember: 0,
     approvalRequest: 0,
     apiKey: 0,
+    ledgerAccount: 0,
+    financialEvent: 0,
+    accountingJournal: 0,
     businessSetting: 0,
     complianceTask: 0,
     businessAuditEvent: 0,
@@ -219,9 +295,13 @@ export function createStore(seed = {}, options = {}) {
     if (!usePersistence) return;
     persistenceAdapter.save({
       users: state.users,
+      businesses: state.businesses,
       companies: state.companies,
       customers: state.customers,
       vendors: state.vendors,
+      vendorBills: state.vendorBills,
+      creditNotes: state.creditNotes,
+      vendorCredits: state.vendorCredits,
       invoices: state.invoices,
       purchaseOrders: state.purchaseOrders,
       payments: state.payments,
@@ -233,6 +313,10 @@ export function createStore(seed = {}, options = {}) {
       teamMembers: state.teamMembers,
       approvalRequests: state.approvalRequests,
       apiKeys: state.apiKeys,
+      ledgerAccounts: state.ledgerAccounts,
+      financialEvents: state.financialEvents,
+      accountingJournals: state.accountingJournals,
+      accountingJournalLines: state.accountingJournalLines,
       businessSettings: state.businessSettings,
       complianceTasks: state.complianceTasks,
       businessAuditEvents: state.businessAuditEvents,
@@ -240,14 +324,236 @@ export function createStore(seed = {}, options = {}) {
     });
   }
 
+  function migratePlaintextApiKeysAtRest() {
+    let migrated = false;
+    state.apiKeys = (Array.isArray(state.apiKeys) ? state.apiKeys : []).map((apiKey) => {
+      if (!apiKey || typeof apiKey !== "object") return apiKey;
+      const token = String(apiKey.token || "").trim();
+      if (!token || apiKey.tokenHash) {
+        if (Object.hasOwn(apiKey, "token") && apiKey.token) {
+          const { token: _token, ...safeKey } = apiKey;
+          migrated = true;
+          return safeKey;
+        }
+        return apiKey;
+      }
+      const { token: _token, ...safeKey } = apiKey;
+      migrated = true;
+      return {
+        ...safeKey,
+        tokenPrefix: apiKey.tokenPrefix || tokenPrefix(token),
+        tokenPreview: apiKey.tokenPreview || tokenPreview(token),
+        tokenHash: hashApiKeyToken(token),
+        tokenHashAlgorithm: API_KEY_HASH_ALGORITHM,
+        tokenMigratedAt: new Date().toISOString(),
+      };
+    });
+    if (migrated) persist();
+  }
+
+  function migrateIdentityCanonicalFields() {
+    let migrated = false;
+    state.users = (Array.isArray(state.users) ? state.users : []).map((user) => {
+      if (!user || typeof user !== "object") return user;
+      const email = canonicalEmail(user.email);
+      if (user.email !== email || user.canonicalEmail !== email) {
+        migrated = true;
+        return {
+          ...user,
+          email,
+          canonicalEmail: email,
+        };
+      }
+      return user;
+    });
+
+    const usersByCanonicalEmail = new Map();
+    state.users.forEach((user) => {
+      const email = canonicalEmail(user?.canonicalEmail || user?.email);
+      if (!email) return;
+      const list = usersByCanonicalEmail.get(email) || [];
+      list.push(user);
+      usersByCanonicalEmail.set(email, list);
+    });
+
+    state.teamMembers = (Array.isArray(state.teamMembers) ? state.teamMembers : []).map((member) => {
+      if (!member || typeof member !== "object") return member;
+      const email = canonicalEmail(member.email);
+      const updated = {
+        ...member,
+        email,
+        canonicalEmail: email,
+      };
+      if (!updated.acceptedUserId && email) {
+        const verifiedMatches = (usersByCanonicalEmail.get(email) || []).filter((user) => user.emailVerified);
+        if (verifiedMatches.length === 1) {
+          updated.acceptedUserId = verifiedMatches[0].id;
+        } else if (verifiedMatches.length > 1) {
+          updated.identityConflict = "duplicate_verified_email";
+        }
+      }
+      if (
+        updated.email !== member.email
+        || updated.canonicalEmail !== member.canonicalEmail
+        || updated.acceptedUserId !== member.acceptedUserId
+        || updated.identityConflict !== member.identityConflict
+      ) {
+        migrated = true;
+      }
+      return updated;
+    });
+  }
+
+  function findBusinessByIdOrLegacyOwner(identifier) {
+    const value = String(identifier || "").trim();
+    if (!value) return null;
+    return state.businesses.find((business) => (
+      business.id === value
+      || business.ownerUserId === value
+      || business.legacyOwnerUserId === value
+    )) || null;
+  }
+
+  function createBusinessRecord(input = {}, persistChange = true) {
+    const ownerUserId = input.ownerUserId || input.legacyOwnerUserId || null;
+    if (!ownerUserId) throw new Error("Business owner is required");
+    const existing = findBusinessByIdOrLegacyOwner(input.id || ownerUserId);
+    if (existing && !input.forceNew) return clone(existing);
+    const owner = state.users.find((entry) => entry.id === ownerUserId) || null;
+    const business = {
+      id: input.id || nextId("biz", ++state.counters.business),
+      ownerUserId,
+      legacyOwnerUserId: input.legacyOwnerUserId || ownerUserId,
+      name: String(input.name || owner?.name || owner?.email || "Business workspace").trim(),
+      legalName: String(input.legalName || "").trim(),
+      status: String(input.status || "active").trim().toLowerCase(),
+      createdAt: input.createdAt || new Date().toISOString(),
+      updatedAt: input.updatedAt || new Date().toISOString(),
+    };
+    state.businesses.push(business);
+    if (persistChange) persist();
+    return clone(business);
+  }
+
+  function ensureBusinessForOwner(ownerUserId, input = {}, persistChange = false) {
+    if (!ownerUserId) return null;
+    const existing = findBusinessByIdOrLegacyOwner(input.businessId || ownerUserId);
+    if (existing) return existing;
+    return createBusinessRecord({
+      ...input,
+      ownerUserId,
+      legacyOwnerUserId: input.legacyOwnerUserId || ownerUserId,
+    }, persistChange);
+  }
+
+  function inferBusinessIdForRecord(record) {
+    if (!record || typeof record !== "object") return null;
+    if (record.businessId && findBusinessByIdOrLegacyOwner(record.businessId)) {
+      return findBusinessByIdOrLegacyOwner(record.businessId).id;
+    }
+    if (record.ownerUserId) return ensureBusinessForOwner(record.ownerUserId)?.id || null;
+    if (record.userId) return ensureBusinessForOwner(record.userId)?.id || null;
+    if (record.companyId) {
+      const company = state.companies.find((entry) => entry.id === record.companyId);
+      if (company?.businessId) return company.businessId;
+      if (company?.ownerUserId) return ensureBusinessForOwner(company.ownerUserId)?.id || null;
+    }
+    if (record.invoiceId) {
+      const invoice = state.invoices.find((entry) => entry.id === record.invoiceId);
+      if (invoice?.businessId) return invoice.businessId;
+      if (invoice?.ownerUserId) return ensureBusinessForOwner(invoice.ownerUserId)?.id || null;
+    }
+    if (record.sourceInvoiceId) {
+      const invoice = state.invoices.find((entry) => entry.id === record.sourceInvoiceId);
+      if (invoice?.businessId) return invoice.businessId;
+      if (invoice?.ownerUserId) return ensureBusinessForOwner(invoice.ownerUserId)?.id || null;
+    }
+    if (record.purchaseOrderId) {
+      const purchaseOrder = state.purchaseOrders.find((entry) => entry.id === record.purchaseOrderId);
+      if (purchaseOrder?.businessId) return purchaseOrder.businessId;
+      if (purchaseOrder?.ownerUserId) return ensureBusinessForOwner(purchaseOrder.ownerUserId)?.id || null;
+    }
+    if (record.vendorBillId) {
+      const vendorBill = state.vendorBills.find((entry) => entry.id === record.vendorBillId);
+      if (vendorBill?.businessId) return vendorBill.businessId;
+      if (vendorBill?.ownerUserId) return ensureBusinessForOwner(vendorBill.ownerUserId)?.id || null;
+    }
+    if (record.sourceVendorBillId) {
+      const vendorBill = state.vendorBills.find((entry) => entry.id === record.sourceVendorBillId);
+      if (vendorBill?.businessId) return vendorBill.businessId;
+      if (vendorBill?.ownerUserId) return ensureBusinessForOwner(vendorBill.ownerUserId)?.id || null;
+    }
+    return null;
+  }
+
+  function migrateCanonicalBusinessFields() {
+    state.businesses = Array.isArray(state.businesses) ? state.businesses : [];
+    if (!state.counters.business) {
+      state.counters.business = state.businesses.reduce((max, business) => {
+        const match = String(business?.id || "").match(/^biz_(\d+)$/);
+        return match ? Math.max(max, Number(match[1])) : max;
+      }, 0);
+    }
+
+    state.users.forEach((user) => {
+      if (user?.id) ensureBusinessForOwner(user.id, { name: user.name || user.email }, false);
+    });
+
+    [
+      state.companies,
+      state.customers,
+      state.vendors,
+      state.vendorBills,
+      state.creditNotes,
+      state.vendorCredits,
+      state.invoices,
+      state.purchaseOrders,
+      state.payments,
+      state.subscriptions,
+      state.reports,
+      state.teamMembers,
+      state.approvalRequests,
+      state.apiKeys,
+      state.ledgerAccounts,
+      state.financialEvents,
+      state.accountingJournals,
+      state.accountingJournalLines,
+      state.businessSettings,
+      state.complianceTasks,
+      state.businessAuditEvents,
+    ].forEach((collection) => {
+      (Array.isArray(collection) ? collection : []).forEach((record) => {
+        if (!record || typeof record !== "object" || record.businessId) return;
+        const businessId = inferBusinessIdForRecord(record);
+        if (businessId) record.businessId = businessId;
+      });
+    });
+  }
+
+  migratePlaintextApiKeysAtRest();
+  migrateIdentityCanonicalFields();
+  migrateCanonicalBusinessFields();
+
   function createUser(input) {
+    const email = canonicalEmail(input.email);
+    const emailVerified = input.emailVerified ?? false;
+    if (emailVerified) {
+      const duplicateVerified = state.users.find((entry) => (
+        canonicalEmail(entry.canonicalEmail || entry.email) === email
+        && entry.emailVerified
+      ));
+      if (duplicateVerified) {
+        throw new Error("A verified account already exists for this email. Please login.");
+      }
+    }
     const user = {
       id: nextId("usr", ++state.counters.user),
-      name: input.name.trim(),
-      email: input.email.trim(),
+      name: String(input.name || "").trim(),
+      email,
+      canonicalEmail: email,
       phone: input.phone?.trim() ?? "",
       mobileVerified: input.mobileVerified ?? false,
-      emailVerified: input.emailVerified ?? false,
+      emailVerified,
       passwordHash: input.passwordHash ?? "",
       subscriberType: input.subscriberType ?? "individual",
       panNumber: input.panNumber?.trim() ?? "",
@@ -261,6 +567,23 @@ export function createStore(seed = {}, options = {}) {
       createdAt: new Date().toISOString(),
     };
     state.users.push(user);
+    ensureBusinessForOwner(user.id, { name: user.name || user.email }, false);
+    state.teamMembers.forEach((member) => {
+      if (
+        !member.acceptedUserId
+        && canonicalEmail(member.canonicalEmail || member.email) === user.canonicalEmail
+        && isEmailLinkedTeamMember(member)
+      ) {
+        const verifiedMatches = state.users.filter((entry) => (
+          canonicalEmail(entry.canonicalEmail || entry.email) === user.canonicalEmail
+          && entry.emailVerified
+        ));
+        if (verifiedMatches.length === 1) {
+          member.acceptedUserId = user.id;
+          member.updatedAt = new Date().toISOString();
+        }
+      }
+    });
     persist();
     return clone(user);
   }
@@ -275,8 +598,8 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function getUserByEmail(email) {
-    const normalized = String(email || "").trim().toLowerCase();
-    const user = state.users.find((entry) => entry.email.toLowerCase() === normalized);
+    const normalized = canonicalEmail(email);
+    const user = state.users.find((entry) => canonicalEmail(entry.canonicalEmail || entry.email) === normalized);
     return user ? clone(user) : null;
   }
 
@@ -308,10 +631,14 @@ export function createStore(seed = {}, options = {}) {
 
   function createCompany(input) {
     const ownerUserId = input.ownerUserId ?? null;
+    const business = input.businessId
+      ? findBusinessByIdOrLegacyOwner(input.businessId)
+      : ensureBusinessForOwner(ownerUserId);
     const companyCode = input.companyCode || makeCodeFromText(input.name, `CMP${state.counters.company + 1}`);
     const company = {
       id: nextId("cmp", ++state.counters.company),
       ownerUserId,
+      businessId: business?.id || null,
       companyCode,
       entityType: input.entityType ?? "company",
       name: input.name.trim(),
@@ -388,10 +715,14 @@ export function createStore(seed = {}, options = {}) {
 
   function createCustomer(input) {
     const customerSequence = state.counters.customer + 1;
+    const business = input.businessId
+      ? findBusinessByIdOrLegacyOwner(input.businessId)
+      : ensureBusinessForOwner(input.ownerUserId);
     const customer = {
       id: nextId("cus", ++state.counters.customer),
       customerCode: input.customerCode?.trim() || `CUS-${String(customerSequence).padStart(4, "0")}`,
       ownerUserId: input.ownerUserId ?? null,
+      businessId: business?.id || null,
       name: input.name.trim(),
       businessName: input.businessName?.trim() ?? "",
       gstNumber: input.gstNumber?.trim() ?? "",
@@ -465,10 +796,14 @@ export function createStore(seed = {}, options = {}) {
 
   function createVendor(input) {
     const vendorSequence = state.counters.vendor + 1;
+    const business = input.businessId
+      ? findBusinessByIdOrLegacyOwner(input.businessId)
+      : ensureBusinessForOwner(input.ownerUserId);
     const vendor = {
       id: nextId("ven", ++state.counters.vendor),
       vendorCode: input.vendorCode?.trim() || `VEN-${String(vendorSequence).padStart(4, "0")}`,
       ownerUserId: input.ownerUserId ?? null,
+      businessId: business?.id || null,
       vendorType: input.vendorType?.trim() || input.category?.trim() || "business",
       name: input.name?.trim() || input.vendorName?.trim() || input.businessName?.trim() || "",
       businessName: input.businessName?.trim() || "",
@@ -543,42 +878,16 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function calculateInvoiceTotals(items, taxRate, adjustments = {}) {
-    const subtotal = items.reduce((sum, item) => sum + item.quantity * item.rate, 0);
-    const itemDiscount = items.reduce((sum, item) => sum + Math.min(item.quantity * item.rate, toNumber(item.discount)), 0);
-    const discount = itemDiscount + toNumber(adjustments.discount);
-    const shipping = toNumber(adjustments.shipping);
-    const roundOff = toNumber(adjustments.roundOff);
-    const taxableAmount = Math.max(0, subtotal - discount);
-    const taxAmount = items.reduce((sum, item) => {
-      const itemTotal = item.quantity * item.rate;
-      const itemShare = subtotal > 0 ? itemTotal / subtotal : 0;
-      const itemDiscountValue = Math.min(itemTotal, toNumber(item.discount));
-      const itemTaxable = Math.max(0, itemTotal - itemDiscountValue - toNumber(adjustments.discount) * itemShare);
-      return sum + (itemTaxable * toNumber(item.gstRate, taxRate)) / 100;
-    }, 0);
-    const total = taxableAmount + taxAmount + shipping + roundOff;
-    return {
-      subtotal,
-      discount,
-      taxableAmount,
-      taxAmount,
-      shipping,
-      roundOff,
-      total,
-    };
+    return calculateFinancialDocument({
+      ...adjustments,
+      items,
+      taxRate,
+      gstMode: adjustments.gstMode || "intra",
+    });
   }
 
   function createInvoice(input, limits) {
-    const rawItems = Array.isArray(input.items) ? input.items : [];
-    const items = rawItems.map((item) => ({
-      description: String(item.description || "").trim(),
-      hsnSac: String(item.hsnSac || "").trim(),
-      unit: String(item.unit || "").trim(),
-      quantity: toNumber(item.quantity),
-      rate: toNumber(item.rate),
-      discount: toNumber(item.discount),
-      gstRate: toNumber(item.gstRate, toNumber(input.taxRate)),
-    }));
+    const items = normalizeFinancialItems(input.items, toNumber(input.taxRate)).filter((item) => item.description);
 
     if (items.length > limits.invoiceItemsPerInvoice) {
       throw new Error("invoice items exceed active plan limit");
@@ -586,19 +895,33 @@ export function createStore(seed = {}, options = {}) {
 
     const totals = calculateInvoiceTotals(items, toNumber(input.taxRate), input);
     const ownerUserId = input.ownerUserId ?? null;
+    const business = input.businessId
+      ? findBusinessByIdOrLegacyOwner(input.businessId)
+      : ensureBusinessForOwner(ownerUserId);
     const company = state.companies.find((entry) => entry.id === input.companyId) ?? null;
     const owner = state.users.find((entry) => entry.id === ownerUserId) ?? null;
     const status = normalizeRecordStatus(input.status, "draft");
     const invoiceCode = input.invoiceCode || (company
       ? makeCodeFromText(company.companyCode || company.name, `INV${state.counters.invoice + 1}`)
       : makeInitialCode(input.ownerCode || owner?.name, "IND"));
-    const invoiceSequence = state.counters.invoice + 1;
+    const invoiceSequence = state.invoices.filter((entry) => (
+      (business?.id && entry.businessId === business.id)
+      || entry.ownerUserId === ownerUserId
+    )).length + 1;
+    const invoiceNumber = input.invoiceNumber?.trim() || formatDocumentNumber(invoiceCode, input.invoiceDate, invoiceSequence);
+    const duplicateInvoice = state.invoices.find((entry) => (
+      entry.invoiceNumber === invoiceNumber
+      && String(entry.status || "").toLowerCase() !== "deleted"
+      && ((business?.id && entry.businessId === business.id) || entry.ownerUserId === ownerUserId)
+    ));
+    if (duplicateInvoice) throw new Error("Invoice number already exists for this business.");
     const invoice = {
       id: nextId("inv", ++state.counters.invoice),
       ownerUserId,
+      businessId: business?.id || company?.businessId || null,
       companyId: input.companyId ?? null,
       invoiceCode,
-      invoiceNumber: input.invoiceNumber?.trim() || formatDocumentNumber(invoiceCode, input.invoiceDate, invoiceSequence),
+      invoiceNumber,
       status,
       paymentStatus: status === "draft" ? "draft" : input.paymentStatus?.trim() || "unpaid",
       paidAmount: toNumber(input.paidAmount),
@@ -633,21 +956,14 @@ export function createStore(seed = {}, options = {}) {
     invoice.balanceAmount = Math.max(0, invoice.total - invoice.paidAmount);
     refreshInvoicePaymentStatus(invoice);
     state.invoices.push(invoice);
+    const postingBusiness = invoice.businessId ? (business || findBusinessByIdOrLegacyOwner(invoice.businessId)) : null;
+    if (postingBusiness) postInvoiceIssued(state, invoice, postingBusiness);
     persist();
     return clone(invoice);
   }
 
   function createPurchaseOrder(input, limits) {
-    const rawItems = Array.isArray(input.items) ? input.items : [];
-    const items = rawItems.map((item) => ({
-      description: String(item.description || "").trim(),
-      hsnSac: String(item.hsnSac || "").trim(),
-      unit: String(item.unit || "").trim(),
-      quantity: toNumber(item.quantity),
-      rate: toNumber(item.rate),
-      discount: toNumber(item.discount),
-      gstRate: toNumber(item.gstRate, toNumber(input.taxRate)),
-    }));
+    const items = normalizeFinancialItems(input.items, toNumber(input.taxRate)).filter((item) => item.description);
 
     if (items.length > limits.invoiceItemsPerInvoice) {
       throw new Error("purchase/work order items exceed active plan limit");
@@ -655,19 +971,34 @@ export function createStore(seed = {}, options = {}) {
 
     const totals = calculateInvoiceTotals(items, toNumber(input.taxRate), input);
     const ownerUserId = input.ownerUserId ?? null;
+    const business = input.businessId
+      ? findBusinessByIdOrLegacyOwner(input.businessId)
+      : ensureBusinessForOwner(ownerUserId);
     const company = state.companies.find((entry) => entry.id === input.companyId) ?? null;
     const status = normalizeRecordStatus(input.status, "created");
     const poCode = input.poCode || makeCodeFromText(company?.companyCode || input.ownerCode || "PO", `PO${state.counters.purchaseOrder + 1}`);
-    const poSequence = String(state.counters.purchaseOrder + 1).padStart(4, "0");
+    const poSequenceNumber = state.purchaseOrders.filter((entry) => (
+      (business?.id && entry.businessId === business.id)
+      || entry.ownerUserId === ownerUserId
+    )).length + 1;
+    const poSequence = String(poSequenceNumber).padStart(4, "0");
     const vendorCode = input.vendorCode?.trim() || `VEN-${poSequence}`;
+    const poNumber = input.poNumber?.trim() ?? `${poCode}-${poSequence}`;
+    const duplicatePurchaseOrder = state.purchaseOrders.find((entry) => (
+      entry.poNumber === poNumber
+      && String(entry.status || "").toLowerCase() !== "deleted"
+      && ((business?.id && entry.businessId === business.id) || entry.ownerUserId === ownerUserId)
+    ));
+    if (duplicatePurchaseOrder) throw new Error("Purchase/work order number already exists for this business.");
     const purchaseOrder = {
       id: nextId("po", ++state.counters.purchaseOrder),
       ownerUserId,
+      businessId: business?.id || company?.businessId || null,
       companyId: input.companyId ?? null,
       vendorCode,
       documentType: input.documentType?.trim() || "po",
       poCode,
-      poNumber: input.poNumber?.trim() ?? `${poCode}-${poSequence}`,
+      poNumber,
       status,
       vendorId: input.vendorId ?? input.customerId ?? null,
       customerId: input.customerId ?? null,
@@ -705,6 +1036,9 @@ export function createStore(seed = {}, options = {}) {
     if (existingGatewaySubscription) return clone(existingGatewaySubscription);
 
     const amount = Number(input.amount ?? 0);
+    const business = input.businessId
+      ? findBusinessByIdOrLegacyOwner(input.businessId)
+      : ensureBusinessForOwner(input.userId);
     const billingCycle = input.billingCycle ?? "yearly";
     const createdAt = new Date().toISOString();
     const renewalDate = nextSubscriptionRenewalDate(createdAt, billingCycle);
@@ -714,6 +1048,7 @@ export function createStore(seed = {}, options = {}) {
       subscriberName: input.subscriberName?.trim() ?? "",
       companyId: input.companyId ?? null,
       userId: input.userId ?? null,
+      businessId: business?.id || null,
       groupName: input.groupName?.trim() ?? "",
       plan: input.plan ?? "free",
       amount,
@@ -940,9 +1275,13 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function createReport(input) {
+    const business = input.businessId
+      ? findBusinessByIdOrLegacyOwner(input.businessId)
+      : ensureBusinessForOwner(input.ownerUserId);
     const report = {
       id: nextId("rpt", ++state.counters.report),
       ownerUserId: input.ownerUserId ?? null,
+      businessId: business?.id || null,
       companyId: input.companyId ?? null,
       reportType: input.reportType ?? "summary",
       title: input.title ?? "Free Tier Report",
@@ -965,9 +1304,13 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function createAiUsageLog(input = {}) {
+    const business = input.businessId
+      ? findBusinessByIdOrLegacyOwner(input.businessId)
+      : ensureBusinessForOwner(input.ownerUserId);
     const log = {
       id: nextId("ailog", ++state.counters.aiUsageLog),
       ownerUserId: input.ownerUserId ?? null,
+      businessId: business?.id || null,
       plan: String(input.plan || "free").trim().toLowerCase(),
       provider: String(input.provider || "local").trim().toLowerCase(),
       intent: String(input.intent || "unknown").trim().toLowerCase(),
@@ -1058,8 +1401,9 @@ export function createStore(seed = {}, options = {}) {
   function getBusinessSettingsForUser(user, companyId = null) {
     const ownerUserId = user?.role === "admin" && user?.id ? user.id : user?.id;
     if (!ownerUserId) return null;
+    const businessId = ensureBusinessForOwner(ownerUserId)?.id || null;
     const settings = state.businessSettings.find((entry) => (
-      entry.ownerUserId === ownerUserId && (entry.companyId || null) === (companyId || null)
+      (entry.businessId === businessId || entry.ownerUserId === ownerUserId) && (entry.companyId || null) === (companyId || null)
     ));
     return sanitizeBusinessSettings(settings);
   }
@@ -1067,8 +1411,9 @@ export function createStore(seed = {}, options = {}) {
   function getRawBusinessSettingsForUser(user, companyId = null) {
     const ownerUserId = user?.role === "admin" && user?.id ? user.id : user?.id;
     if (!ownerUserId) return null;
+    const businessId = ensureBusinessForOwner(ownerUserId)?.id || null;
     const settings = state.businessSettings.find((entry) => (
-      entry.ownerUserId === ownerUserId && (entry.companyId || null) === (companyId || null)
+      (entry.businessId === businessId || entry.ownerUserId === ownerUserId) && (entry.companyId || null) === (companyId || null)
     ));
     return clone(settings);
   }
@@ -1076,15 +1421,17 @@ export function createStore(seed = {}, options = {}) {
   function upsertBusinessSettings(user, input = {}) {
     if (!user?.id) throw new Error("Authentication required");
     const companyId = input.companyId || null;
+    const businessId = ensureBusinessForOwner(user.id)?.id || null;
     const now = new Date().toISOString();
     const normalized = normalizeBusinessSettings(input);
     let settings = state.businessSettings.find((entry) => (
-      entry.ownerUserId === user.id && (entry.companyId || null) === companyId
+      (entry.businessId === businessId || entry.ownerUserId === user.id) && (entry.companyId || null) === companyId
     ));
     if (!settings) {
       settings = {
         id: nextId("bset", ++state.counters.businessSetting),
         ownerUserId: user.id,
+        businessId,
         companyId,
         emailSettings: {},
         paymentSettings: {},
@@ -1155,13 +1502,15 @@ export function createStore(seed = {}, options = {}) {
   function recordBusinessEmailDelivery(user, input = {}) {
     if (!user?.id) throw new Error("Authentication required");
     const companyId = input.companyId || null;
+    const businessId = ensureBusinessForOwner(user.id)?.id || null;
     let settings = state.businessSettings.find((entry) => (
-      entry.ownerUserId === user.id && (entry.companyId || null) === companyId
+      (entry.businessId === businessId || entry.ownerUserId === user.id) && (entry.companyId || null) === companyId
     ));
     if (!settings) {
       settings = {
         id: nextId("bset", ++state.counters.businessSetting),
         ownerUserId: user.id,
+        businessId,
         companyId,
         emailSettings: {},
         paymentSettings: {},
@@ -1232,8 +1581,10 @@ export function createStore(seed = {}, options = {}) {
 
   function normalizeComplianceTaskOverride(user, companyId, taskId, input = {}) {
     const reminderDaysBefore = Math.max(0, Math.floor(toNumber(input.reminderDaysBefore, 7)));
+    const businessId = ensureBusinessForOwner(user.id)?.id || null;
     return {
       ownerUserId: user.id,
+      businessId,
       companyId: companyId || null,
       complianceRuleId: String(taskId || "").trim(),
       status: normalizeComplianceTaskStatus(input.status),
@@ -1582,29 +1933,83 @@ export function createStore(seed = {}, options = {}) {
     };
   }
 
-  function getBusinessWorkspaceAccess(user, ownerUserId = null) {
+  function getBusinessById(id) {
+    const business = findBusinessByIdOrLegacyOwner(id);
+    return business ? clone(business) : null;
+  }
+
+  function createBusinessForUser(user, input = {}) {
+    if (!user?.id) throw new Error("Authentication required");
+    return createBusinessRecord({
+      ...input,
+      ownerUserId: user.id,
+      legacyOwnerUserId: input.legacyOwnerUserId || user.id,
+      forceNew: true,
+    });
+  }
+
+  function transferBusinessOwnership(businessId, newOwnerUserId, input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(businessId);
+    const newOwner = state.users.find((entry) => entry.id === newOwnerUserId);
+    if (!business || !newOwner) return null;
+    const previousOwnerUserId = business.ownerUserId;
+    business.ownerUserId = newOwnerUserId;
+    business.name = input.name ? String(input.name).trim() : business.name;
+    business.updatedAt = new Date().toISOString();
+    if (input.keepPreviousOwnerAsAdmin !== false && previousOwnerUserId && previousOwnerUserId !== newOwnerUserId) {
+      const previousOwner = state.users.find((entry) => entry.id === previousOwnerUserId);
+      const existing = state.teamMembers.find((member) => (
+        member.businessId === business.id
+        && member.acceptedUserId === previousOwnerUserId
+        && member.status !== "removed"
+      ));
+      if (previousOwner && !existing) {
+        createTeamMember({
+          ownerUserId: newOwnerUserId,
+          businessId: business.id,
+          name: previousOwner.name || previousOwner.email,
+          email: previousOwner.email,
+          role: "admin",
+          status: "active",
+          invitedByUserId: newOwnerUserId,
+          acceptedUserId: previousOwnerUserId,
+        });
+      }
+    }
+    persist();
+    return clone(business);
+  }
+
+  function getBusinessWorkspaceAccess(user, ownerUserId = null, businessId = null) {
     if (!user?.id) return null;
-    const targetOwnerUserId = ownerUserId || user.id;
+    const business = businessId
+      ? findBusinessByIdOrLegacyOwner(businessId)
+      : (findBusinessByIdOrLegacyOwner(ownerUserId) || ensureBusinessForOwner(ownerUserId || user.id));
+    const targetOwnerUserId = business?.ownerUserId || ownerUserId || user.id;
     if (user.role === "admin" || targetOwnerUserId === user.id) {
       return {
         ownerUserId: targetOwnerUserId,
+        businessId: business?.id || null,
+        legacyOwnerUserId: business?.legacyOwnerUserId || targetOwnerUserId,
         role: user.role === "admin" && targetOwnerUserId !== user.id ? "admin" : "owner",
         source: targetOwnerUserId === user.id ? "owned" : "admin",
         permissions: getTeamRolePermissions("owner"),
       };
     }
-    const email = String(user.email || "").toLowerCase();
+    const email = canonicalEmail(user.canonicalEmail || user.email);
     const member = state.teamMembers.find((entry) => (
-      entry.ownerUserId === targetOwnerUserId
+      (business?.id ? entry.businessId === business.id : entry.ownerUserId === targetOwnerUserId)
       && isEmailLinkedTeamMember(entry)
       && (
         entry.acceptedUserId === user.id
-        || String(entry.email || "").toLowerCase() === email
+        || canonicalEmail(entry.canonicalEmail || entry.email) === email
       )
     ));
     if (!member) return null;
     return {
       ownerUserId: member.ownerUserId,
+      businessId: member.businessId || business?.id || null,
+      legacyOwnerUserId: business?.legacyOwnerUserId || member.ownerUserId,
       companyId: member.companyId || null,
       memberId: member.id,
       role: member.role || "viewer",
@@ -1615,28 +2020,48 @@ export function createStore(seed = {}, options = {}) {
 
   function listBusinessWorkspacesForUser(user) {
     if (!user?.id) return [];
-    const workspaces = [{
-      ownerUserId: user.id,
+    const ownedBusinesses = state.businesses.filter((business) => business.ownerUserId === user.id);
+    const workspaces = ownedBusinesses.map((business) => ({
+      ownerUserId: business.ownerUserId,
+      businessId: business.id,
+      legacyOwnerUserId: business.legacyOwnerUserId,
       companyId: null,
       role: user.role === "admin" ? "admin" : "owner",
       source: "owned",
-      label: user.name || user.email || "My workspace",
+      label: business.name || user.name || user.email || "My workspace",
       email: user.email || "",
       permissions: getTeamRolePermissions("owner"),
-    }];
-    const email = String(user.email || "").toLowerCase();
+    }));
+    if (!workspaces.length) {
+      const business = ensureBusinessForOwner(user.id, { name: user.name || user.email });
+      workspaces.push({
+        ownerUserId: user.id,
+        businessId: business?.id || null,
+        legacyOwnerUserId: business?.legacyOwnerUserId || user.id,
+        companyId: null,
+        role: user.role === "admin" ? "admin" : "owner",
+        source: "owned",
+        label: user.name || user.email || "My workspace",
+        email: user.email || "",
+        permissions: getTeamRolePermissions("owner"),
+      });
+    }
+    const email = canonicalEmail(user.canonicalEmail || user.email);
     state.teamMembers
       .filter((member) => (
         isEmailLinkedTeamMember(member)
         && (
           member.acceptedUserId === user.id
-          || String(member.email || "").toLowerCase() === email
+          || canonicalEmail(member.canonicalEmail || member.email) === email
         )
       ))
       .forEach((member) => {
-        const owner = state.users.find((entry) => entry.id === member.ownerUserId);
+        const business = member.businessId ? findBusinessByIdOrLegacyOwner(member.businessId) : findBusinessByIdOrLegacyOwner(member.ownerUserId);
+        const owner = state.users.find((entry) => entry.id === (business?.ownerUserId || member.ownerUserId));
         workspaces.push({
-          ownerUserId: member.ownerUserId,
+          ownerUserId: business?.ownerUserId || member.ownerUserId,
+          businessId: business?.id || member.businessId || null,
+          legacyOwnerUserId: business?.legacyOwnerUserId || member.ownerUserId,
           companyId: member.companyId || null,
           memberId: member.id,
           role: member.role || "viewer",
@@ -1655,12 +2080,15 @@ export function createStore(seed = {}, options = {}) {
       member.ownerUserId === user.id
       || member.invitedByUserId === user.id
       || member.acceptedUserId === user.id
-      || String(member.email || "").toLowerCase() === String(user.email || "").toLowerCase()
+      || canonicalEmail(member.canonicalEmail || member.email) === canonicalEmail(user.canonicalEmail || user.email)
     )));
   }
 
   function listTeamMembersForWorkspace(ownerUserId) {
-    return clone(state.teamMembers.filter((member) => member.ownerUserId === ownerUserId));
+    const business = findBusinessByIdOrLegacyOwner(ownerUserId);
+    return clone(state.teamMembers.filter((member) => (
+      business?.id ? member.businessId === business.id : member.ownerUserId === ownerUserId
+    )));
   }
 
   function sanitizeAuditMetadata(value, depth = 0) {
@@ -1671,6 +2099,7 @@ export function createStore(seed = {}, options = {}) {
       return value ?? null;
     }
     return Object.fromEntries(Object.entries(value).slice(0, 50).map(([key, entry]) => {
+      if (/^(tokenPrefix|tokenPreview)$/i.test(key)) return [key, sanitizeAuditMetadata(entry, depth + 1)];
       if (/pass|secret|token|webhook|authorization|credential/i.test(key)) return [key, "[redacted]"];
       return [key, sanitizeAuditMetadata(entry, depth + 1)];
     }));
@@ -1691,6 +2120,7 @@ export function createStore(seed = {}, options = {}) {
     const event = {
       id: nextId("baud", ++state.counters.businessAuditEvent),
       ownerUserId,
+      businessId: input.businessId || ensureBusinessForOwner(ownerUserId)?.id || null,
       companyId: input.companyId || null,
       actorUserId: input.actorUserId || actorUser?.id || null,
       actorEmail: String(input.actorEmail || actorUser?.email || "").trim().toLowerCase(),
@@ -1716,6 +2146,7 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function listBusinessAuditEventsForWorkspace(ownerUserId, options = {}) {
+    const business = findBusinessByIdOrLegacyOwner(options.businessId || ownerUserId);
     const limit = Math.max(1, Math.min(200, Number(options.limit || 50)));
     const category = String(options.category || "").trim().toLowerCase();
     const action = String(options.action || "").trim().toLowerCase();
@@ -1727,7 +2158,7 @@ export function createStore(seed = {}, options = {}) {
     const fromTime = dateFrom && !Number.isNaN(dateFrom.getTime()) ? dateFrom.getTime() : null;
     const toTime = dateTo && !Number.isNaN(dateTo.getTime()) ? dateTo.getTime() + 86400000 - 1 : null;
     return clone(state.businessAuditEvents
-      .filter((event) => event.ownerUserId === ownerUserId)
+      .filter((event) => business?.id ? event.businessId === business.id || event.ownerUserId === ownerUserId : event.ownerUserId === ownerUserId)
       .filter((event) => !companyId || event.companyId === companyId)
       .filter((event) => !category || event.category === category)
       .filter((event) => !action || event.action === action)
@@ -1744,7 +2175,7 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function createTeamMember(input = {}) {
-    const email = String(input.email || "").trim().toLowerCase();
+    const email = canonicalEmail(input.email);
     if (!email) throw new Error("Team member email is required");
     const existing = state.teamMembers.find((member) => (
       member.ownerUserId === input.ownerUserId
@@ -1755,9 +2186,11 @@ export function createStore(seed = {}, options = {}) {
     const member = {
       id: nextId("team", ++state.counters.teamMember),
       ownerUserId: input.ownerUserId ?? null,
+      businessId: input.businessId || ensureBusinessForOwner(input.ownerUserId)?.id || null,
       companyId: input.companyId ?? null,
       name: String(input.name || email.split("@")[0]).trim(),
       email,
+      canonicalEmail: email,
       role: ["owner", "admin", "accountant", "viewer"].includes(input.role) ? input.role : "viewer",
       status: ["active", "invited"].includes(input.status) ? input.status : "active",
       invitedByUserId: input.invitedByUserId ?? input.ownerUserId ?? null,
@@ -1775,6 +2208,17 @@ export function createStore(seed = {}, options = {}) {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    if (!member.acceptedUserId) {
+      const verifiedMatches = state.users.filter((user) => (
+        canonicalEmail(user.canonicalEmail || user.email) === email
+        && user.emailVerified
+      ));
+      if (verifiedMatches.length === 1) {
+        member.acceptedUserId = verifiedMatches[0].id;
+      } else if (verifiedMatches.length > 1) {
+        member.identityConflict = "duplicate_verified_email";
+      }
+    }
     state.teamMembers.push(member);
     recordBusinessAuditEvent(null, {
       ownerUserId: input.ownerUserId ?? null,
@@ -1879,6 +2323,7 @@ export function createStore(seed = {}, options = {}) {
     const request = {
       id: nextId("apr", ++state.counters.approvalRequest),
       ownerUserId: input.ownerUserId ?? null,
+      businessId: input.businessId || ensureBusinessForOwner(input.ownerUserId)?.id || null,
       companyId: input.companyId ?? null,
       documentType,
       documentId: input.documentId ?? null,
@@ -1992,58 +2437,73 @@ export function createStore(seed = {}, options = {}) {
     return clone(request);
   }
 
-  function listApiKeysForUser(user, includeSecret = false) {
+  function safeApiKeyRecord(key, includeSecret = false, oneTimeToken = "") {
+    const { token: _token, tokenHash: _tokenHash, ...safeKey } = key || {};
+    return {
+      ...safeKey,
+      token: includeSecret ? oneTimeToken : "",
+    };
+  }
+
+  function listApiKeysForUser(user) {
+    const ownedBusinessIds = new Set(state.businesses.filter((business) => business.ownerUserId === user?.id).map((business) => business.id));
     const keys = (!user || user.role === "admin")
       ? state.apiKeys
-      : state.apiKeys.filter((key) => key.ownerUserId === user.id);
-    return clone(keys.map((key) => ({
-      ...key,
-      token: includeSecret ? key.token : "",
-    })));
+      : state.apiKeys.filter((key) => key.ownerUserId === user.id || ownedBusinessIds.has(key.businessId));
+    return clone(keys.map((key) => safeApiKeyRecord(key)));
   }
 
   function findActiveApiKeyByToken(token) {
     const candidate = String(token || "").trim();
     if (!candidate) return null;
-    const candidateBuffer = Buffer.from(candidate);
+    const candidateHash = hashApiKeyToken(candidate);
     const key = state.apiKeys.find((entry) => {
-      if (entry.status !== "active" || !entry.token) return false;
-      const entryBuffer = Buffer.from(entry.token);
-      return entryBuffer.length === candidateBuffer.length
-        && crypto.timingSafeEqual(entryBuffer, candidateBuffer);
+      if (entry.status !== "active" || !entry.tokenHash) return false;
+      return secureStringEqual(entry.tokenHash, candidateHash);
     });
-    return key ? clone({ ...key, token: "" }) : null;
+    if (!key) return null;
+    key.lastUsedAt = new Date().toISOString();
+    persist();
+    return clone(safeApiKeyRecord(key));
   }
 
   function createApiKey(input = {}) {
     const token = `eaz_live_${crypto.randomBytes(24).toString("hex")}`;
+    const business = input.businessId
+      ? findBusinessByIdOrLegacyOwner(input.businessId)
+      : ensureBusinessForOwner(input.ownerUserId);
     const key = {
       id: nextId("key", ++state.counters.apiKey),
       ownerUserId: input.ownerUserId ?? null,
+      businessId: business?.id || null,
       companyId: input.companyId ?? null,
       label: String(input.label || "Website integration").trim(),
-      token,
-      tokenPreview: `${token.slice(0, 12)}...${token.slice(-4)}`,
+      tokenPrefix: tokenPrefix(token),
+      tokenPreview: tokenPreview(token),
+      tokenHash: hashApiKeyToken(token),
+      tokenHashAlgorithm: API_KEY_HASH_ALGORITHM,
       scopes: Array.isArray(input.scopes) && input.scopes.length
         ? input.scopes.map((scope) => String(scope).trim()).filter(Boolean)
         : ["invoices:write", "po:write", "reports:read"],
       status: "active",
       createdAt: new Date().toISOString(),
+      lastUsedAt: null,
       revokedAt: null,
     };
     state.apiKeys.push(key);
     persist();
-    return clone(key);
+    return clone(safeApiKeyRecord(key, true, token));
   }
 
   function revokeApiKey(apiKeyId, user = null) {
     const key = state.apiKeys.find((entry) => entry.id === apiKeyId);
     if (!key) return null;
-    if (user && user.role !== "admin" && key.ownerUserId !== user.id) return null;
+    const business = key.businessId ? findBusinessByIdOrLegacyOwner(key.businessId) : null;
+    if (user && user.role !== "admin" && key.ownerUserId !== user.id && business?.ownerUserId !== user.id) return null;
     key.status = "revoked";
     key.revokedAt = new Date().toISOString();
     persist();
-    return clone({ ...key, token: "" });
+    return clone(safeApiKeyRecord(key));
   }
 
   function listInvoices() {
@@ -2146,31 +2606,18 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function refreshInvoicePaymentStatus(invoice) {
-    const paidAmount = state.payments
-      .filter((payment) => payment.invoiceId === invoice.id && payment.status === "captured")
-      .reduce((sum, payment) => sum + toNumber(payment.amount), 0);
-    invoice.paidAmount = Math.min(toNumber(invoice.total), paidAmount);
-    invoice.balanceAmount = Math.max(0, toNumber(invoice.total) - invoice.paidAmount);
-    if (invoice.status === "draft") invoice.paymentStatus = "draft";
-    else if (invoice.total > 0 && invoice.balanceAmount <= 0) invoice.paymentStatus = "paid";
-    else if (invoice.paidAmount > 0) invoice.paymentStatus = "part_paid";
-    else if (invoice.dueDate && new Date(invoice.dueDate) < new Date()) invoice.paymentStatus = "overdue";
-    else invoice.paymentStatus = "unpaid";
+    Object.assign(invoice, calculatePaymentState(
+      invoice,
+      state.payments.filter((payment) => payment.invoiceId === invoice.id),
+    ));
     return invoice;
   }
 
   function refreshPurchaseOrderPaymentStatus(purchaseOrder) {
-    const paidAmount = state.payments
-      .filter((payment) => payment.purchaseOrderId === purchaseOrder.id && payment.status === "captured")
-      .reduce((sum, payment) => sum + toNumber(payment.amount), 0);
-    purchaseOrder.paidAmount = Math.min(toNumber(purchaseOrder.total), paidAmount);
-    purchaseOrder.balanceAmount = Math.max(0, toNumber(purchaseOrder.total) - purchaseOrder.paidAmount);
-    if (purchaseOrder.status === "draft") purchaseOrder.paymentStatus = "draft";
-    else if (purchaseOrder.status === "deleted") purchaseOrder.paymentStatus = "deleted";
-    else if (purchaseOrder.total > 0 && purchaseOrder.balanceAmount <= 0) purchaseOrder.paymentStatus = "paid";
-    else if (purchaseOrder.paidAmount > 0) purchaseOrder.paymentStatus = "part_paid";
-    else if (purchaseOrder.dueDate && new Date(purchaseOrder.dueDate) < new Date()) purchaseOrder.paymentStatus = "overdue";
-    else purchaseOrder.paymentStatus = "unpaid";
+    Object.assign(purchaseOrder, calculatePaymentState(
+      purchaseOrder,
+      state.payments.filter((payment) => payment.purchaseOrderId === purchaseOrder.id),
+    ));
     return purchaseOrder;
   }
 
@@ -2178,16 +2625,33 @@ export function createStore(seed = {}, options = {}) {
     const invoice = state.invoices.find((entry) => entry.id === invoiceId);
     if (!invoice) return null;
     assertInvoiceCanReceivePayment(invoice);
-    const amount = toNumber(input.amount);
-    if (amount <= 0) throw new Error("Enter a valid received amount.");
-    const balance = toNumber(invoice.balanceAmount, invoice.total);
-    if (balance > 0 && amount > balance + 0.01) {
-      throw new Error("Payment amount cannot be more than the pending invoice balance.");
+    if (input.businessId && invoice.businessId && input.businessId !== invoice.businessId) {
+      throw new Error("Payment business does not match invoice business.");
     }
+    const idempotencyKey = paymentIdempotencyKey(input);
+    const existingPayment = idempotencyKey ? state.payments.find((payment) => (
+      payment.invoiceId === invoiceId
+      && payment.idempotencyKey === idempotencyKey
+    )) : null;
+    if (existingPayment) {
+      refreshInvoicePaymentStatus(invoice);
+      return clone({ invoice, payment: existingPayment, idempotentReplay: true });
+    }
+    const amount = validatePaymentApplication(
+      invoice,
+      {
+        ...input,
+        invalidAmountMessage: "Enter a valid received amount.",
+        overpaymentMessage: "Payment amount cannot be more than the pending invoice balance.",
+      },
+      state.payments.filter((payment) => payment.invoiceId === invoice.id),
+    );
     const payment = {
       id: nextId("pay", ++state.counters.payment),
       ownerUserId: invoice.ownerUserId,
+      businessId: invoice.businessId || ensureBusinessForOwner(invoice.ownerUserId)?.id || null,
       invoiceId,
+      idempotencyKey,
       amount,
       currency: input.currency?.trim() || invoice.currency || "INR",
       mode: input.mode?.trim() || "manual",
@@ -2202,6 +2666,8 @@ export function createStore(seed = {}, options = {}) {
     };
     state.payments.push(payment);
     refreshInvoicePaymentStatus(invoice);
+    const postingBusiness = invoice.businessId ? findBusinessByIdOrLegacyOwner(invoice.businessId) : null;
+    if (postingBusiness) postPaymentCaptured(state, payment, invoice, postingBusiness);
     persist();
     return clone({ invoice, payment });
   }
@@ -2212,17 +2678,34 @@ export function createStore(seed = {}, options = {}) {
     const status = String(purchaseOrder.status || "").toLowerCase();
     if (status === "draft") throw new Error("Create this PO/WO before recording payment.");
     if (status === "deleted") throw new Error("Deleted PO/WO records cannot receive payment updates.");
-    const amount = toNumber(input.amount);
-    if (amount <= 0) throw new Error("Enter a valid paid amount.");
-    refreshPurchaseOrderPaymentStatus(purchaseOrder);
-    const balance = toNumber(purchaseOrder.balanceAmount, purchaseOrder.total);
-    if (balance > 0 && amount > balance + 0.01) {
-      throw new Error("Payment amount cannot be more than the pending PO/WO balance.");
+    if (input.businessId && purchaseOrder.businessId && input.businessId !== purchaseOrder.businessId) {
+      throw new Error("Payment business does not match purchase/work order business.");
     }
+    const idempotencyKey = paymentIdempotencyKey(input);
+    const existingPayment = idempotencyKey ? state.payments.find((payment) => (
+      payment.purchaseOrderId === purchaseOrderId
+      && payment.idempotencyKey === idempotencyKey
+    )) : null;
+    if (existingPayment) {
+      refreshPurchaseOrderPaymentStatus(purchaseOrder);
+      return clone({ purchaseOrder, payment: existingPayment, idempotentReplay: true });
+    }
+    refreshPurchaseOrderPaymentStatus(purchaseOrder);
+    const amount = validatePaymentApplication(
+      purchaseOrder,
+      {
+        ...input,
+        invalidAmountMessage: "Enter a valid paid amount.",
+        overpaymentMessage: "Payment amount cannot be more than the pending PO/WO balance.",
+      },
+      state.payments.filter((payment) => payment.purchaseOrderId === purchaseOrder.id),
+    );
     const payment = {
       id: nextId("pay", ++state.counters.payment),
       ownerUserId: purchaseOrder.ownerUserId,
+      businessId: purchaseOrder.businessId || ensureBusinessForOwner(purchaseOrder.ownerUserId)?.id || null,
       purchaseOrderId,
+      idempotencyKey,
       amount,
       currency: input.currency?.trim() || purchaseOrder.currency || "INR",
       mode: input.mode?.trim() || "manual",
@@ -2239,6 +2722,61 @@ export function createStore(seed = {}, options = {}) {
     refreshPurchaseOrderPaymentStatus(purchaseOrder);
     persist();
     return clone({ purchaseOrder, payment });
+  }
+
+  function recordVendorBillPayment(vendorBillId, input = {}) {
+    const vendorBill = state.vendorBills.find((entry) => entry.id === vendorBillId);
+    if (!vendorBill) return null;
+    const status = normalizeRecordStatus(vendorBill.status, "draft");
+    if (status === "draft") throw new Error("Post this vendor bill before recording payment.");
+    if (status === "deleted" || status === "cancelled" || status === "void") throw new Error("Deleted/cancelled vendor bills cannot receive payments.");
+    if (input.businessId && vendorBill.businessId && input.businessId !== vendorBill.businessId) {
+      throw new Error("Payment business does not match vendor bill business.");
+    }
+    const idempotencyKey = paymentIdempotencyKey(input);
+    const existingPayment = idempotencyKey ? state.payments.find((payment) => (
+      payment.vendorBillId === vendorBillId
+      && payment.idempotencyKey === idempotencyKey
+    )) : null;
+    if (existingPayment) {
+      refreshVendorBillPaymentStatus(vendorBill);
+      return clone({ vendorBill, payment: existingPayment, idempotentReplay: true });
+    }
+    refreshVendorBillPaymentStatus(vendorBill);
+    const amount = validatePaymentApplication(
+      vendorBill,
+      {
+        ...input,
+        invalidAmountMessage: "Enter a valid vendor payment amount.",
+        overpaymentMessage: "Payment amount cannot be more than the pending vendor bill balance.",
+      },
+      state.payments.filter((payment) => payment.vendorBillId === vendorBill.id),
+    );
+    const payment = {
+      id: nextId("pay", ++state.counters.payment),
+      ownerUserId: vendorBill.ownerUserId,
+      businessId: vendorBill.businessId,
+      vendorBillId,
+      vendorId: vendorBill.vendorId || null,
+      idempotencyKey,
+      amount,
+      currency: input.currency?.trim() || vendorBill.currency || "INR",
+      mode: input.mode?.trim() || "manual",
+      reference: input.reference?.trim() || "",
+      notes: input.notes?.trim() || "",
+      status: input.status?.trim() || "captured",
+      gateway: input.gateway?.trim() || "",
+      gatewayPaymentId: input.gatewayPaymentId?.trim() || "",
+      gatewayOrderId: input.gatewayOrderId?.trim() || "",
+      paymentDate: input.paymentDate?.trim() || new Date().toISOString().slice(0, 10),
+      createdAt: new Date().toISOString(),
+    };
+    state.payments.push(payment);
+    refreshVendorBillPaymentStatus(vendorBill);
+    const business = findBusinessByIdOrLegacyOwner(vendorBill.businessId);
+    if (business) postVendorPaymentCaptured(state, payment, vendorBill, business);
+    persist();
+    return clone({ vendorBill, payment });
   }
 
   function createInvoicePaymentLink(invoiceId, input = {}) {
@@ -2283,13 +2821,30 @@ export function createStore(seed = {}, options = {}) {
     if (!user || user.role === "admin") return clone(state.payments);
     const invoiceIds = new Set(listInvoicesForUser(user).map((invoice) => invoice.id));
     const purchaseOrderIds = new Set(listPurchaseOrdersForUser(user).map((purchaseOrder) => purchaseOrder.id));
-    return clone(state.payments.filter((payment) => invoiceIds.has(payment.invoiceId) || purchaseOrderIds.has(payment.purchaseOrderId)));
+    const vendorBillIds = new Set(listVendorBillsForUser(user).map((bill) => bill.id));
+    return clone(state.payments.filter((payment) => invoiceIds.has(payment.invoiceId) || purchaseOrderIds.has(payment.purchaseOrderId) || vendorBillIds.has(payment.vendorBillId)));
   }
 
   function listPurchaseOrdersForUser(user) {
     if (!user || user.role === "admin") return clone(state.purchaseOrders);
     const companiesOwned = new Set(state.companies.filter((company) => company.ownerUserId === user.id).map((company) => company.id));
     return clone(state.purchaseOrders.filter((purchaseOrder) => purchaseOrder.ownerUserId === user.id || companiesOwned.has(purchaseOrder.companyId)));
+  }
+
+  function listVendorBillsForUser(user) {
+    if (!user || user.role === "admin") return clone(state.vendorBills);
+    const companiesOwned = new Set(state.companies.filter((company) => company.ownerUserId === user.id).map((company) => company.id));
+    return clone(state.vendorBills.filter((bill) => bill.ownerUserId === user.id || companiesOwned.has(bill.companyId)));
+  }
+
+  function listCreditNotesForUser(user) {
+    if (!user || user.role === "admin") return clone(state.creditNotes);
+    return clone(state.creditNotes.filter((note) => note.ownerUserId === user.id));
+  }
+
+  function listVendorCreditsForUser(user) {
+    if (!user || user.role === "admin") return clone(state.vendorCredits);
+    return clone(state.vendorCredits.filter((credit) => credit.ownerUserId === user.id));
   }
 
   function setUserRestriction(userId, updates) {
@@ -2369,6 +2924,9 @@ export function createStore(seed = {}, options = {}) {
       companies: state.companies.length,
       customers: state.customers.length,
       vendors: state.vendors.length,
+      vendorBills: state.vendorBills.length,
+      creditNotes: state.creditNotes.length,
+      vendorCredits: state.vendorCredits.length,
       invoices: state.invoices.length,
       purchaseOrders: state.purchaseOrders.length,
       payments: state.payments.length,
@@ -2380,10 +2938,100 @@ export function createStore(seed = {}, options = {}) {
       teamMembers: state.teamMembers.length,
       approvalRequests: state.approvalRequests.length,
       apiKeys: state.apiKeys.length,
+      ledgerAccounts: state.ledgerAccounts.length,
+      financialEvents: state.financialEvents.length,
+      accountingJournals: state.accountingJournals.length,
+      accountingJournalLines: state.accountingJournalLines.length,
       businessSettings: state.businessSettings.length,
       complianceTasks: state.complianceTasks.length,
       businessAuditEvents: state.businessAuditEvents.length,
     };
+  }
+
+  function listLedgerAccountsForBusiness(businessId) {
+    const business = findBusinessByIdOrLegacyOwner(businessId);
+    if (!business) return [];
+    ensureDefaultAccountingAccounts(state, business, business.ownerUserId);
+    return clone(state.ledgerAccounts.filter((account) => account.businessId === business.id && account.status !== "deleted"));
+  }
+
+  function listFinancialEventsForBusiness(businessId) {
+    const business = findBusinessByIdOrLegacyOwner(businessId);
+    if (!business) return [];
+    return clone(state.financialEvents.filter((event) => event.businessId === business.id));
+  }
+
+  function listAccountingJournalsForBusiness(businessId) {
+    const business = findBusinessByIdOrLegacyOwner(businessId);
+    if (!business) return [];
+    return clone(state.accountingJournals
+      .filter((journal) => journal.businessId === business.id)
+      .map((journal) => publicJournalWithLines(state, journal)));
+  }
+
+  function createManualAccountingJournal(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for manual journal.");
+    ensureDefaultAccountingAccounts(state, business, business.ownerUserId);
+    const lines = (Array.isArray(input.lines) ? input.lines : []).map((line) => {
+      const account = state.ledgerAccounts.find((entry) => entry.id === line.accountId || (
+        entry.businessId === business.id && entry.accountCode === line.accountCode
+      ));
+      if (!account || account.businessId !== business.id) throw new Error("Ledger account does not belong to this business.");
+      return {
+        account,
+        debit: toNumber(line.debit),
+        credit: toNumber(line.credit),
+        description: String(line.description || input.narration || "Manual journal").trim(),
+      };
+    });
+    const totals = validateBalancedJournal(lines);
+    const journal = {
+      id: nextId("mjrnl", ++state.counters.accountingJournal),
+      businessId: business.id,
+      ownerUserId: business.ownerUserId,
+      journalNumber: input.journalNumber || `JV-${String(state.counters.accountingJournal).padStart(4, "0")}`,
+      journalDate: input.journalDate || new Date().toISOString().slice(0, 10),
+      narration: String(input.narration || "Manual journal entry").trim(),
+      status: "posted",
+      sourceType: "manual",
+      sourceId: input.sourceId || "",
+      financialEventId: "",
+      postingRule: "manual_journal",
+      postingRuleVersion: "1",
+      automatic: false,
+      immutable: false,
+      currency: input.currency || "INR",
+      totalDebit: totals.totalDebit,
+      totalCredit: totals.totalCredit,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.accountingJournals.push(journal);
+    lines.forEach((line, index) => {
+      state.accountingJournalLines.push({
+        id: `${journal.id}:line:${index + 1}`,
+        journalId: journal.id,
+        businessId: business.id,
+        ownerUserId: business.ownerUserId,
+        accountId: line.account.id,
+        accountCode: line.account.accountCode,
+        accountName: line.account.accountName,
+        lineIndex: index + 1,
+        description: line.description,
+        debit: toNumber(line.debit),
+        credit: toNumber(line.credit),
+        currency: journal.currency,
+        createdAt: journal.createdAt,
+      });
+    });
+    persist();
+    return publicJournalWithLines(state, journal);
+  }
+
+  function reconcileAccountingForBusiness(businessId) {
+    const business = findBusinessByIdOrLegacyOwner(businessId);
+    return reconcileAccountingPostings(state, business?.id || "");
   }
 
   function exportState() {
@@ -2394,6 +3042,15 @@ export function createStore(seed = {}, options = {}) {
     const invoice = state.invoices.find((entry) => entry.id === id);
     if (!invoice) return null;
     assertInvoiceCanBeEdited(invoice);
+    const materialFields = ["items", "taxRate", "discount", "shipping", "roundOff", "currency", "customerId", "companyId"];
+    const hasFinancialPosting = state.financialEvents.some((event) => (
+      event.eventType === "invoice_issued"
+      && event.sourceId === invoice.id
+      && event.postingStatus === "posted"
+    ));
+    if (hasFinancialPosting && materialFields.some((field) => updates[field] !== undefined)) {
+      throw new Error("Posted invoices cannot be financially edited. Use a controlled reversal or adjustment.");
+    }
 
     [
       "status",
@@ -2418,6 +3075,15 @@ export function createStore(seed = {}, options = {}) {
         ? normalizeRecordStatus(updates[field], invoice.status || "draft")
         : String(updates[field] || "").trim();
     });
+    if (updates.invoiceNumber !== undefined) {
+      const duplicateInvoice = state.invoices.find((entry) => (
+        entry.id !== invoice.id
+        && entry.invoiceNumber === invoice.invoiceNumber
+        && String(entry.status || "").toLowerCase() !== "deleted"
+        && ((invoice.businessId && entry.businessId === invoice.businessId) || entry.ownerUserId === invoice.ownerUserId)
+      ));
+      if (duplicateInvoice) throw new Error("Invoice number already exists for this business.");
+    }
     if (updates.recurringEnabled !== undefined) invoice.recurringEnabled = Boolean(updates.recurringEnabled);
     if (updates.recurringFrequency !== undefined) {
       invoice.recurringFrequency = updates.recurringFrequency ? normalizeRecurringFrequency(updates.recurringFrequency) : "";
@@ -2429,15 +3095,8 @@ export function createStore(seed = {}, options = {}) {
     if (updates.shipping !== undefined) invoice.shipping = toNumber(updates.shipping);
     if (updates.roundOff !== undefined) invoice.roundOff = toNumber(updates.roundOff);
     if (updates.items !== undefined) {
-      invoice.items = updates.items.map((item) => ({
-        description: String(item.description || "").trim(),
-        hsnSac: String(item.hsnSac || "").trim(),
-        unit: String(item.unit || "").trim(),
-        quantity: toNumber(item.quantity),
-        rate: toNumber(item.rate),
-        discount: toNumber(item.discount),
-        gstRate: toNumber(item.gstRate, toNumber(updates.taxRate ?? invoice.taxRate)),
-      })).filter((item) => item.description);
+      invoice.items = normalizeFinancialItems(updates.items, toNumber(updates.taxRate ?? invoice.taxRate))
+        .filter((item) => item.description);
     }
 
     const totalsNeedRefresh = ["items", "taxRate", "discount", "shipping", "roundOff"].some((field) => updates[field] !== undefined);
@@ -2450,6 +3109,8 @@ export function createStore(seed = {}, options = {}) {
       Object.assign(invoice, totals);
     }
     refreshInvoicePaymentStatus(invoice);
+    const postingBusiness = invoice.businessId ? findBusinessByIdOrLegacyOwner(invoice.businessId) : null;
+    if (postingBusiness) postInvoiceIssued(state, invoice, postingBusiness);
 
     persist();
     return clone(invoice);
@@ -2484,21 +3145,23 @@ export function createStore(seed = {}, options = {}) {
         ? normalizeRecordStatus(updates[field], purchaseOrder.status || "created")
         : String(updates[field] || "").trim();
     });
+    if (updates.poNumber !== undefined) {
+      const duplicatePurchaseOrder = state.purchaseOrders.find((entry) => (
+        entry.id !== purchaseOrder.id
+        && entry.poNumber === purchaseOrder.poNumber
+        && String(entry.status || "").toLowerCase() !== "deleted"
+        && ((purchaseOrder.businessId && entry.businessId === purchaseOrder.businessId) || entry.ownerUserId === purchaseOrder.ownerUserId)
+      ));
+      if (duplicatePurchaseOrder) throw new Error("Purchase/work order number already exists for this business.");
+    }
     if (updates.companyId !== undefined) purchaseOrder.companyId = updates.companyId || null;
     if (updates.taxRate !== undefined) purchaseOrder.taxRate = toNumber(updates.taxRate);
     if (updates.discount !== undefined) purchaseOrder.discount = toNumber(updates.discount);
     if (updates.shipping !== undefined) purchaseOrder.shipping = toNumber(updates.shipping);
     if (updates.roundOff !== undefined) purchaseOrder.roundOff = toNumber(updates.roundOff);
     if (updates.items !== undefined) {
-      purchaseOrder.items = updates.items.map((item) => ({
-        description: String(item.description || "").trim(),
-        hsnSac: String(item.hsnSac || "").trim(),
-        unit: String(item.unit || "").trim(),
-        quantity: toNumber(item.quantity),
-        rate: toNumber(item.rate),
-        discount: toNumber(item.discount),
-        gstRate: toNumber(item.gstRate, toNumber(updates.taxRate ?? purchaseOrder.taxRate)),
-      })).filter((item) => item.description);
+      purchaseOrder.items = normalizeFinancialItems(updates.items, toNumber(updates.taxRate ?? purchaseOrder.taxRate))
+        .filter((item) => item.description);
     }
 
     const totalsNeedRefresh = ["items", "taxRate", "discount", "shipping", "roundOff"].some((field) => updates[field] !== undefined);
@@ -2512,6 +3175,347 @@ export function createStore(seed = {}, options = {}) {
 
     persist();
     return clone(purchaseOrder);
+  }
+
+  function getVendorBill(id, user) {
+    const vendorBill = state.vendorBills.find((entry) => entry.id === id);
+    if (!vendorBill) return null;
+    if (!user || user.role === "admin") return clone(vendorBill);
+    const companiesOwned = new Set(state.companies.filter((company) => company.ownerUserId === user.id).map((company) => company.id));
+    if (vendorBill.ownerUserId !== user.id && !companiesOwned.has(vendorBill.companyId)) return null;
+    return clone(vendorBill);
+  }
+
+  function getCreditNote(id, user) {
+    const note = state.creditNotes.find((entry) => entry.id === id);
+    if (!note) return null;
+    if (!user || user.role === "admin" || note.ownerUserId === user.id) return clone(note);
+    return null;
+  }
+
+  function getVendorCredit(id, user) {
+    const credit = state.vendorCredits.find((entry) => entry.id === id);
+    if (!credit) return null;
+    if (!user || user.role === "admin" || credit.ownerUserId === user.id) return clone(credit);
+    return null;
+  }
+
+  function refreshVendorBillPaymentStatus(vendorBill) {
+    Object.assign(vendorBill, calculatePaymentState(
+      vendorBill,
+      state.payments.filter((payment) => payment.vendorBillId === vendorBill.id),
+    ));
+    return vendorBill;
+  }
+
+  function vendorBillIsRecognized(vendorBill) {
+    return ["posted", "recognized", "approved"].includes(normalizeRecordStatus(vendorBill?.status, "draft"));
+  }
+
+  function createVendorBill(input, limits) {
+    const ownerUserId = input.ownerUserId ?? null;
+    const business = input.businessId
+      ? findBusinessByIdOrLegacyOwner(input.businessId)
+      : ensureBusinessForOwner(ownerUserId);
+    if (!business) throw new Error("Business is required for vendor bill.");
+    if (input.vendorId) {
+      const vendor = state.vendors.find((entry) => entry.id === input.vendorId);
+      if (!vendor || vendor.businessId !== business.id) throw new Error("Vendor does not belong to this business.");
+    }
+    const vendorBillNumber = String(input.vendorBillNumber || input.billNumber || "").trim();
+    if (vendorBillNumber && input.vendorId) {
+      const duplicate = state.vendorBills.find((entry) => (
+        entry.businessId === business.id
+        && entry.vendorId === input.vendorId
+        && entry.vendorBillNumber === vendorBillNumber
+        && normalizeRecordStatus(entry.status, "draft") !== "deleted"
+      ));
+      if (duplicate) throw new Error("Vendor bill number already exists for this vendor.");
+    }
+    const items = normalizeFinancialItems(input.items, toNumber(input.taxRate)).filter((item) => item.description);
+    if (items.length > limits.invoiceItemsPerInvoice) {
+      throw new Error("vendor bill items exceed active plan limit");
+    }
+    const totals = calculateInvoiceTotals(items, toNumber(input.taxRate), input);
+    const billSequence = state.vendorBills.filter((entry) => entry.businessId === business.id).length + 1;
+    const status = normalizeRecordStatus(input.status, "draft");
+    const bill = {
+      id: nextId("vbill", ++state.counters.vendorBill),
+      ownerUserId: business.ownerUserId || ownerUserId,
+      businessId: business.id,
+      vendorId: input.vendorId || null,
+      vendorBillNumber,
+      internalBillNumber: String(input.internalBillNumber || `VB-${String(billSequence).padStart(4, "0")}`).trim(),
+      billDate: input.billDate || new Date().toISOString().slice(0, 10),
+      dueDate: input.dueDate || "",
+      status,
+      paymentStatus: status === "draft" ? "draft" : "unpaid",
+      expenseCategory: String(input.expenseCategory || input.category || "Operating Expense").trim(),
+      expenseAccountCode: String(input.expenseAccountCode || "5100").trim(),
+      currency: input.currency?.trim() || "INR",
+      taxRate: toNumber(input.taxRate),
+      gstMode: input.gstMode?.trim() || "intra",
+      placeOfSupply: input.placeOfSupply?.trim() || "",
+      notes: input.notes?.trim() || "",
+      source: input.source?.trim() || "manual",
+      items,
+      ...totals,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    refreshVendorBillPaymentStatus(bill);
+    state.vendorBills.push(bill);
+    if (vendorBillIsRecognized(bill)) {
+      const accounts = ensureDefaultAccountingAccounts(state, business, bill.ownerUserId);
+      const expenseAccount = state.ledgerAccounts.find((account) => account.businessId === business.id && account.accountCode === bill.expenseAccountCode) || accounts.operating_expense;
+      postVendorBillPosted(state, bill, business, { expenseAccount });
+    }
+    persist();
+    return clone(bill);
+  }
+
+  function postedCreditNotesForInvoice(invoiceId) {
+    return state.creditNotes.filter((note) => note.sourceInvoiceId === invoiceId && normalizeRecordStatus(note.status, "draft") !== "draft");
+  }
+
+  function postedVendorCreditsForBill(vendorBillId) {
+    return state.vendorCredits.filter((credit) => credit.sourceVendorBillId === vendorBillId && normalizeRecordStatus(credit.status, "draft") !== "draft");
+  }
+
+  function postedCreditMinorForInvoice(invoiceId, excludeCreditNoteId = "") {
+    return postedCreditNotesForInvoice(invoiceId)
+      .filter((note) => note.id !== excludeCreditNoteId)
+      .reduce((sum, note) => sum + Math.round(toNumber(note.total) * 100), 0);
+  }
+
+  function postedVendorCreditMinorForBill(vendorBillId, excludeVendorCreditId = "") {
+    return postedVendorCreditsForBill(vendorBillId)
+      .filter((credit) => credit.id !== excludeVendorCreditId)
+      .reduce((sum, credit) => sum + Math.round(toNumber(credit.total) * 100), 0);
+  }
+
+  function sourceJournalAndEvent(sourceType, sourceId) {
+    const journal = state.accountingJournals.find((entry) => entry.sourceType === sourceType && entry.sourceId === sourceId && entry.status === "posted");
+    const event = journal ? state.financialEvents.find((entry) => entry.id === journal.financialEventId) : null;
+    return { journal, event };
+  }
+
+  function createSalesCreditNote(input, limits) {
+    const invoice = state.invoices.find((entry) => entry.id === input.sourceInvoiceId || entry.id === input.invoiceId);
+    if (!invoice) throw new Error("Source invoice is required for sales credit note.");
+    const business = findBusinessByIdOrLegacyOwner(input.businessId || invoice.businessId);
+    if (!business || invoice.businessId !== business.id) throw new Error("Credit note business does not match source invoice.");
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    if (idempotencyKey) {
+      const existing = state.creditNotes.find((note) => note.businessId === business.id && note.idempotencyKey === idempotencyKey);
+      if (existing) return clone(existing);
+    }
+    const status = normalizeRecordStatus(input.status, "draft");
+    const items = normalizeFinancialItems(input.items, toNumber(input.taxRate ?? invoice.taxRate)).filter((item) => item.description);
+    if (items.length > limits.invoiceItemsPerInvoice) throw new Error("credit note items exceed active plan limit");
+    const totals = calculateInvoiceTotals(items, toNumber(input.taxRate ?? invoice.taxRate), { ...input, gstMode: input.gstMode || invoice.gstMode || "intra" });
+    const priorCreditMinor = postedCreditMinorForInvoice(invoice.id);
+    const remainingMinor = Math.round(toNumber(invoice.total) * 100) - priorCreditMinor;
+    if (status !== "draft" && Math.round(toNumber(totals.total) * 100) > remainingMinor) throw new Error("Credit note exceeds remaining creditable invoice amount.");
+    const sequence = state.creditNotes.filter((note) => note.businessId === business.id).length + 1;
+    const { journal, event } = sourceJournalAndEvent("invoice", invoice.id);
+    const note = {
+      id: nextId("cn", ++state.counters.creditNote),
+      ownerUserId: invoice.ownerUserId,
+      businessId: business.id,
+      sourceInvoiceId: invoice.id,
+      customerId: invoice.customerId || null,
+      creditNoteNumber: String(input.creditNoteNumber || `CN-${String(sequence).padStart(4, "0")}`).trim(),
+      creditNoteDate: input.creditNoteDate || new Date().toISOString().slice(0, 10),
+      reason: String(input.reason || "correction").trim(),
+      status,
+      idempotencyKey,
+      currency: input.currency?.trim() || invoice.currency || "INR",
+      gstMode: input.gstMode?.trim() || invoice.gstMode || "intra",
+      fullReversal: Boolean(input.fullReversal),
+      reversesFinancialEventId: event?.id || "",
+      reversesJournalId: journal?.id || "",
+      amountApplied: 0,
+      unappliedCredit: 0,
+      items,
+      ...totals,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.creditNotes.push(note);
+    if (status !== "draft") postSalesCreditNotePosted(state, note, invoice, business);
+    persist();
+    return clone(note);
+  }
+
+  function createVendorCredit(input, limits) {
+    const bill = state.vendorBills.find((entry) => entry.id === input.sourceVendorBillId || entry.id === input.vendorBillId);
+    if (!bill) throw new Error("Source vendor bill is required for vendor credit.");
+    const business = findBusinessByIdOrLegacyOwner(input.businessId || bill.businessId);
+    if (!business || bill.businessId !== business.id) throw new Error("Vendor credit business does not match source vendor bill.");
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    if (idempotencyKey) {
+      const existing = state.vendorCredits.find((credit) => credit.businessId === business.id && credit.idempotencyKey === idempotencyKey);
+      if (existing) return clone(existing);
+    }
+    const status = normalizeRecordStatus(input.status, "draft");
+    const items = normalizeFinancialItems(input.items, toNumber(input.taxRate ?? bill.taxRate)).filter((item) => item.description);
+    if (items.length > limits.invoiceItemsPerInvoice) throw new Error("vendor credit items exceed active plan limit");
+    const totals = calculateInvoiceTotals(items, toNumber(input.taxRate ?? bill.taxRate), { ...input, gstMode: input.gstMode || bill.gstMode || "intra" });
+    const priorCreditMinor = postedVendorCreditMinorForBill(bill.id);
+    const remainingMinor = Math.round(toNumber(bill.total) * 100) - priorCreditMinor;
+    if (status !== "draft" && Math.round(toNumber(totals.total) * 100) > remainingMinor) throw new Error("Vendor credit exceeds remaining creditable bill amount.");
+    const sequence = state.vendorCredits.filter((credit) => credit.businessId === business.id).length + 1;
+    const { journal, event } = sourceJournalAndEvent("vendor_bill", bill.id);
+    const credit = {
+      id: nextId("vcred", ++state.counters.vendorCredit),
+      ownerUserId: bill.ownerUserId,
+      businessId: business.id,
+      sourceVendorBillId: bill.id,
+      vendorId: bill.vendorId || null,
+      vendorCreditNumber: String(input.vendorCreditNumber || `VC-${String(sequence).padStart(4, "0")}`).trim(),
+      vendorCreditDate: input.vendorCreditDate || new Date().toISOString().slice(0, 10),
+      reason: String(input.reason || "supplier_credit").trim(),
+      status,
+      idempotencyKey,
+      currency: input.currency?.trim() || bill.currency || "INR",
+      gstMode: input.gstMode?.trim() || bill.gstMode || "intra",
+      fullReversal: Boolean(input.fullReversal),
+      reversesFinancialEventId: event?.id || "",
+      reversesJournalId: journal?.id || "",
+      amountApplied: 0,
+      unappliedCredit: 0,
+      items,
+      ...totals,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.vendorCredits.push(credit);
+    if (status !== "draft") postVendorCreditPosted(state, credit, bill, business);
+    persist();
+    return clone(credit);
+  }
+
+  function updateVendorBill(id, updates, limits) {
+    const vendorBill = state.vendorBills.find((entry) => entry.id === id);
+    if (!vendorBill) return null;
+    const hasFinancialPosting = state.financialEvents.some((event) => (
+      event.eventType === "vendor_bill_posted"
+      && event.sourceId === vendorBill.id
+      && event.postingStatus === "posted"
+    ));
+    const materialFields = ["vendorId", "vendorBillNumber", "items", "taxRate", "discount", "shipping", "roundOff", "currency", "gstMode", "billDate", "expenseAccountCode", "expenseCategory"];
+    if (hasFinancialPosting && materialFields.some((field) => updates[field] !== undefined)) {
+      throw new Error("Posted vendor bills cannot be financially edited. Use a controlled reversal or adjustment.");
+    }
+    if (hasFinancialPosting && ["deleted", "cancelled", "void"].includes(normalizeRecordStatus(updates.status, ""))) {
+      throw new Error("Posted vendor bills cannot be cancelled or deleted without a controlled reversal.");
+    }
+    if (updates.vendorId !== undefined) {
+      const vendor = state.vendors.find((entry) => entry.id === updates.vendorId);
+      if (updates.vendorId && (!vendor || vendor.businessId !== vendorBill.businessId)) throw new Error("Vendor does not belong to this business.");
+      vendorBill.vendorId = updates.vendorId || null;
+    }
+    if (updates.vendorBillNumber !== undefined) {
+      const nextNumber = String(updates.vendorBillNumber || "").trim();
+      if (nextNumber && vendorBill.vendorId) {
+        const duplicate = state.vendorBills.find((entry) => (
+          entry.id !== vendorBill.id
+          && entry.businessId === vendorBill.businessId
+          && entry.vendorId === vendorBill.vendorId
+          && entry.vendorBillNumber === nextNumber
+          && normalizeRecordStatus(entry.status, "draft") !== "deleted"
+        ));
+        if (duplicate) throw new Error("Vendor bill number already exists for this vendor.");
+      }
+      vendorBill.vendorBillNumber = nextNumber;
+    }
+    ["internalBillNumber", "billDate", "dueDate", "currency", "gstMode", "placeOfSupply", "notes", "source", "expenseCategory", "expenseAccountCode"].forEach((field) => {
+      if (updates[field] !== undefined) vendorBill[field] = String(updates[field] || "").trim();
+    });
+    if (updates.status !== undefined) vendorBill.status = normalizeRecordStatus(updates.status, vendorBill.status || "draft");
+    if (updates.taxRate !== undefined) vendorBill.taxRate = toNumber(updates.taxRate);
+    if (updates.discount !== undefined) vendorBill.discount = toNumber(updates.discount);
+    if (updates.shipping !== undefined) vendorBill.shipping = toNumber(updates.shipping);
+    if (updates.roundOff !== undefined) vendorBill.roundOff = toNumber(updates.roundOff);
+    if (updates.items !== undefined) {
+      vendorBill.items = normalizeFinancialItems(updates.items, toNumber(updates.taxRate ?? vendorBill.taxRate)).filter((item) => item.description);
+    }
+    const totalsNeedRefresh = ["items", "taxRate", "discount", "shipping", "roundOff", "gstMode"].some((field) => updates[field] !== undefined);
+    if (totalsNeedRefresh) {
+      if (vendorBill.items.length > limits.invoiceItemsPerInvoice) throw new Error("vendor bill items exceed active plan limit");
+      Object.assign(vendorBill, calculateInvoiceTotals(vendorBill.items, toNumber(vendorBill.taxRate), vendorBill));
+    }
+    refreshVendorBillPaymentStatus(vendorBill);
+    vendorBill.updatedAt = new Date().toISOString();
+    if (vendorBillIsRecognized(vendorBill)) {
+      const business = findBusinessByIdOrLegacyOwner(vendorBill.businessId);
+      const accounts = ensureDefaultAccountingAccounts(state, business, vendorBill.ownerUserId);
+      const expenseAccount = state.ledgerAccounts.find((account) => account.businessId === business.id && account.accountCode === vendorBill.expenseAccountCode) || accounts.operating_expense;
+      postVendorBillPosted(state, vendorBill, business, { expenseAccount });
+    }
+    persist();
+    return clone(vendorBill);
+  }
+
+  function updateCreditNote(id, updates, limits) {
+    const note = state.creditNotes.find((entry) => entry.id === id);
+    if (!note) return null;
+    const posted = normalizeRecordStatus(note.status, "draft") !== "draft";
+    const materialFields = ["sourceInvoiceId", "customerId", "items", "taxRate", "discount", "shipping", "roundOff", "currency", "gstMode", "creditNoteDate"];
+    if (posted && materialFields.some((field) => updates[field] !== undefined)) {
+      throw new Error("Posted credit notes cannot be financially edited. Use a controlled reversal or adjustment.");
+    }
+    if (posted && updates.status !== undefined) throw new Error("Posted credit notes cannot be status-edited without a controlled reversal.");
+    ["creditNoteNumber", "creditNoteDate", "reason", "currency", "gstMode"].forEach((field) => {
+      if (updates[field] !== undefined) note[field] = String(updates[field] || "").trim();
+    });
+    if (updates.status !== undefined) note.status = normalizeRecordStatus(updates.status, note.status || "draft");
+    if (updates.items !== undefined) {
+      note.items = normalizeFinancialItems(updates.items, toNumber(updates.taxRate ?? note.taxRate)).filter((item) => item.description);
+      if (note.items.length > limits.invoiceItemsPerInvoice) throw new Error("credit note items exceed active plan limit");
+      Object.assign(note, calculateInvoiceTotals(note.items, toNumber(updates.taxRate ?? note.taxRate), note));
+    }
+    note.updatedAt = new Date().toISOString();
+    if (normalizeRecordStatus(note.status, "draft") !== "draft") {
+      const invoice = state.invoices.find((entry) => entry.id === note.sourceInvoiceId);
+      const business = findBusinessByIdOrLegacyOwner(note.businessId);
+      const remainingMinor = Math.round(toNumber(invoice?.total) * 100) - postedCreditMinorForInvoice(note.sourceInvoiceId, note.id);
+      if (Math.round(toNumber(note.total) * 100) > remainingMinor) throw new Error("Credit note exceeds remaining creditable invoice amount.");
+      postSalesCreditNotePosted(state, note, invoice, business);
+    }
+    persist();
+    return clone(note);
+  }
+
+  function updateVendorCredit(id, updates, limits) {
+    const credit = state.vendorCredits.find((entry) => entry.id === id);
+    if (!credit) return null;
+    const posted = normalizeRecordStatus(credit.status, "draft") !== "draft";
+    const materialFields = ["sourceVendorBillId", "vendorId", "items", "taxRate", "discount", "shipping", "roundOff", "currency", "gstMode", "vendorCreditDate"];
+    if (posted && materialFields.some((field) => updates[field] !== undefined)) {
+      throw new Error("Posted vendor credits cannot be financially edited. Use a controlled reversal or adjustment.");
+    }
+    if (posted && updates.status !== undefined) throw new Error("Posted vendor credits cannot be status-edited without a controlled reversal.");
+    ["vendorCreditNumber", "vendorCreditDate", "reason", "currency", "gstMode"].forEach((field) => {
+      if (updates[field] !== undefined) credit[field] = String(updates[field] || "").trim();
+    });
+    if (updates.status !== undefined) credit.status = normalizeRecordStatus(updates.status, credit.status || "draft");
+    if (updates.items !== undefined) {
+      credit.items = normalizeFinancialItems(updates.items, toNumber(updates.taxRate ?? credit.taxRate)).filter((item) => item.description);
+      if (credit.items.length > limits.invoiceItemsPerInvoice) throw new Error("vendor credit items exceed active plan limit");
+      Object.assign(credit, calculateInvoiceTotals(credit.items, toNumber(updates.taxRate ?? credit.taxRate), credit));
+    }
+    credit.updatedAt = new Date().toISOString();
+    if (normalizeRecordStatus(credit.status, "draft") !== "draft") {
+      const bill = state.vendorBills.find((entry) => entry.id === credit.sourceVendorBillId);
+      const business = findBusinessByIdOrLegacyOwner(credit.businessId);
+      const remainingMinor = Math.round(toNumber(bill?.total) * 100) - postedVendorCreditMinorForBill(credit.sourceVendorBillId, credit.id);
+      if (Math.round(toNumber(credit.total) * 100) > remainingMinor) throw new Error("Vendor credit exceeds remaining creditable bill amount.");
+      postVendorCreditPosted(state, credit, bill, business);
+    }
+    persist();
+    return clone(credit);
   }
 
   function deleteInvoice(id, user) {
@@ -2548,6 +3552,9 @@ export function createStore(seed = {}, options = {}) {
     listCompanies,
     updateCompanyKyc,
     updateCompany,
+    getBusinessById,
+    createBusinessForUser,
+    transferBusinessOwnership,
     createCustomer,
     listCustomers,
     getCustomer,
@@ -2562,9 +3569,18 @@ export function createStore(seed = {}, options = {}) {
     reactivateVendor,
     createInvoice,
     createPurchaseOrder,
+    createVendorBill,
+    createSalesCreditNote,
+    createVendorCredit,
     runRecurringInvoiceScheduler,
     listInvoicesForUser,
     listPurchaseOrdersForUser,
+    listVendorBillsForUser,
+    listCreditNotesForUser,
+    listVendorCreditsForUser,
+    getVendorBill,
+    getCreditNote,
+    getVendorCredit,
     createSubscription,
     createBillingOrder,
     getBillingOrderByGatewayOrderId,
@@ -2598,6 +3614,11 @@ export function createStore(seed = {}, options = {}) {
     findActiveApiKeyByToken,
     listApiKeysForUser,
     revokeApiKey,
+    listLedgerAccountsForBusiness,
+    listFinancialEventsForBusiness,
+    listAccountingJournalsForBusiness,
+    createManualAccountingJournal,
+    reconcileAccountingForBusiness,
     listSubscriptions,
     listSubscriptionsForUser,
     getSubscription,
@@ -2612,10 +3633,14 @@ export function createStore(seed = {}, options = {}) {
     getInvoice,
     updateInvoice,
     updatePurchaseOrder,
+    updateVendorBill,
+    updateCreditNote,
+    updateVendorCredit,
     deleteInvoice,
     deletePurchaseOrder,
     recordInvoicePayment,
     recordPurchaseOrderPayment,
+    recordVendorBillPayment,
     createInvoicePaymentLink,
     recordGatewayPayment,
     listPaymentsForUser,
