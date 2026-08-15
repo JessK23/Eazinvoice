@@ -3262,6 +3262,7 @@ export function createServer(options = {}) {
       ["/reports/tds-reconciliation", "tds-reconciliation"],
       ["/reports/compliance-readiness", "compliance-readiness"],
       ["/reports/compliance-obligations", "compliance-obligations"],
+      ["/reports/balance-sheet", "balance-sheet"],
       ["/reports/reconciliation", "reconciliation"],
       ["/reports/financial-bundle", "bundle"],
       ["/accounting/trial-balance", "trial-balance"],
@@ -3618,6 +3619,105 @@ export function createServer(options = {}) {
         const body = await readBody(req);
         sendJson(res, 201, api.createVendorRefund(body, {
           user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/periods" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listAccountingPeriods(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/periods" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.getOrCreateAccountingPeriod(user, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/periods/readiness" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.getAccountingPeriodReadiness(user, {
+          accountingDate: url.searchParams.get("accountingDate") || url.searchParams.get("date") || "",
+          businessId: url.searchParams.get("businessId") || null,
+        }, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/periods/status" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 200, api.changeAccountingPeriodStatus(user, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/opening-balances" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listOpeningBalanceSets(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/opening-balances" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.createOpeningBalanceSet(user, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/accounting/opening-balances/") && req.method === "PATCH") {
+      try {
+        const body = await readBody(req);
+        const id = decodeURIComponent(url.pathname.split("/")[3] || "");
+        sendJson(res, 200, api.updateOpeningBalanceSet(user, id, body, {
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
           businessId: body.businessId || null,

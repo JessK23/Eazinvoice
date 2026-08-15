@@ -1051,6 +1051,8 @@ export function createApi(deps = {}) {
           return store.getComplianceReadiness({ ...reportOptions, businessId });
         case "compliance-obligations":
           return { businessId, rows: store.listComplianceObligationsForUser(workspace.owner, businessId) };
+        case "balance-sheet":
+          return store.getBalanceSheet({ ...reportOptions, businessId });
         case "reconciliation":
           return buildFinancialReconciliation(state, businessId, reportOptions);
         case "bundle":
@@ -2067,6 +2069,52 @@ export function createApi(deps = {}) {
     updateComplianceObligation(user, obligationId, input = {}, options = {}) {
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "writeRecords");
       return store.updateComplianceObligation(obligationId, { ...input, businessId: workspace.businessId });
+    },
+    getOrCreateAccountingPeriod(user, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+        businessId: input.businessId || options.businessId || null,
+      }, "writeRecords");
+      return store.getOrCreateAccountingPeriod({ ...input, businessId: workspace.businessId });
+    },
+    listAccountingPeriods(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return store.listAccountingPeriodsForUser(workspace.owner, workspace.businessId);
+    },
+    getAccountingPeriodReadiness(user, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+        businessId: input.businessId || options.businessId || null,
+      }, "read");
+      return store.periodReadiness({ ...input, businessId: workspace.businessId });
+    },
+    changeAccountingPeriodStatus(user, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+        businessId: input.businessId || options.businessId || null,
+      }, "writeRecords");
+      return store.changeAccountingPeriodStatus({ ...input, businessId: workspace.businessId, actorUserId: user?.id || "" });
+    },
+    createOpeningBalanceSet(user, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+        businessId: input.businessId || options.businessId || null,
+      }, "writeRecords");
+      return store.createOpeningBalanceSet({ ...input, businessId: workspace.businessId, actorUserId: user?.id || "" });
+    },
+    listOpeningBalanceSets(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return store.listOpeningBalanceSetsForUser(workspace.owner, workspace.businessId);
+    },
+    updateOpeningBalanceSet(user, id, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "writeRecords");
+      const visible = store.listOpeningBalanceSetsForUser(workspace.owner, workspace.businessId).find((set) => set.id === id);
+      if (!visible) throw new Error("Opening balance set not found in this business.");
+      return store.updateOpeningBalanceSet(id, input);
     },
     deletePurchaseOrder(id, user, options = {}) {
       const current = store.getPurchaseOrder(id);

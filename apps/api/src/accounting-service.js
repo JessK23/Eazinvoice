@@ -1,19 +1,22 @@
 const DEFAULT_ACCOUNT_DEFINITIONS = [
-  ["1100", "Accounts Receivable", "asset", "debit", "accounts_receivable"],
-  ["1110", "Bank / Payment Clearing", "asset", "debit", "bank_clearing"],
-  ["2201", "Output CGST Payable", "liability", "credit", "output_cgst"],
-  ["2202", "Output SGST Payable", "liability", "credit", "output_sgst"],
-  ["2203", "Output IGST Payable", "liability", "credit", "output_igst"],
-  ["2100", "Accounts Payable", "liability", "credit", "accounts_payable"],
-  ["2211", "Input CGST Credit", "asset", "debit", "input_cgst"],
-  ["2212", "Input SGST Credit", "asset", "debit", "input_sgst"],
-  ["2213", "Input IGST Credit", "asset", "debit", "input_igst"],
-  ["2220", "TDS Payable", "liability", "credit", "tds_payable"],
-  ["1300", "TDS Receivable / Tax Credit", "asset", "debit", "tds_receivable"],
-  ["4100", "Sales Revenue", "income", "credit", "sales_revenue"],
-  ["4200", "Sales Returns / Adjustments", "income", "debit", "sales_returns"],
-  ["5100", "Operating Expense", "expense", "debit", "operating_expense"],
-  ["5200", "Purchase / Expense Adjustments", "expense", "credit", "purchase_adjustments"],
+  ["1100", "Accounts Receivable", "asset", "debit", "accounts_receivable", "current_assets"],
+  ["1110", "Bank / Payment Clearing", "asset", "debit", "bank_clearing", "current_assets"],
+  ["1300", "TDS Receivable / Tax Credit", "asset", "debit", "tds_receivable", "current_assets"],
+  ["2100", "Accounts Payable", "liability", "credit", "accounts_payable", "current_liabilities"],
+  ["2201", "Output CGST Payable", "liability", "credit", "output_cgst", "current_liabilities"],
+  ["2202", "Output SGST Payable", "liability", "credit", "output_sgst", "current_liabilities"],
+  ["2203", "Output IGST Payable", "liability", "credit", "output_igst", "current_liabilities"],
+  ["2211", "Input CGST Credit", "asset", "debit", "input_cgst", "current_assets"],
+  ["2212", "Input SGST Credit", "asset", "debit", "input_sgst", "current_assets"],
+  ["2213", "Input IGST Credit", "asset", "debit", "input_igst", "current_assets"],
+  ["2220", "TDS Payable", "liability", "credit", "tds_payable", "current_liabilities"],
+  ["3100", "Capital Account", "equity", "credit", "capital", "equity"],
+  ["3200", "Retained Earnings / Accumulated Profit", "equity", "credit", "retained_earnings", "equity"],
+  ["3300", "Opening Balance Equity", "equity", "credit", "opening_balance_equity", "equity"],
+  ["4100", "Sales Revenue", "income", "credit", "sales_revenue", ""],
+  ["4200", "Sales Returns / Adjustments", "income", "debit", "sales_returns", ""],
+  ["5100", "Operating Expense", "expense", "debit", "operating_expense", ""],
+  ["5200", "Purchase / Expense Adjustments", "expense", "credit", "purchase_adjustments", ""],
 ];
 
 function clone(value) {
@@ -62,7 +65,7 @@ export function ensureDefaultAccountingAccounts(state, business = {}, ownerUserI
   const businessId = business.id || business.businessId;
   if (!businessId) throw new Error("Business is required for accounting accounts.");
   const accounts = {};
-  DEFAULT_ACCOUNT_DEFINITIONS.forEach(([code, name, type, normalBalance, key]) => {
+  DEFAULT_ACCOUNT_DEFINITIONS.forEach(([code, name, type, normalBalance, key, balanceSheetCategory]) => {
     let account = state.ledgerAccounts.find((entry) => entry.businessId === businessId && entry.accountCode === code);
     if (!account) {
       account = {
@@ -73,12 +76,17 @@ export function ensureDefaultAccountingAccounts(state, business = {}, ownerUserI
         accountName: name,
         accountType: type,
         normalBalance,
+        accountRole: key,
+        balanceSheetCategory,
         systemAccount: true,
         status: "active",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
       state.ledgerAccounts.push(account);
+    } else {
+      if (!account.accountRole) account.accountRole = key;
+      if (!account.balanceSheetCategory) account.balanceSheetCategory = balanceSheetCategory;
     }
     accounts[key] = account;
   });

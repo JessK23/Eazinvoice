@@ -452,6 +452,7 @@ export function buildGstReconciliation(state = {}, business = {}, options = {}) 
   const journalsById = new Map((state.accountingJournals || []).map((journal) => [journal.id, journal]));
   const inRequestedPeriod = (line) => {
     const journal = journalsById.get(line.journalId) || {};
+    if (journal.sourceType === "opening_balance") return false;
     return inRange(journal.journalDate || journal.createdAt, options.from || "", options.to || "");
   };
   const lineNet = (code) => (state.accountingJournalLines || [])
@@ -486,8 +487,10 @@ export function buildGstReconciliation(state = {}, business = {}, options = {}) 
 
 export function buildTdsReconciliation(state = {}, business = {}, options = {}) {
   const register = buildTdsRegister(state, business, options);
+  const journalsById = new Map((state.accountingJournals || []).map((journal) => [journal.id, journal]));
   const ledgerMinor = (state.accountingJournalLines || [])
     .filter((line) => line.businessId === business.id && line.accountCode === "2220")
+    .filter((line) => journalsById.get(line.journalId)?.sourceType !== "opening_balance")
     .reduce((sum, line) => sum + toMinor(line.credit) - toMinor(line.debit), 0);
   const registerMinor = toMinor(register.totals.tdsAmount);
   return {

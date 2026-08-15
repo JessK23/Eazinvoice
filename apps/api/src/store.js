@@ -60,6 +60,14 @@ import {
   money as complianceMoney,
   toMinor as complianceToMinor,
 } from "./india-compliance-service.js";
+import {
+  ensureAccountingPeriod,
+  resolveAccountingPeriod,
+  transitionAccountingPeriod,
+  validateAccountingDate,
+  validatePostingPeriod,
+} from "./accounting-period-service.js";
+import { buildBalanceSheet } from "./balance-sheet-service.js";
 
 function clone(value) {
   if (value === undefined) return undefined;
@@ -259,6 +267,10 @@ export function createStore(seed = {}, options = {}) {
     transactionComplianceSnapshots: [],
     complianceObligations: [],
     tdsTransactions: [],
+    accountingPeriods: [],
+    accountingPeriodHistory: [],
+    openingBalanceSets: [],
+    openingBalanceDetails: [],
     invoices: [],
     purchaseOrders: [],
     payments: [],
@@ -299,6 +311,10 @@ export function createStore(seed = {}, options = {}) {
       transactionComplianceSnapshot: 0,
       complianceObligation: 0,
       tdsTransaction: 0,
+      accountingPeriod: 0,
+      accountingPeriodHistory: 0,
+      openingBalanceSet: 0,
+      openingBalanceDetail: 0,
       invoice: 0,
       purchaseOrder: 0,
       payment: 0,
@@ -343,6 +359,10 @@ export function createStore(seed = {}, options = {}) {
     transactionComplianceSnapshot: 0,
     complianceObligation: 0,
     tdsTransaction: 0,
+    accountingPeriod: 0,
+    accountingPeriodHistory: 0,
+    openingBalanceSet: 0,
+    openingBalanceDetail: 0,
     invoice: 0,
     purchaseOrder: 0,
     payment: 0,
@@ -388,6 +408,10 @@ export function createStore(seed = {}, options = {}) {
       transactionComplianceSnapshots: state.transactionComplianceSnapshots,
       complianceObligations: state.complianceObligations,
       tdsTransactions: state.tdsTransactions,
+      accountingPeriods: state.accountingPeriods,
+      accountingPeriodHistory: state.accountingPeriodHistory,
+      openingBalanceSets: state.openingBalanceSets,
+      openingBalanceDetails: state.openingBalanceDetails,
       invoices: state.invoices,
       purchaseOrders: state.purchaseOrders,
       payments: state.payments,
@@ -620,6 +644,10 @@ export function createStore(seed = {}, options = {}) {
       state.transactionComplianceSnapshots,
       state.complianceObligations,
       state.tdsTransactions,
+      state.accountingPeriods,
+      state.accountingPeriodHistory,
+      state.openingBalanceSets,
+      state.openingBalanceDetails,
       state.invoices,
       state.purchaseOrders,
       state.payments,
@@ -1086,11 +1114,14 @@ export function createStore(seed = {}, options = {}) {
     };
     invoice.balanceAmount = Math.max(0, invoice.total - invoice.paidAmount);
     refreshInvoicePaymentStatus(invoice);
+    const postingBusiness = invoice.businessId ? (business || findBusinessByIdOrLegacyOwner(invoice.businessId)) : null;
+    if (postingBusiness && normalizeRecordStatus(invoice.status, "draft") !== "draft") {
+      validateAccountingPosting(postingBusiness, invoice.invoiceDate || invoice.createdAt.slice(0, 10), { ...input, sourceType: "invoice", sourceId: invoice.id });
+    }
     state.invoices.push(invoice);
     if (normalizeRecordStatus(invoice.status, "draft") !== "draft") {
       buildComplianceSnapshot("invoice", invoice, { direction: "output" });
     }
-    const postingBusiness = invoice.businessId ? (business || findBusinessByIdOrLegacyOwner(invoice.businessId)) : null;
     if (postingBusiness) postInvoiceIssued(state, invoice, postingBusiness);
     persist();
     return clone(invoice);
@@ -2798,9 +2829,10 @@ export function createStore(seed = {}, options = {}) {
       paymentDate: input.paymentDate?.trim() || new Date().toISOString().slice(0, 10),
       createdAt: new Date().toISOString(),
     };
+    const postingBusiness = invoice.businessId ? findBusinessByIdOrLegacyOwner(invoice.businessId) : null;
+    if (postingBusiness) validateAccountingPosting(postingBusiness, payment.paymentDate, { ...input, sourceType: "payment", sourceId: payment.id });
     state.payments.push(payment);
     refreshInvoicePaymentStatus(invoice);
-    const postingBusiness = invoice.businessId ? findBusinessByIdOrLegacyOwner(invoice.businessId) : null;
     if (postingBusiness) postPaymentCaptured(state, payment, invoice, postingBusiness);
     persist();
     return clone({ invoice, payment });
@@ -2905,9 +2937,10 @@ export function createStore(seed = {}, options = {}) {
       paymentDate: input.paymentDate?.trim() || new Date().toISOString().slice(0, 10),
       createdAt: new Date().toISOString(),
     };
+    const business = findBusinessByIdOrLegacyOwner(vendorBill.businessId);
+    if (business) validateAccountingPosting(business, payment.paymentDate, { ...input, sourceType: "vendor_payment", sourceId: payment.id });
     state.payments.push(payment);
     refreshVendorBillPaymentStatus(vendorBill);
-    const business = findBusinessByIdOrLegacyOwner(vendorBill.businessId);
     if (business) postVendorPaymentCaptured(state, payment, vendorBill, business);
     persist();
     return clone({ vendorBill, payment });
@@ -3083,6 +3116,7 @@ export function createStore(seed = {}, options = {}) {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    if (reversal.status === "posted") validateAccountingPosting(business, reversal.reversalDate, { ...input, sourceType: "customer_payment_reversal", sourceId: reversal.id });
     state.paymentReversals.push(reversal);
     if (reversal.status === "posted") {
       const result = postCustomerPaymentReversed(state, reversal, payment, invoice, business, { lineage: { journal, event } });
@@ -3136,6 +3170,7 @@ export function createStore(seed = {}, options = {}) {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    if (reversal.status === "posted") validateAccountingPosting(business, reversal.reversalDate, { ...input, sourceType: "vendor_payment_reversal", sourceId: reversal.id });
     state.vendorPaymentReversals.push(reversal);
     if (reversal.status === "posted") {
       const result = postVendorPaymentReversed(state, reversal, payment, bill, business, { lineage: { journal, event } });
@@ -3189,6 +3224,7 @@ export function createStore(seed = {}, options = {}) {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    if (refund.status === "processed") validateAccountingPosting(business, refund.refundDate, { ...input, sourceType: "customer_refund", sourceId: refund.id });
     state.customerRefunds.push(refund);
     if (refund.status === "processed") {
       const result = postCustomerRefundProcessed(state, refund, creditNote, business, { lineage: { journal, event } });
@@ -3240,6 +3276,7 @@ export function createStore(seed = {}, options = {}) {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    if (refund.status === "received") validateAccountingPosting(business, refund.receivedDate, { ...input, sourceType: "vendor_refund", sourceId: refund.id });
     state.vendorRefunds.push(refund);
     if (refund.status === "received") {
       const result = postVendorRefundReceived(state, refund, vendorCredit, business, { lineage: { journal, event } });
@@ -3577,6 +3614,238 @@ export function createStore(seed = {}, options = {}) {
       (!businessId || entry.businessId === businessId)
       && (!user || user.role === "admin" || entry.ownerUserId === user.id)
     )));
+  }
+
+  function validateAccountingPosting(business, accountingDate, input = {}) {
+    return validatePostingPeriod(state, business, accountingDate, {
+      actorUserId: input.actorUserId || input.createdByUserId || business.ownerUserId || "",
+      overrideReason: input.periodOverrideReason || input.overrideReason || "",
+      sourceType: input.sourceType || "",
+      sourceId: input.sourceId || "",
+    });
+  }
+
+  function getOrCreateAccountingPeriod(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for accounting period.");
+    const period = ensureAccountingPeriod(state, business, input.accountingDate || input.date || input.periodStartDate || new Date().toISOString().slice(0, 10), input);
+    persist();
+    return clone(period);
+  }
+
+  function listAccountingPeriodsForUser(user, businessId = "") {
+    return clone(state.accountingPeriods.filter((period) => (
+      (!businessId || period.businessId === businessId)
+      && (!user || user.role === "admin" || period.ownerUserId === user.id)
+    )));
+  }
+
+  function periodReadiness(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for period readiness.");
+    const period = ensureAccountingPeriod(state, business, input.accountingDate || input.date || input.periodStartDate || new Date().toISOString().slice(0, 10), input);
+    const periodFilter = (date) => {
+      const value = String(date || "").slice(0, 10);
+      return value >= period.startDate && value <= period.endDate;
+    };
+    const blockers = [];
+    const warnings = [];
+    const journals = state.accountingJournals.filter((journal) => journal.businessId === business.id && journal.status === "posted" && periodFilter(journal.journalDate || journal.createdAt));
+    const lines = state.accountingJournalLines.filter((line) => line.businessId === business.id && journals.some((journal) => journal.id === line.journalId));
+    const debitMinor = lines.reduce((sum, line) => sum + Math.round(toNumber(line.debit) * 100), 0);
+    const creditMinor = lines.reduce((sum, line) => sum + Math.round(toNumber(line.credit) * 100), 0);
+    if (debitMinor !== creditMinor) blockers.push({ code: "trial_balance_imbalance", severity: "blocking", difference: fromMinor(debitMinor - creditMinor) });
+    state.financialEvents
+      .filter((event) => event.businessId === business.id && ["failed", "pending"].includes(String(event.postingStatus || "")) && periodFilter(event.eventTimestamp || event.createdAt))
+      .forEach((event) => blockers.push({ code: `financial_event_${event.postingStatus}`, severity: "blocking", sourceType: event.sourceType, sourceId: event.sourceId }));
+    const reconciliation = reconcileAccountingPostings(state, business.id);
+    if ((reconciliation.failedEvents || []).length) blockers.push({ code: "failed_accounting_events", severity: "blocking", count: reconciliation.failedEvents.length });
+    if ((reconciliation.duplicateJournalSources || []).length) blockers.push({ code: "duplicate_journal_sources", severity: "blocking", count: reconciliation.duplicateJournalSources.length });
+    state.bankAccounts
+      .filter((account) => account.businessId === business.id)
+      .forEach((account) => {
+        const summary = calculateBankReconciliationSummary(state, account, { from: period.startDate, to: period.endDate });
+        if (summary.status !== "reconciled") warnings.push({ code: "bank_reconciliation_exception", severity: "warning", bankAccountId: account.id, status: summary.status });
+      });
+    const compliance = buildComplianceReadiness(state, business, { from: period.startDate, to: period.endDate });
+    if (compliance.status !== "ready") warnings.push({ code: "compliance_readiness_not_ready", severity: "warning", status: compliance.status, issueCount: compliance.issues.length });
+    return {
+      businessId: business.id,
+      period,
+      status: blockers.length ? "blocked" : warnings.length ? "warning" : "ready",
+      blockers,
+      warnings,
+      informational: [{ code: "period_close_is_governance_only", severity: "informational" }],
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  function changeAccountingPeriodStatus(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for accounting period.");
+    const period = ensureAccountingPeriod(state, business, input.accountingDate || input.date || input.periodStartDate || new Date().toISOString().slice(0, 10), input);
+    const readiness = periodReadiness({ businessId: business.id, accountingDate: period.startDate });
+    const action = String(input.action || "").trim();
+    if (action === "close" && readiness.blockers.length) throw new Error("Accounting period has blocking readiness issues.");
+    const updated = transitionAccountingPeriod(period, action, {
+      actorUserId: input.actorUserId || "",
+      reason: input.reason || input.notes || "",
+      readinessStatus: readiness.status,
+    });
+    state.accountingPeriodHistory.push({
+      id: nextId("aph", ++state.counters.accountingPeriodHistory),
+      businessId: business.id,
+      accountingPeriodId: period.id,
+      action,
+      previousStatus: period.closeHistory.at(-1)?.previousStatus || "",
+      nextStatus: period.status,
+      actorUserId: input.actorUserId || "",
+      reason: input.reason || input.notes || "",
+      readinessStatus: readiness.status,
+      createdAt: new Date().toISOString(),
+    });
+    persist();
+    return { period: updated, readiness };
+  }
+
+  function createOpeningBalanceSet(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for opening balances.");
+    const cutoverDate = validateAccountingDate(input.cutoverDate || input.effectiveDate || input.accountingDate || new Date().toISOString().slice(0, 10), "cutoverDate");
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    if (idempotencyKey) {
+      const existing = state.openingBalanceSets.find((set) => set.businessId === business.id && set.idempotencyKey === idempotencyKey);
+      if (existing) return clone(existing);
+    }
+    const duplicate = state.openingBalanceSets.find((set) => set.businessId === business.id && set.cutoverDate === cutoverDate && set.status !== "reversed");
+    if (duplicate) throw new Error("Opening balance set already exists for this cutover date.");
+    validateAccountingPosting(business, cutoverDate, { ...input, sourceType: "opening_balance" });
+    const accounts = ensureDefaultAccountingAccounts(state, business, business.ownerUserId);
+    const lines = (Array.isArray(input.lines) ? input.lines : []).map((line) => {
+      const account = state.ledgerAccounts.find((entry) => entry.id === line.accountId || (entry.businessId === business.id && entry.accountCode === line.accountCode));
+      if (!account || account.businessId !== business.id) throw new Error("Ledger account does not belong to this business.");
+      return {
+        account,
+        debit: toNumber(line.debit),
+        credit: toNumber(line.credit),
+        description: String(line.description || "Opening balance").trim(),
+      };
+    });
+    if (!lines.length) throw new Error("Opening balance lines are required.");
+    const totals = validateBalancedJournal(lines);
+    const set = {
+      id: nextId("obs", ++state.counters.openingBalanceSet),
+      businessId: business.id,
+      ownerUserId: business.ownerUserId,
+      cutoverDate,
+      status: "posted",
+      idempotencyKey,
+      notes: String(input.notes || "").trim(),
+      immutable: true,
+      createdByUserId: input.actorUserId || input.createdByUserId || "",
+      journalId: "",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.openingBalanceSets.push(set);
+    const journal = {
+      id: nextId("ob", ++state.counters.accountingJournal),
+      businessId: business.id,
+      ownerUserId: business.ownerUserId,
+      journalNumber: input.journalNumber || `OB-${String(state.counters.accountingJournal).padStart(4, "0")}`,
+      journalDate: cutoverDate,
+      narration: String(input.narration || "Opening balance journal").trim(),
+      status: "posted",
+      sourceType: "opening_balance",
+      sourceId: set.id,
+      financialEventId: "",
+      postingRule: "opening_balance",
+      postingRuleVersion: "1",
+      automatic: false,
+      immutable: true,
+      currency: input.currency || "INR",
+      totalDebit: totals.totalDebit,
+      totalCredit: totals.totalCredit,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    set.journalId = journal.id;
+    state.accountingJournals.push(journal);
+    lines.forEach((line, index) => {
+      state.accountingJournalLines.push({
+        id: `${journal.id}:line:${index + 1}`,
+        journalId: journal.id,
+        businessId: business.id,
+        ownerUserId: business.ownerUserId,
+        accountId: line.account.id,
+        accountCode: line.account.accountCode,
+        accountName: line.account.accountName,
+        lineIndex: index + 1,
+        description: line.description,
+        debit: toNumber(line.debit),
+        credit: toNumber(line.credit),
+        currency: journal.currency,
+        createdAt: journal.createdAt,
+      });
+    });
+    const detailInputs = [
+      ...(input.openingReceivables || []).map((entry) => ({ ...entry, detailType: "receivable" })),
+      ...(input.openingPayables || []).map((entry) => ({ ...entry, detailType: "payable" })),
+    ];
+    detailInputs.forEach((detail) => {
+      state.openingBalanceDetails.push({
+        id: nextId("obd", ++state.counters.openingBalanceDetail),
+        businessId: business.id,
+        ownerUserId: business.ownerUserId,
+        openingBalanceSetId: set.id,
+        detailType: detail.detailType,
+        customerId: detail.customerId || "",
+        vendorId: detail.vendorId || "",
+        amount: toNumber(detail.amount),
+        dueDate: detail.dueDate || "",
+        reference: String(detail.reference || "").trim(),
+        status: "open",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    });
+    state.accountingPeriodHistory.push({
+      id: nextId("aph", ++state.counters.accountingPeriodHistory),
+      businessId: business.id,
+      accountingPeriodId: ensureAccountingPeriod(state, business, cutoverDate).id,
+      action: "opening_balance_posted",
+      previousStatus: "",
+      nextStatus: "posted",
+      actorUserId: input.actorUserId || "",
+      reason: input.reason || input.notes || "Opening balance posted",
+      readinessStatus: "",
+      createdAt: new Date().toISOString(),
+    });
+    persist();
+    return clone({ ...set, journal: publicJournalWithLines(state, journal), details: state.openingBalanceDetails.filter((detail) => detail.openingBalanceSetId === set.id) });
+  }
+
+  function updateOpeningBalanceSet(id, input = {}) {
+    const set = state.openingBalanceSets.find((entry) => entry.id === id);
+    if (!set) return null;
+    if (set.status === "posted") throw new Error("Posted opening balance sets are immutable. Use a controlled adjustment.");
+    Object.assign(set, input, { updatedAt: new Date().toISOString() });
+    persist();
+    return clone(set);
+  }
+
+  function listOpeningBalanceSetsForUser(user, businessId = "") {
+    return clone(state.openingBalanceSets.filter((set) => (
+      (!businessId || set.businessId === businessId)
+      && (!user || user.role === "admin" || set.ownerUserId === user.id)
+    )));
+  }
+
+  function getBalanceSheet(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for Balance Sheet.");
+    ensureDefaultAccountingAccounts(state, business, business.ownerUserId);
+    return buildBalanceSheet(state, business.id, input);
   }
 
   function publicBankAccount(account = {}) {
@@ -3960,6 +4229,10 @@ export function createStore(seed = {}, options = {}) {
       transactionComplianceSnapshots: state.transactionComplianceSnapshots.length,
       complianceObligations: state.complianceObligations.length,
       tdsTransactions: state.tdsTransactions.length,
+      accountingPeriods: state.accountingPeriods.length,
+      accountingPeriodHistory: state.accountingPeriodHistory.length,
+      openingBalanceSets: state.openingBalanceSets.length,
+      openingBalanceDetails: state.openingBalanceDetails.length,
       invoices: state.invoices.length,
       purchaseOrders: state.purchaseOrders.length,
       payments: state.payments.length,
@@ -4019,12 +4292,14 @@ export function createStore(seed = {}, options = {}) {
       };
     });
     const totals = validateBalancedJournal(lines);
+    const journalDate = input.journalDate || new Date().toISOString().slice(0, 10);
+    validateAccountingPosting(business, journalDate, { ...input, sourceType: "manual", sourceId: input.sourceId || "" });
     const journal = {
       id: nextId("mjrnl", ++state.counters.accountingJournal),
       businessId: business.id,
       ownerUserId: business.ownerUserId,
       journalNumber: input.journalNumber || `JV-${String(state.counters.accountingJournal).padStart(4, "0")}`,
-      journalDate: input.journalDate || new Date().toISOString().slice(0, 10),
+      journalDate,
       narration: String(input.narration || "Manual journal entry").trim(),
       status: "posted",
       sourceType: "manual",
@@ -4143,7 +4418,10 @@ export function createStore(seed = {}, options = {}) {
     }
     refreshInvoicePaymentStatus(invoice);
     const postingBusiness = invoice.businessId ? findBusinessByIdOrLegacyOwner(invoice.businessId) : null;
-    if (postingBusiness) postInvoiceIssued(state, invoice, postingBusiness);
+    if (postingBusiness && normalizeRecordStatus(invoice.status, "draft") !== "draft") {
+      validateAccountingPosting(postingBusiness, invoice.invoiceDate || invoice.createdAt.slice(0, 10), { ...updates, sourceType: "invoice", sourceId: invoice.id });
+      postInvoiceIssued(state, invoice, postingBusiness);
+    }
 
     persist();
     return clone(invoice);
@@ -4333,6 +4611,7 @@ export function createStore(seed = {}, options = {}) {
     };
     refreshVendorBillPaymentStatus(bill);
     if (vendorBillIsRecognized(bill)) {
+      validateAccountingPosting(business, bill.billDate, { ...input, sourceType: "vendor_bill", sourceId: bill.id });
       buildComplianceSnapshot("vendor_bill", bill, { direction: "input" });
       classifyVendorBillTds(bill);
       refreshVendorBillPaymentStatus(bill);
@@ -4415,6 +4694,7 @@ export function createStore(seed = {}, options = {}) {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    if (status !== "draft") validateAccountingPosting(business, note.creditNoteDate, { ...input, sourceType: "sales_credit_note", sourceId: note.id });
     state.creditNotes.push(note);
     if (status !== "draft") {
       buildComplianceSnapshot("sales_credit_note", note, { direction: "output" });
@@ -4466,6 +4746,7 @@ export function createStore(seed = {}, options = {}) {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    if (status !== "draft") validateAccountingPosting(business, credit.vendorCreditDate, { ...input, sourceType: "vendor_credit", sourceId: credit.id });
     state.vendorCredits.push(credit);
     if (status !== "draft") {
       buildComplianceSnapshot("vendor_credit", credit, { direction: "input" });
@@ -4530,6 +4811,7 @@ export function createStore(seed = {}, options = {}) {
     vendorBill.updatedAt = new Date().toISOString();
     if (vendorBillIsRecognized(vendorBill)) {
       const business = findBusinessByIdOrLegacyOwner(vendorBill.businessId);
+      validateAccountingPosting(business, vendorBill.billDate, { ...updates, sourceType: "vendor_bill", sourceId: vendorBill.id });
       buildComplianceSnapshot("vendor_bill", vendorBill, { direction: "input" });
       classifyVendorBillTds(vendorBill);
       refreshVendorBillPaymentStatus(vendorBill);
@@ -4563,6 +4845,7 @@ export function createStore(seed = {}, options = {}) {
     if (normalizeRecordStatus(note.status, "draft") !== "draft") {
       const invoice = state.invoices.find((entry) => entry.id === note.sourceInvoiceId);
       const business = findBusinessByIdOrLegacyOwner(note.businessId);
+      validateAccountingPosting(business, note.creditNoteDate, { ...updates, sourceType: "sales_credit_note", sourceId: note.id });
       const remainingMinor = Math.round(toNumber(invoice?.total) * 100) - postedCreditMinorForInvoice(note.sourceInvoiceId, note.id);
       if (Math.round(toNumber(note.total) * 100) > remainingMinor) throw new Error("Credit note exceeds remaining creditable invoice amount.");
       postSalesCreditNotePosted(state, note, invoice, business);
@@ -4593,6 +4876,7 @@ export function createStore(seed = {}, options = {}) {
     if (normalizeRecordStatus(credit.status, "draft") !== "draft") {
       const bill = state.vendorBills.find((entry) => entry.id === credit.sourceVendorBillId);
       const business = findBusinessByIdOrLegacyOwner(credit.businessId);
+      validateAccountingPosting(business, credit.vendorCreditDate, { ...updates, sourceType: "vendor_credit", sourceId: credit.id });
       const remainingMinor = Math.round(toNumber(bill?.total) * 100) - postedVendorCreditMinorForBill(credit.sourceVendorBillId, credit.id);
       if (Math.round(toNumber(credit.total) * 100) > remainingMinor) throw new Error("Vendor credit exceeds remaining creditable bill amount.");
       postVendorCreditPosted(state, credit, bill, business);
@@ -4675,6 +4959,14 @@ export function createStore(seed = {}, options = {}) {
     createComplianceObligation,
     updateComplianceObligation,
     listComplianceObligationsForUser,
+    getOrCreateAccountingPeriod,
+    listAccountingPeriodsForUser,
+    periodReadiness,
+    changeAccountingPeriodStatus,
+    createOpeningBalanceSet,
+    updateOpeningBalanceSet,
+    listOpeningBalanceSetsForUser,
+    getBalanceSheet,
     createBankAccount,
     importBankStatementLines,
     suggestBankStatementMatches,

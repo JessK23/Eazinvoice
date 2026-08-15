@@ -2372,6 +2372,165 @@ test("P1-8 bank reconciliation does not mutate GST or TDS compliance state", () 
   assert.deepEqual(api.getFinancialReport(user, "gst-sales-register", { businessId }), beforeGst);
 });
 
+test("P1-9 accounting periods resolve financial years and enforce open soft-closed closed posting rules", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Period User", email: "period-user@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const march = api.getOrCreateAccountingPeriod(user, { businessId, accountingDate: "2027-03-31" }, { businessId });
+  const april = api.getOrCreateAccountingPeriod(user, { businessId, accountingDate: "2027-04-01" }, { businessId });
+  assert.equal(march.financialYear, "2026-27");
+  assert.equal(april.financialYear, "2027-28");
+
+  api.changeAccountingPeriodStatus(user, { businessId, accountingDate: "2026-04-01", action: "soft_close", reason: "Accountant review complete" }, { businessId });
+  assert.throws(
+    () => api.createInvoice({ ownerUserId: user.id, businessId, status: "created", invoiceDate: "2026-04-10", items: [{ description: "Soft block", quantity: 1, rate: 100, gstRate: 0 }] }),
+    /soft-closed/i,
+  );
+  const overrideInvoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceDate: "2026-04-10",
+    periodOverrideReason: "Late approved invoice",
+    items: [{ description: "Soft override", quantity: 1, rate: 100, gstRate: 0 }],
+  });
+  assert.equal(overrideInvoice.total, 100);
+  const closed = api.changeAccountingPeriodStatus(user, { businessId, accountingDate: "2026-04-01", action: "close", reason: "Books reviewed" }, { businessId });
+  assert.equal(closed.period.status, "closed");
+  assert.throws(
+    () => api.createInvoice({ ownerUserId: user.id, businessId, status: "created", invoiceDate: "2026-04-11", items: [{ description: "Closed block", quantity: 1, rate: 100, gstRate: 0 }] }),
+    /closed/i,
+  );
+  const mayInvoice = api.createInvoice({ ownerUserId: user.id, businessId, status: "created", invoiceDate: "2026-05-01", items: [{ description: "May allowed", quantity: 1, rate: 100, gstRate: 0 }] });
+  assert.equal(mayInvoice.total, 100);
+  const reopened = api.changeAccountingPeriodStatus(user, { businessId, accountingDate: "2026-04-01", action: "reopen", reason: "Controlled correction approved" }, { businessId });
+  assert.equal(reopened.period.status, "open");
+  api.createInvoice({ ownerUserId: user.id, businessId, status: "created", invoiceDate: "2026-04-12", items: [{ description: "After reopen", quantity: 1, rate: 100, gstRate: 0 }] });
+  const periods = api.listAccountingPeriods(user, { businessId });
+  assert.ok(periods.find((period) => period.periodKey === "2026-04").closeHistory.some((entry) => entry.action === "reopen"));
+});
+
+test("P1-9 closed periods reject manual journals, payments, and backdated automatic entries without partial state", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Closed Period", email: "closed-period@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const invoice = api.createInvoice({ ownerUserId: user.id, businessId, status: "created", invoiceDate: "2026-04-01", items: [{ description: "April sale", quantity: 1, rate: 1000, gstRate: 0 }] });
+  const ledgerBeforeClose = api.listAccountingEventLedger(user, { businessId });
+  api.changeAccountingPeriodStatus(user, { businessId, accountingDate: "2026-04-01", action: "close", reason: "April complete" }, { businessId });
+  assert.throws(
+    () => api.createManualAccountingJournal(user, {
+      businessId,
+      journalDate: "2026-04-02",
+      lines: [{ accountCode: "1110", debit: 1 }, { accountCode: "3100", credit: 1 }],
+    }, { businessId }),
+    /closed/i,
+  );
+  assert.throws(
+    () => api.recordInvoicePayment(invoice.id, { businessId, amount: 100, paymentDate: "2026-04-03", idempotencyKey: "p19-closed-pay" }, { user, businessId }),
+    /closed/i,
+  );
+  const ledgerAfterFailures = api.listAccountingEventLedger(user, { businessId });
+  assert.equal(ledgerAfterFailures.journals.length, ledgerBeforeClose.journals.length);
+  assert.equal(api.getInvoice(invoice.id, user, { businessId }).paidAmount, 0);
+});
+
+test("P1-9 opening balance journal, subledgers and Balance Sheet equation are reliable", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Balance Sheet", email: "balance-sheet@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const customer = api.createCustomer({ ownerUserId: user.id, businessId, name: "Opening Customer" });
+  const vendor = api.createVendor({ ownerUserId: user.id, businessId, name: "Opening Vendor" });
+  const opening = api.createOpeningBalanceSet(user, {
+    businessId,
+    cutoverDate: "2026-04-01",
+    idempotencyKey: "p19-opening",
+    lines: [
+      { accountCode: "1110", debit: 100000, description: "Opening bank" },
+      { accountCode: "1100", debit: 50000, description: "Opening receivables" },
+      { accountCode: "2211", debit: 10000, description: "Opening input GST" },
+      { accountCode: "2100", credit: 40000, description: "Opening payables" },
+      { accountCode: "2201", credit: 5000, description: "Opening output GST" },
+      { accountCode: "2220", credit: 5000, description: "Opening TDS payable" },
+      { accountCode: "3300", credit: 110000, description: "Opening balance equity" },
+    ],
+    openingReceivables: [{ customerId: customer.id, amount: 50000, reference: "OPEN-AR" }],
+    openingPayables: [{ vendorId: vendor.id, amount: 40000, reference: "OPEN-AP" }],
+  }, { businessId });
+  assert.equal(opening.journal.sourceType, "opening_balance");
+  assert.throws(() => api.createOpeningBalanceSet(user, { businessId, cutoverDate: "2026-04-01", lines: [] }, { businessId }), /already exists/i);
+  assert.throws(() => api.updateOpeningBalanceSet(user, opening.id, { notes: "Rewrite" }, { businessId }), /immutable/i);
+
+  const invoice = api.createInvoice({ ownerUserId: user.id, businessId, customerId: customer.id, status: "created", invoiceDate: "2026-05-01", gstMode: "intra", items: [{ description: "Sale", quantity: 1, rate: 10000, gstRate: 18 }] });
+  api.recordInvoicePayment(invoice.id, { businessId, amount: 5000, paymentDate: "2026-05-02", idempotencyKey: "p19-customer-pay" }, { user, businessId });
+  const bill = api.createVendorBill({ ownerUserId: user.id, businessId, vendorId: vendor.id, vendorBillNumber: "P19/VB/001", status: "posted", billDate: "2026-05-03", gstMode: "intra", items: [{ description: "Expense", quantity: 1, rate: 4000, gstRate: 18 }] }, { user, businessId });
+  api.recordVendorBillPayment(bill.id, { businessId, amount: 2000, paymentDate: "2026-05-04", idempotencyKey: "p19-vendor-pay" }, { user, businessId });
+
+  const balanceSheet = api.getFinancialReport(user, "balance-sheet", { businessId, asOf: "2026-05-31" });
+  assert.equal(balanceSheet.assets.totalAssets, 170520);
+  assert.equal(balanceSheet.liabilities.totalLiabilities, 54520);
+  assert.equal(balanceSheet.equity.postedEquity, 110000);
+  assert.equal(balanceSheet.equity.currentYearEarnings, 6000);
+  assert.equal(balanceSheet.equity.totalEquity, 116000);
+  assert.equal(balanceSheet.totals.difference, 0);
+  assert.equal(balanceSheet.integrity.status, "balanced");
+  assert.equal(balanceSheet.integrity.checks.find((check) => check.id === "accounts_receivable_control_to_subledger").status, "reconciled");
+  assert.equal(balanceSheet.integrity.checks.find((check) => check.id === "accounts_payable_control_to_subledger").status, "reconciled");
+  assert.equal(api.getFinancialReport(user, "profit-loss", { businessId, from: "2026-04-01", to: "2026-05-31" }).profit, balanceSheet.equity.currentYearEarnings);
+  assert.equal(balanceSheet.completeness.inventoryAccountingComplete, false);
+});
+
+test("P1-9 cross-period corrections preserve closed-period reports while combined reports net correctly", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Cross Period", email: "cross-period-p19@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const invoice = api.createInvoice({ ownerUserId: user.id, businessId, status: "created", invoiceDate: "2026-04-15", gstMode: "intra", items: [{ description: "April sale", quantity: 1, rate: 10000, gstRate: 18 }] });
+  const aprilBefore = api.getFinancialReport(user, "profit-loss", { businessId, from: "2026-04-01", to: "2026-04-30" });
+  api.changeAccountingPeriodStatus(user, { businessId, accountingDate: "2026-04-01", action: "close", reason: "April closed" }, { businessId });
+  assert.throws(
+    () => api.createSalesCreditNote({ businessId, sourceInvoiceId: invoice.id, status: "posted", creditNoteDate: "2026-04-20", items: [{ description: "Backdated credit", quantity: 1, rate: 1000, gstRate: 18 }] }, { user, businessId }),
+    /closed/i,
+  );
+  api.createSalesCreditNote({ businessId, sourceInvoiceId: invoice.id, status: "posted", creditNoteDate: "2026-06-01", items: [{ description: "June credit", quantity: 1, rate: 2000, gstRate: 18 }] }, { user, businessId });
+  const aprilAfter = api.getFinancialReport(user, "profit-loss", { businessId, from: "2026-04-01", to: "2026-04-30" });
+  const combined = api.getFinancialReport(user, "profit-loss", { businessId, from: "2026-04-01", to: "2026-06-30" });
+  assert.equal(aprilAfter.profit, aprilBefore.profit);
+  assert.equal(combined.profit, 8000);
+});
+
+test("P1-9 readiness surfaces blockers and bank warnings without manufacturing accounting", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Readiness User", email: "readiness-p19@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const bank = api.createBankAccount(user, { businessId, accountType: "clearing", displayName: "Readiness Bank" }, { businessId });
+  const imported = api.importBankStatement(user, { businessId, bankAccountId: bank.id, lines: [{ transactionDate: "2026-08-15", debit: 10, reference: "UNMATCHED" }] }, { businessId });
+  assert.equal(imported.imported.length, 1);
+  const readiness = api.getAccountingPeriodReadiness(user, { businessId, accountingDate: "2026-08-01" }, { businessId });
+  assert.equal(readiness.blockers.length, 0);
+  assert.ok(readiness.warnings.some((warning) => warning.code === "bank_reconciliation_exception"));
+  api.changeAccountingPeriodStatus(user, { businessId, accountingDate: "2026-08-01", action: "close", reason: "Close with known bank timing warning" }, { businessId });
+  assert.equal(api.listAccountingEventLedger(user, { businessId }).journals.length, 0);
+});
+
+test("P1-9 period and Balance Sheet tenant isolation protect other businesses", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const ownerA = api.createUser({ name: "Period A", email: "period-a@example.com" });
+  const ownerB = api.createUser({ name: "Period B", email: "period-b@example.com" });
+  const businessA = api.listBusinessWorkspaces(ownerA)[0].businessId;
+  const businessB = api.listBusinessWorkspaces(ownerB)[0].businessId;
+  api.getOrCreateAccountingPeriod(ownerA, { businessId: businessA, accountingDate: "2026-07-01" }, { businessId: businessA });
+  api.createOpeningBalanceSet(ownerA, {
+    businessId: businessA,
+    cutoverDate: "2026-07-01",
+    lines: [{ accountCode: "1110", debit: 100 }, { accountCode: "3300", credit: 100 }],
+  }, { businessId: businessA });
+  assert.throws(() => api.listAccountingPeriods(ownerB, { businessId: businessA }), /access|business/i);
+  assert.throws(() => api.changeAccountingPeriodStatus(ownerB, { businessId: businessA, accountingDate: "2026-07-01", action: "close", reason: "No access" }, { businessId: businessA }), /access|business/i);
+  assert.throws(() => api.listOpeningBalanceSets(ownerB, { businessId: businessA }), /access|business/i);
+  assert.throws(() => api.getFinancialReport(ownerB, "balance-sheet", { businessId: businessA, asOf: "2026-07-31" }), /access|business/i);
+  assert.equal(api.listAccountingPeriods(ownerA, { businessId: businessA }).length, 1);
+  assert.equal(api.listAccountingPeriods(ownerB, { businessId: businessB }).length, 0);
+});
+
 test("manual payments update invoice payment status", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const user = api.createUser({ name: "Pay User", email: "pay@example.com" });
