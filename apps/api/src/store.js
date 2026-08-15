@@ -40,6 +40,26 @@ import {
   suggestMatchesForLine,
   toMinor,
 } from "./bank-reconciliation-service.js";
+import {
+  buildComplianceReadiness,
+  buildGstReconciliation,
+  buildGstPurchaseRegister,
+  buildGstSalesRegister,
+  buildTdsReconciliation,
+  buildTdsRegister,
+  classifyGstTransaction,
+  evaluateTdsForVendorBill,
+  maskTaxIdentifier,
+  normalizeCompliancePeriod,
+  normalizeIndiaTaxProfile,
+  publicTaxProfile,
+  selectComplianceRuleSet,
+  validateGstin,
+  validatePan,
+  validateTan,
+  money as complianceMoney,
+  toMinor as complianceToMinor,
+} from "./india-compliance-service.js";
 
 function clone(value) {
   if (value === undefined) return undefined;
@@ -234,6 +254,11 @@ export function createStore(seed = {}, options = {}) {
     bankStatementImportBatches: [],
     bankStatementLines: [],
     bankReconciliationMatches: [],
+    taxRegistrations: [],
+    complianceRuleSets: [],
+    transactionComplianceSnapshots: [],
+    complianceObligations: [],
+    tdsTransactions: [],
     invoices: [],
     purchaseOrders: [],
     payments: [],
@@ -269,6 +294,11 @@ export function createStore(seed = {}, options = {}) {
       bankStatementImportBatch: 0,
       bankStatementLine: 0,
       bankReconciliationMatch: 0,
+      taxRegistration: 0,
+      complianceRuleSet: 0,
+      transactionComplianceSnapshot: 0,
+      complianceObligation: 0,
+      tdsTransaction: 0,
       invoice: 0,
       purchaseOrder: 0,
       payment: 0,
@@ -308,6 +338,11 @@ export function createStore(seed = {}, options = {}) {
     bankStatementImportBatch: 0,
     bankStatementLine: 0,
     bankReconciliationMatch: 0,
+    taxRegistration: 0,
+    complianceRuleSet: 0,
+    transactionComplianceSnapshot: 0,
+    complianceObligation: 0,
+    tdsTransaction: 0,
     invoice: 0,
     purchaseOrder: 0,
     payment: 0,
@@ -348,6 +383,11 @@ export function createStore(seed = {}, options = {}) {
       bankStatementImportBatches: state.bankStatementImportBatches,
       bankStatementLines: state.bankStatementLines,
       bankReconciliationMatches: state.bankReconciliationMatches,
+      taxRegistrations: state.taxRegistrations,
+      complianceRuleSets: state.complianceRuleSets,
+      transactionComplianceSnapshots: state.transactionComplianceSnapshots,
+      complianceObligations: state.complianceObligations,
+      tdsTransactions: state.tdsTransactions,
       invoices: state.invoices,
       purchaseOrders: state.purchaseOrders,
       payments: state.payments,
@@ -575,6 +615,11 @@ export function createStore(seed = {}, options = {}) {
       state.bankStatementImportBatches,
       state.bankStatementLines,
       state.bankReconciliationMatches,
+      state.taxRegistrations,
+      state.complianceRuleSets,
+      state.transactionComplianceSnapshots,
+      state.complianceObligations,
+      state.tdsTransactions,
       state.invoices,
       state.purchaseOrders,
       state.payments,
@@ -796,6 +841,10 @@ export function createStore(seed = {}, options = {}) {
       businessName: input.businessName?.trim() ?? "",
       gstNumber: input.gstNumber?.trim() ?? "",
       panNumber: input.panNumber?.trim() ?? "",
+      billingState: input.billingState?.trim() ?? input.state?.trim() ?? "",
+      stateCode: input.stateCode?.trim() ?? "",
+      registrationStatus: input.registrationStatus?.trim() ?? (input.gstNumber ? "registered" : "unregistered"),
+      customerType: input.customerType?.trim() ?? "",
       email: input.email?.trim() ?? "",
       phone: input.phone?.trim() ?? "",
       billingAddress: input.billingAddress?.trim() ?? input.address?.trim() ?? "",
@@ -826,6 +875,9 @@ export function createStore(seed = {}, options = {}) {
       "businessName",
       "gstNumber",
       "panNumber",
+      "billingState",
+      "stateCode",
+      "registrationStatus",
       "email",
       "phone",
       "billingAddress",
@@ -878,6 +930,11 @@ export function createStore(seed = {}, options = {}) {
       businessName: input.businessName?.trim() || "",
       gstNumber: input.gstNumber?.trim() ?? input.gstin?.trim() ?? "",
       panNumber: input.panNumber?.trim() ?? input.pan?.trim() ?? "",
+      billingState: input.billingState?.trim() ?? input.state?.trim() ?? "",
+      stateCode: input.stateCode?.trim() ?? "",
+      registrationStatus: input.registrationStatus?.trim() ?? (input.gstNumber || input.gstin ? "registered" : "unregistered"),
+      tdsApplicability: input.tdsApplicability?.trim() ?? "",
+      defaultTdsNatureOfPayment: input.defaultTdsNatureOfPayment?.trim() ?? "",
       email: input.email?.trim() ?? "",
       phone: input.phone?.trim() ?? input.mobile?.trim() ?? "",
       billingAddress: input.billingAddress?.trim() ?? input.address?.trim() ?? "",
@@ -909,6 +966,11 @@ export function createStore(seed = {}, options = {}) {
       "businessName",
       "gstNumber",
       "panNumber",
+      "billingState",
+      "stateCode",
+      "registrationStatus",
+      "tdsApplicability",
+      "defaultTdsNatureOfPayment",
       "email",
       "phone",
       "billingAddress",
@@ -1025,6 +1087,9 @@ export function createStore(seed = {}, options = {}) {
     invoice.balanceAmount = Math.max(0, invoice.total - invoice.paidAmount);
     refreshInvoicePaymentStatus(invoice);
     state.invoices.push(invoice);
+    if (normalizeRecordStatus(invoice.status, "draft") !== "draft") {
+      buildComplianceSnapshot("invoice", invoice, { direction: "output" });
+    }
     const postingBusiness = invoice.businessId ? (business || findBusinessByIdOrLegacyOwner(invoice.businessId)) : null;
     if (postingBusiness) postInvoiceIssued(state, invoice, postingBusiness);
     persist();
@@ -3185,6 +3250,335 @@ export function createStore(seed = {}, options = {}) {
     return clone(refund);
   }
 
+  function publicTaxRegistration(registration = {}) {
+    return clone({
+      ...registration,
+      gstin: undefined,
+      pan: undefined,
+      tan: undefined,
+      maskedGstin: registration.maskedGstin || maskTaxIdentifier(registration.gstin),
+      maskedPan: registration.maskedPan || maskTaxIdentifier(registration.pan),
+      maskedTan: registration.maskedTan || maskTaxIdentifier(registration.tan),
+    });
+  }
+
+  function upsertBusinessTaxProfile(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for tax profile.");
+    const profile = normalizeIndiaTaxProfile(input, business.taxProfile || {});
+    business.taxProfile = { ...(business.taxProfile || {}), ...profile, updatedByUserId: input.actorUserId || input.updatedByUserId || "" };
+    business.updatedAt = new Date().toISOString();
+    const existingRegistration = state.taxRegistrations.find((entry) => entry.businessId === business.id && entry.taxType === "GST" && entry.primary);
+    if (profile.gstRegistered && profile.gstin) {
+      const gstinValidation = validateGstin(profile.gstin);
+      const registrationPatch = {
+        gstin: gstinValidation.value,
+        maskedGstin: gstinValidation.masked,
+        gstinStructurallyValid: gstinValidation.structurallyValid,
+        externallyVerified: false,
+        stateCode: profile.stateCode || gstinValidation.stateCode,
+        registrationState: profile.registrationState,
+        registrationType: profile.gstScheme || "regular",
+        status: "active",
+        updatedAt: new Date().toISOString(),
+      };
+      if (existingRegistration) Object.assign(existingRegistration, registrationPatch);
+      else state.taxRegistrations.push({
+        id: nextId("taxreg", ++state.counters.taxRegistration),
+        businessId: business.id,
+        ownerUserId: business.ownerUserId,
+        taxType: "GST",
+        primary: true,
+        createdAt: new Date().toISOString(),
+        ...registrationPatch,
+      });
+    }
+    persist();
+    return publicTaxProfile(business.taxProfile);
+  }
+
+  function getBusinessTaxProfile(user, businessId = "") {
+    const business = findBusinessByIdOrLegacyOwner(businessId);
+    if (!business) return null;
+    if (user && user.role !== "admin" && business.ownerUserId !== user.id) return null;
+    return publicTaxProfile(business.taxProfile || {});
+  }
+
+  function createTaxRegistration(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for tax registration.");
+    const gstinValidation = validateGstin(input.gstin || input.gstNumber || "");
+    const registration = {
+      id: nextId("taxreg", ++state.counters.taxRegistration),
+      businessId: business.id,
+      ownerUserId: business.ownerUserId,
+      taxType: String(input.taxType || "GST").trim().toUpperCase(),
+      registrationType: String(input.registrationType || input.gstScheme || "regular").trim(),
+      gstin: gstinValidation.value,
+      maskedGstin: gstinValidation.masked,
+      gstinStructurallyValid: gstinValidation.value ? gstinValidation.structurallyValid : false,
+      externallyVerified: false,
+      stateCode: String(input.stateCode || gstinValidation.stateCode || "").trim(),
+      registrationState: String(input.registrationState || input.state || "").trim(),
+      status: String(input.status || "active").trim(),
+      primary: Boolean(input.primary),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.taxRegistrations.push(registration);
+    persist();
+    return publicTaxRegistration(registration);
+  }
+
+  function listTaxRegistrationsForUser(user, businessId = "") {
+    return state.taxRegistrations
+      .filter((entry) => (!businessId || entry.businessId === businessId) && (!user || user.role === "admin" || entry.ownerUserId === user.id))
+      .map(publicTaxRegistration);
+  }
+
+  function createComplianceRuleSet(input = {}) {
+    const rule = {
+      id: nextId("crule", ++state.counters.complianceRuleSet),
+      jurisdiction: String(input.jurisdiction || "IN").trim().toUpperCase(),
+      taxType: String(input.taxType || "").trim().toUpperCase(),
+      ruleKey: String(input.ruleKey || "").trim(),
+      version: String(input.version || "1").trim(),
+      effectiveFrom: String(input.effectiveFrom || "2026-04-01").slice(0, 10),
+      effectiveTo: input.effectiveTo ? String(input.effectiveTo).slice(0, 10) : "",
+      config: clone(input.config || {}),
+      authority: String(input.authority || "").trim(),
+      reference: String(input.reference || "").trim(),
+      sourceType: String(input.sourceType || "configured").trim(),
+      lastVerifiedDate: input.lastVerifiedDate ? String(input.lastVerifiedDate).slice(0, 10) : "",
+      status: String(input.status || "active").trim(),
+      productionReady: Boolean(input.productionReady),
+      notes: String(input.notes || "").trim(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    if (!rule.taxType || !rule.ruleKey) throw new Error("Compliance rule tax type and key are required.");
+    state.complianceRuleSets.push(rule);
+    persist();
+    return clone(rule);
+  }
+
+  function listComplianceRuleSets(input = {}) {
+    return clone(state.complianceRuleSets.filter((rule) => (
+      (!input.jurisdiction || rule.jurisdiction === input.jurisdiction)
+      && (!input.taxType || rule.taxType === input.taxType)
+      && (!input.ruleKey || rule.ruleKey === input.ruleKey)
+    )));
+  }
+
+  function selectedComplianceRuleSet(input = {}) {
+    return clone(selectComplianceRuleSet(state.complianceRuleSets, input));
+  }
+
+  function buildComplianceSnapshot(sourceType, transaction, input = {}) {
+    if (!transaction?.businessId) return null;
+    const business = findBusinessByIdOrLegacyOwner(transaction.businessId);
+    if (!business) return null;
+    const existing = state.transactionComplianceSnapshots.find((entry) => entry.sourceType === sourceType && entry.sourceId === transaction.id && entry.taxType === "GST");
+    if (existing) return existing;
+    const party = input.party || (input.direction === "input"
+      ? state.vendors.find((entry) => entry.id === transaction.vendorId)
+      : state.customers.find((entry) => entry.id === transaction.customerId)) || {};
+    const registration = state.taxRegistrations.find((entry) => entry.businessId === business.id && entry.taxType === "GST" && entry.status === "active");
+    const classification = classifyGstTransaction(state, business, transaction, {
+      ...input,
+      sourceType,
+      party,
+      registrationId: registration?.id || "",
+    });
+    const snapshot = {
+      id: nextId("csnap", ++state.counters.transactionComplianceSnapshot),
+      businessId: business.id,
+      ownerUserId: business.ownerUserId,
+      taxType: "GST",
+      direction: input.direction || "output",
+      sourceType,
+      sourceId: transaction.id,
+      documentNumber: classification.documentNumber,
+      documentDate: classification.documentDate,
+      registrationId: classification.registrationId,
+      ruleSetId: classification.ruleSetId,
+      ruleVersion: classification.ruleVersion,
+      ruleKey: classification.ruleKey,
+      classificationStatus: classification.classificationStatus,
+      issues: classification.issues,
+      supplierState: classification.supplierState,
+      recipientState: classification.recipientState,
+      expectedGstMode: classification.expectedGstMode,
+      suppliedGstMode: classification.suppliedGstMode,
+      placeOfSupply: classification.placeOfSupply,
+      b2bB2c: classification.b2bB2c,
+      counterpartyGstinMasked: classification.counterpartyGstinMasked,
+      counterpartyGstinStructurallyValid: classification.counterpartyGstinStructurallyValid,
+      supplyType: classification.supplyType,
+      reverseChargeApplicable: classification.reverseChargeApplicable,
+      itcStatus: classification.itcStatus,
+      hsnSacStatus: classification.hsnSacStatus,
+      taxableValue: classification.tax.taxableValue,
+      cgst: classification.tax.cgst,
+      sgst: classification.tax.sgst,
+      igst: classification.tax.igst,
+      taxAmount: classification.tax.taxAmount,
+      grossValue: classification.tax.grossValue,
+      sourceSemantics: "classification_snapshot_not_filing",
+      createdAt: new Date().toISOString(),
+    };
+    state.transactionComplianceSnapshots.push(snapshot);
+    transaction.complianceSnapshotId = snapshot.id;
+    transaction.gstComplianceStatus = snapshot.classificationStatus;
+    transaction.gstRuleSetId = snapshot.ruleSetId;
+    transaction.gstRuleVersion = snapshot.ruleVersion;
+    return snapshot;
+  }
+
+  function createTdsTransactionForVendorBill(bill, vendor, tds) {
+    const existing = state.tdsTransactions.find((entry) => entry.sourceType === "vendor_bill" && entry.sourceId === bill.id);
+    if (existing) return existing;
+    const transaction = {
+      id: nextId("tds", ++state.counters.tdsTransaction),
+      businessId: bill.businessId,
+      ownerUserId: bill.ownerUserId,
+      vendorId: bill.vendorId || "",
+      sourceType: "vendor_bill",
+      sourceId: bill.id,
+      vendorBillNumber: bill.vendorBillNumber || bill.internalBillNumber || "",
+      transactionDate: bill.billDate || bill.createdAt?.slice(0, 10),
+      deductionDate: tds.deductionDate || bill.billDate || bill.createdAt?.slice(0, 10),
+      natureOfPayment: tds.natureOfPayment || bill.tdsNatureOfPayment || bill.expenseCategory || "",
+      ruleSetId: tds.ruleSetId || "",
+      ruleVersion: tds.ruleVersion || "",
+      ruleReference: tds.ruleReference || "",
+      sourceMetadata: tds.sourceType || "configured",
+      status: tds.status || "needs_review",
+      applicability: tds.applicability || "",
+      issues: tds.issues || [],
+      vendorPanMasked: maskTaxIdentifier(vendor?.panNumber || vendor?.pan || ""),
+      grossAmount: complianceMoney(complianceToMinor(tds.grossAmount)),
+      amountSubjectToTds: complianceMoney(complianceToMinor(tds.amountSubjectToTds)),
+      tdsRate: Number(tds.rate || 0),
+      tdsAmount: complianceMoney(complianceToMinor(tds.amount)),
+      netVendorPayable: complianceMoney(complianceToMinor(tds.netVendorPayable || bill.total)),
+      period: normalizeCompliancePeriod({ date: bill.billDate || new Date().toISOString().slice(0, 10), taxYearStartMonth: 4 }),
+      filingStatus: "internal_register_not_filed",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.tdsTransactions.push(transaction);
+    return transaction;
+  }
+
+  function classifyVendorBillTds(bill) {
+    const business = findBusinessByIdOrLegacyOwner(bill.businessId);
+    const vendor = state.vendors.find((entry) => entry.id === bill.vendorId) || {};
+    const tds = evaluateTdsForVendorBill(state, business, bill, vendor);
+    bill.tdsSnapshot = clone(tds);
+    bill.tdsAmount = complianceMoney(complianceToMinor(tds.amount));
+    bill.netVendorPayable = tds.netVendorPayable !== undefined ? complianceMoney(complianceToMinor(tds.netVendorPayable)) : bill.total;
+    if (tds.status === "classified" || tds.status === "needs_review") {
+      const transaction = createTdsTransactionForVendorBill(bill, vendor, tds);
+      bill.tdsTransactionId = transaction.id;
+    }
+    return tds;
+  }
+
+  function getGstSalesRegister(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for GST sales register.");
+    return buildGstSalesRegister(state, business, input);
+  }
+
+  function getGstPurchaseRegister(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for GST purchase register.");
+    return buildGstPurchaseRegister(state, business, input);
+  }
+
+  function getComplianceReadiness(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for compliance readiness.");
+    return buildComplianceReadiness(state, business, input);
+  }
+
+  function getGstComplianceReconciliation(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for GST reconciliation.");
+    return buildGstReconciliation(state, business, input);
+  }
+
+  function getTdsRegister(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for TDS register.");
+    return buildTdsRegister(state, business, input);
+  }
+
+  function getTdsReconciliation(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for TDS reconciliation.");
+    return buildTdsReconciliation(state, business, input);
+  }
+
+  function createComplianceObligation(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for compliance obligation.");
+    const period = input.period || normalizeCompliancePeriod({ date: input.periodDate || input.dueDate || new Date().toISOString().slice(0, 10), periodType: input.periodType || "month" });
+    const rule = input.ruleSetId
+      ? state.complianceRuleSets.find((entry) => entry.id === input.ruleSetId)
+      : selectComplianceRuleSet(state.complianceRuleSets, { jurisdiction: "IN", taxType: input.complianceType || input.taxType || "GST", ruleKey: input.ruleKey || "obligation", effectiveDate: period.from });
+    const obligation = {
+      id: nextId("obl", ++state.counters.complianceObligation),
+      businessId: business.id,
+      ownerUserId: business.ownerUserId,
+      registrationId: input.registrationId || "",
+      complianceType: String(input.complianceType || input.taxType || "GST").trim().toUpperCase(),
+      obligationType: String(input.obligationType || "return_preparation").trim(),
+      periodType: period.periodType,
+      periodKey: period.periodKey,
+      periodFrom: period.from,
+      periodTo: period.to,
+      financialYear: period.financialYear,
+      dueDate: String(input.dueDate || rule?.config?.dueDate || "").slice(0, 10),
+      ruleSetId: rule?.id || input.ruleSetId || "",
+      ruleVersion: rule?.version || input.ruleVersion || "",
+      status: String(input.status || "upcoming").trim(),
+      filingSemantics: "manual_or_preparation_status_not_government_verified",
+      externallyVerified: false,
+      completionDate: "",
+      notes: String(input.notes || "").trim(),
+      sourceMetadata: clone(input.sourceMetadata || {}),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.complianceObligations.push(obligation);
+    persist();
+    return clone(obligation);
+  }
+
+  function updateComplianceObligation(id, input = {}) {
+    const obligation = state.complianceObligations.find((entry) => entry.id === id);
+    if (!obligation) return null;
+    if (input.businessId && obligation.businessId !== input.businessId) throw new Error("Compliance obligation not found in this business.");
+    ["status", "notes"].forEach((field) => {
+      if (input[field] !== undefined) obligation[field] = String(input[field] || "").trim();
+    });
+    if (input.completionDate !== undefined) obligation.completionDate = String(input.completionDate || "").slice(0, 10);
+    if (input.externalFilingReference !== undefined) obligation.externalFilingReference = String(input.externalFilingReference || "").trim();
+    obligation.externallyVerified = false;
+    obligation.updatedAt = new Date().toISOString();
+    persist();
+    return clone(obligation);
+  }
+
+  function listComplianceObligationsForUser(user, businessId = "") {
+    return clone(state.complianceObligations.filter((entry) => (
+      (!businessId || entry.businessId === businessId)
+      && (!user || user.role === "admin" || entry.ownerUserId === user.id)
+    )));
+  }
+
   function publicBankAccount(account = {}) {
     return clone({
       ...account,
@@ -3561,6 +3955,11 @@ export function createStore(seed = {}, options = {}) {
       bankStatementImportBatches: state.bankStatementImportBatches.length,
       bankStatementLines: state.bankStatementLines.length,
       bankReconciliationMatches: state.bankReconciliationMatches.length,
+      taxRegistrations: state.taxRegistrations.length,
+      complianceRuleSets: state.complianceRuleSets.length,
+      transactionComplianceSnapshots: state.transactionComplianceSnapshots.length,
+      complianceObligations: state.complianceObligations.length,
+      tdsTransactions: state.tdsTransactions.length,
       invoices: state.invoices.length,
       purchaseOrders: state.purchaseOrders.length,
       payments: state.payments.length,
@@ -3863,8 +4262,12 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function refreshVendorBillPaymentStatus(vendorBill) {
+    const payableDocument = {
+      ...vendorBill,
+      total: toNumber(vendorBill.netVendorPayable || vendorBill.total),
+    };
     Object.assign(vendorBill, calculatePaymentState(
-      vendorBill,
+      payableDocument,
       effectiveVendorBillPayments(vendorBill.id),
     ));
     return vendorBill;
@@ -3918,6 +4321,9 @@ export function createStore(seed = {}, options = {}) {
       taxRate: toNumber(input.taxRate),
       gstMode: input.gstMode?.trim() || "intra",
       placeOfSupply: input.placeOfSupply?.trim() || "",
+      tdsNatureOfPayment: String(input.tdsNatureOfPayment || input.paymentNature || "").trim(),
+      itcStatus: String(input.itcStatus || "not_verified").trim(),
+      reverseChargeApplicable: Boolean(input.reverseChargeApplicable),
       notes: input.notes?.trim() || "",
       source: input.source?.trim() || "manual",
       items,
@@ -3926,6 +4332,11 @@ export function createStore(seed = {}, options = {}) {
       updatedAt: new Date().toISOString(),
     };
     refreshVendorBillPaymentStatus(bill);
+    if (vendorBillIsRecognized(bill)) {
+      buildComplianceSnapshot("vendor_bill", bill, { direction: "input" });
+      classifyVendorBillTds(bill);
+      refreshVendorBillPaymentStatus(bill);
+    }
     state.vendorBills.push(bill);
     if (vendorBillIsRecognized(bill)) {
       const accounts = ensureDefaultAccountingAccounts(state, business, bill.ownerUserId);
@@ -4005,7 +4416,10 @@ export function createStore(seed = {}, options = {}) {
       updatedAt: new Date().toISOString(),
     };
     state.creditNotes.push(note);
-    if (status !== "draft") postSalesCreditNotePosted(state, note, invoice, business);
+    if (status !== "draft") {
+      buildComplianceSnapshot("sales_credit_note", note, { direction: "output" });
+      postSalesCreditNotePosted(state, note, invoice, business);
+    }
     persist();
     return clone(note);
   }
@@ -4053,7 +4467,11 @@ export function createStore(seed = {}, options = {}) {
       updatedAt: new Date().toISOString(),
     };
     state.vendorCredits.push(credit);
-    if (status !== "draft") postVendorCreditPosted(state, credit, bill, business);
+    if (status !== "draft") {
+      buildComplianceSnapshot("vendor_credit", credit, { direction: "input" });
+      credit.tdsAdjustmentStatus = bill.tdsTransactionId ? "needs_review" : "not_applicable";
+      postVendorCreditPosted(state, credit, bill, business);
+    }
     persist();
     return clone(credit);
   }
@@ -4112,6 +4530,9 @@ export function createStore(seed = {}, options = {}) {
     vendorBill.updatedAt = new Date().toISOString();
     if (vendorBillIsRecognized(vendorBill)) {
       const business = findBusinessByIdOrLegacyOwner(vendorBill.businessId);
+      buildComplianceSnapshot("vendor_bill", vendorBill, { direction: "input" });
+      classifyVendorBillTds(vendorBill);
+      refreshVendorBillPaymentStatus(vendorBill);
       const accounts = ensureDefaultAccountingAccounts(state, business, vendorBill.ownerUserId);
       const expenseAccount = state.ledgerAccounts.find((account) => account.businessId === business.id && account.accountCode === vendorBill.expenseAccountCode) || accounts.operating_expense;
       postVendorBillPosted(state, vendorBill, business, { expenseAccount });
@@ -4238,6 +4659,22 @@ export function createStore(seed = {}, options = {}) {
     createVendorPaymentReversal,
     createCustomerRefund,
     createVendorRefund,
+    upsertBusinessTaxProfile,
+    getBusinessTaxProfile,
+    createTaxRegistration,
+    listTaxRegistrationsForUser,
+    createComplianceRuleSet,
+    listComplianceRuleSets,
+    selectedComplianceRuleSet,
+    getGstSalesRegister,
+    getGstPurchaseRegister,
+    getComplianceReadiness,
+    getGstComplianceReconciliation,
+    getTdsRegister,
+    getTdsReconciliation,
+    createComplianceObligation,
+    updateComplianceObligation,
+    listComplianceObligationsForUser,
     createBankAccount,
     importBankStatementLines,
     suggestBankStatementMatches,

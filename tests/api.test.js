@@ -2039,6 +2039,339 @@ test("P1-7 integrated bank reconciliation keeps bank fees external and protects 
   assert.throws(() => api.listBankStatementLines(ownerB, { businessId: businessA, bankAccountId: clearingA.id }), /access|business/i);
 });
 
+test("P1-8 business tax profile, GST registrations, identifiers and tenant privacy are scoped", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const ownerA = api.createUser({ name: "Compliance A", email: "compliance-a@example.com" });
+  const ownerB = api.createUser({ name: "Compliance B", email: "compliance-b@example.com" });
+  const businessA = api.listBusinessWorkspaces(ownerA)[0].businessId;
+  const businessB = api.listBusinessWorkspaces(ownerB)[0].businessId;
+
+  const profile = api.updateBusinessTaxProfile(ownerA, {
+    businessId: businessA,
+    legalName: "Compliance A Pvt Ltd",
+    entityType: "company",
+    pan: "ABCDE1234F",
+    tan: "ABCD12345E",
+    gstRegistered: true,
+    gstin: "27ABCDE1234F1Z5",
+    registrationState: "Maharashtra",
+    stateCode: "27",
+    tdsDeductorApplicable: true,
+  }, { businessId: businessA });
+
+  assert.equal(profile.pan, undefined);
+  assert.equal(profile.gstin, undefined);
+  assert.equal(profile.maskedPan, "******234F");
+  assert.equal(profile.maskedGstin, "***********F1Z5");
+  assert.equal(profile.panStructurallyValid, true);
+  assert.equal(profile.gstinStructurallyValid, true);
+  assert.equal(profile.gstinExternallyVerified, false);
+  const registrations = api.listTaxRegistrations(ownerA, { businessId: businessA });
+  assert.equal(registrations.length, 1);
+  assert.equal(registrations[0].gstin, undefined);
+  assert.equal(registrations[0].maskedGstin, "***********F1Z5");
+  assert.equal(registrations[0].gstinStructurallyValid, true);
+  assert.throws(() => api.getBusinessTaxProfile(ownerB, { businessId: businessA }), /access|business/i);
+  assert.throws(() => api.listTaxRegistrations(ownerA, { businessId: businessB }), /access|business/i);
+});
+
+test("P1-8 GST snapshots classify place of supply, preserve rule versions and feed registers", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "GST Engine", email: "gst-engine@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  api.updateBusinessTaxProfile(user, {
+    businessId,
+    legalName: "GST Engine LLP",
+    pan: "ABCDE1234F",
+    gstRegistered: true,
+    gstin: "27ABCDE1234F1Z5",
+    stateCode: "27",
+    registrationState: "Maharashtra",
+  }, { businessId });
+  const ruleV1 = api.createComplianceRuleSet(user, {
+    jurisdiction: "IN",
+    taxType: "GST",
+    ruleKey: "gst_classification",
+    version: "sample-gst-v1",
+    effectiveFrom: "2026-04-01",
+    effectiveTo: "2026-08-31",
+    sourceType: "sample_test_fixture",
+    config: { periodBasis: "document_date" },
+  }, { businessId });
+  api.createComplianceRuleSet(user, {
+    jurisdiction: "IN",
+    taxType: "GST",
+    ruleKey: "gst_classification",
+    version: "sample-gst-v2",
+    effectiveFrom: "2026-09-01",
+    sourceType: "sample_test_fixture",
+    config: { periodBasis: "document_date" },
+  }, { businessId });
+  const customerSame = api.createCustomer({ ownerUserId: user.id, businessId, name: "Same State Customer", stateCode: "27", gstNumber: "27ABCDE1234F1Z5" });
+  const customerOther = api.createCustomer({ ownerUserId: user.id, businessId, name: "Other State Customer", stateCode: "29", gstNumber: "29ABCDE1234F1Z3" });
+  const vendor = api.createVendor({ ownerUserId: user.id, businessId, name: "Input Vendor", stateCode: "27", gstNumber: "27ABCDE1234F1Z5", panNumber: "ABCDE1234F" });
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    customerId: customerSame.id,
+    status: "created",
+    invoiceDate: "2026-08-15",
+    gstMode: "intra",
+    items: [{ description: "Golden sale", quantity: 1, rate: 10000, gstRate: 18, hsnSac: "9983" }],
+  });
+  const credit = api.createSalesCreditNote({
+    businessId,
+    sourceInvoiceId: invoice.id,
+    status: "posted",
+    creditNoteDate: "2026-08-16",
+    reason: "rate adjustment",
+    items: [{ description: "Golden credit", quantity: 1, rate: 2000, gstRate: 18, hsnSac: "9983" }],
+  }, { user, businessId });
+  const wrongMode = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    customerId: customerOther.id,
+    status: "created",
+    invoiceDate: "2026-08-17",
+    gstMode: "intra",
+    items: [{ description: "Wrong mode", quantity: 1, rate: 100, gstRate: 18 }],
+  });
+  const bill = api.createVendorBill({
+    ownerUserId: user.id,
+    businessId,
+    vendorId: vendor.id,
+    vendorBillNumber: "P18/GST/001",
+    status: "posted",
+    billDate: "2026-08-15",
+    gstMode: "intra",
+    itcStatus: "eligible",
+    items: [{ description: "Golden input", quantity: 1, rate: 4000, gstRate: 18, hsnSac: "9983" }],
+  }, { user, businessId });
+  api.createVendorCredit({
+    businessId,
+    sourceVendorBillId: bill.id,
+    status: "posted",
+    vendorCreditDate: "2026-08-16",
+    items: [{ description: "Golden vendor credit", quantity: 1, rate: 1000, gstRate: 18, hsnSac: "9983" }],
+  }, { user, businessId });
+  const laterInvoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    customerId: customerSame.id,
+    status: "created",
+    invoiceDate: "2026-09-02",
+    gstMode: "intra",
+    items: [{ description: "Later sale", quantity: 1, rate: 100, gstRate: 18 }],
+  });
+
+  const refreshedInvoice = api.getInvoice(invoice.id, user, { businessId });
+  const refreshedWrong = api.getInvoice(wrongMode.id, user, { businessId });
+  const refreshedLater = api.getInvoice(laterInvoice.id, user, { businessId });
+  assert.equal(refreshedInvoice.gstComplianceStatus, "classified");
+  assert.equal(refreshedInvoice.gstRuleVersion, ruleV1.version);
+  assert.equal(refreshedWrong.gstComplianceStatus, "invalid");
+  assert.equal(refreshedLater.gstRuleVersion, "sample-gst-v2");
+
+  const salesRegister = api.getFinancialReport(user, "gst-sales-register", { businessId, from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(salesRegister.totals.grossTaxableValue, 10100);
+  assert.equal(salesRegister.totals.creditAdjustments, 2000);
+  assert.equal(salesRegister.rows.find((row) => row.sourceId === credit.id).sourceType, "sales_credit_note");
+  const purchaseRegister = api.getFinancialReport(user, "gst-purchase-register", { businessId, from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(purchaseRegister.totals.grossTaxableValue, 4000);
+  assert.equal(purchaseRegister.totals.creditAdjustments, 1000);
+  assert.equal(purchaseRegister.rows.find((row) => row.sourceId === bill.id).itcStatus, "eligible");
+  const reconciliation = api.getFinancialReport(user, "gst-reconciliation", { businessId, from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(reconciliation.status, "reconciled");
+  const readiness = api.getFinancialReport(user, "compliance-readiness", { businessId, from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(readiness.status, "blocked");
+  assert.ok(readiness.issues.some((issue) => issue.issueCodes.includes("inconsistent_gst_mode")));
+});
+
+test("P1-8 configured TDS rules post gross expense, net payable and liability without claiming statutory truth", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "TDS Engine", email: "tds-engine@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  api.updateBusinessTaxProfile(user, {
+    businessId,
+    legalName: "TDS Engine LLP",
+    pan: "ABCDE1234F",
+    tdsDeductorApplicable: true,
+  }, { businessId });
+  const rule = api.createComplianceRuleSet(user, {
+    jurisdiction: "IN",
+    taxType: "TDS",
+    ruleKey: "professional_services",
+    version: "sample-tds-v1",
+    effectiveFrom: "2026-04-01",
+    sourceType: "sample_test_fixture",
+    config: {
+      rate: 10,
+      thresholdAmount: 30000,
+      thresholdType: "cumulative_tax_year",
+      requiresPan: true,
+      requiresPaymentNature: true,
+      statutoryProvision: "TEST-CONFIG",
+    },
+  }, { businessId });
+  const vendor = api.createVendor({ ownerUserId: user.id, businessId, name: "Professional Vendor", panNumber: "ABCDE1234F" });
+  api.createVendorBill({
+    ownerUserId: user.id,
+    businessId,
+    vendorId: vendor.id,
+    vendorBillNumber: "P18/TDS/001",
+    status: "posted",
+    billDate: "2026-08-01",
+    tdsNatureOfPayment: "professional_services",
+    items: [{ description: "Prior service", quantity: 1, rate: 25000, gstRate: 0 }],
+  }, { user, businessId });
+  const bill = api.createVendorBill({
+    ownerUserId: user.id,
+    businessId,
+    vendorId: vendor.id,
+    vendorBillNumber: "P18/TDS/002",
+    status: "posted",
+    billDate: "2026-08-15",
+    tdsNatureOfPayment: "professional_services",
+    items: [{ description: "Current service", quantity: 1, rate: 10000, gstRate: 0 }],
+  }, { user, businessId });
+
+  const refreshed = api.getVendorBill(bill.id, user, { businessId });
+  assert.equal(refreshed.total, 10000);
+  assert.equal(refreshed.tdsAmount, 1000);
+  assert.equal(refreshed.netVendorPayable, 9000);
+  assert.equal(refreshed.balanceAmount, 9000);
+  assert.equal(refreshed.tdsSnapshot.ruleSetId, rule.id);
+  assert.equal(refreshed.tdsSnapshot.sourceType, "sample_test_fixture");
+  const ledger = api.listAccountingEventLedger(user, { businessId });
+  const journal = ledger.journals.find((entry) => entry.sourceType === "vendor_bill" && entry.sourceId === bill.id);
+  const lines = journal.lines.map((line) => [line.accountCode, line.debit, line.credit]);
+  assert.deepEqual(lines, [
+    ["5100", 10000, 0],
+    ["2100", 0, 9000],
+    ["2220", 0, 1000],
+  ]);
+  assert.equal(api.getFinancialReport(user, "trial-balance", { businessId }).totals.difference, 0);
+  const tdsRegister = api.getFinancialReport(user, "tds-register", { businessId, from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(tdsRegister.rows.length, 1);
+  assert.equal(tdsRegister.totals.tdsAmount, 1000);
+  assert.equal(tdsRegister.rows[0].filingStatus, "internal_register_not_filed");
+  const tdsReconciliation = api.getFinancialReport(user, "tds-reconciliation", { businessId });
+  assert.equal(tdsReconciliation.checks[0].status, "reconciled");
+});
+
+test("P1-8 TDS needs-review, non-applicable and correction behavior remain controlled", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "TDS Review", email: "tds-review@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  api.updateBusinessTaxProfile(user, { businessId, tdsDeductorApplicable: true }, { businessId });
+  api.createComplianceRuleSet(user, {
+    jurisdiction: "IN",
+    taxType: "TDS",
+    ruleKey: "contract_services",
+    version: "sample-tds-review",
+    effectiveFrom: "2026-04-01",
+    sourceType: "sample_test_fixture",
+    config: { rate: 5, thresholdAmount: 0, requiresPan: true, requiresPaymentNature: true },
+  }, { businessId });
+  const noPanVendor = api.createVendor({ ownerUserId: user.id, businessId, name: "No PAN Vendor" });
+  const needsReview = api.createVendorBill({
+    ownerUserId: user.id,
+    businessId,
+    vendorId: noPanVendor.id,
+    vendorBillNumber: "P18/TDS/REVIEW",
+    status: "posted",
+    billDate: "2026-08-10",
+    tdsNatureOfPayment: "contract_services",
+    items: [{ description: "Contract", quantity: 1, rate: 1000, gstRate: 0 }],
+  }, { user, businessId });
+  assert.equal(api.getVendorBill(needsReview.id, user, { businessId }).tdsSnapshot.status, "needs_review");
+  const cleanVendor = api.createVendor({ ownerUserId: user.id, businessId, name: "Clean Vendor", panNumber: "ABCDE1234F" });
+  const noRuleBill = api.createVendorBill({
+    ownerUserId: user.id,
+    businessId,
+    vendorId: cleanVendor.id,
+    vendorBillNumber: "P18/TDS/NORULE",
+    status: "posted",
+    billDate: "2026-08-11",
+    tdsNatureOfPayment: "goods_purchase",
+    items: [{ description: "Goods", quantity: 1, rate: 1000, gstRate: 0 }],
+  }, { user, businessId });
+  assert.equal(api.getVendorBill(noRuleBill.id, user, { businessId }).tdsSnapshot.status, "needs_review");
+  const credit = api.createVendorCredit({
+    businessId,
+    sourceVendorBillId: needsReview.id,
+    status: "posted",
+    vendorCreditDate: "2026-08-12",
+    items: [{ description: "Correction", quantity: 1, rate: 100, gstRate: 0 }],
+  }, { user, businessId });
+  assert.equal(credit.tdsAdjustmentStatus, "needs_review");
+});
+
+test("P1-8 compliance obligations preserve rule version and manual filing semantics", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Obligation User", email: "obligation@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const ruleV1 = api.createComplianceRuleSet(user, {
+    jurisdiction: "IN",
+    taxType: "GST",
+    ruleKey: "obligation",
+    version: "sample-obligation-v1",
+    effectiveFrom: "2026-04-01",
+    effectiveTo: "2026-08-31",
+    sourceType: "sample_test_fixture",
+    config: { dueDate: "2026-08-20" },
+  }, { businessId });
+  const obligation = api.createComplianceObligation(user, {
+    businessId,
+    complianceType: "GST",
+    obligationType: "return_preparation",
+    periodDate: "2026-08-01",
+    status: "due",
+  }, { businessId });
+  api.createComplianceRuleSet(user, {
+    jurisdiction: "IN",
+    taxType: "GST",
+    ruleKey: "obligation",
+    version: "sample-obligation-v2",
+    effectiveFrom: "2026-09-01",
+    sourceType: "sample_test_fixture",
+    config: { dueDate: "2026-09-25" },
+  }, { businessId });
+  assert.equal(obligation.ruleSetId, ruleV1.id);
+  assert.equal(obligation.ruleVersion, "sample-obligation-v1");
+  assert.equal(obligation.dueDate, "2026-08-20");
+  const completed = api.updateComplianceObligation(user, obligation.id, {
+    businessId,
+    status: "completed",
+    completionDate: "2026-08-19",
+    externalFilingReference: "MANUAL-ACK",
+  }, { businessId });
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.externallyVerified, false);
+  assert.equal(completed.filingSemantics, "manual_or_preparation_status_not_government_verified");
+  const report = api.getFinancialReport(user, "compliance-obligations", { businessId });
+  assert.equal(report.rows[0].ruleVersion, "sample-obligation-v1");
+});
+
+test("P1-8 bank reconciliation does not mutate GST or TDS compliance state", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Bank Compliance", email: "bank-compliance@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  api.updateBusinessTaxProfile(user, { businessId, gstRegistered: true, gstin: "27ABCDE1234F1Z5", stateCode: "27" }, { businessId });
+  api.createComplianceRuleSet(user, { jurisdiction: "IN", taxType: "GST", ruleKey: "gst_classification", version: "bank-invariance", effectiveFrom: "2026-04-01", sourceType: "sample_test_fixture" }, { businessId });
+  const customer = api.createCustomer({ ownerUserId: user.id, businessId, name: "Bank Customer", stateCode: "27" });
+  const invoice = api.createInvoice({ ownerUserId: user.id, businessId, customerId: customer.id, status: "created", invoiceDate: "2026-08-15", gstMode: "intra", items: [{ description: "Service", quantity: 1, rate: 1000, gstRate: 18 }] });
+  const payment = api.recordInvoicePayment(invoice.id, { businessId, amount: 1180, paymentDate: "2026-08-15", reference: "P18-BANK", idempotencyKey: "p18-bank" }, { user, businessId }).payment;
+  const beforeReadiness = api.getFinancialReport(user, "compliance-readiness", { businessId });
+  const beforeGst = api.getFinancialReport(user, "gst-sales-register", { businessId });
+  const clearing = api.createBankAccount(user, { businessId, accountType: "clearing", displayName: "Compliance Clearing" }, { businessId });
+  const imported = api.importBankStatement(user, { businessId, bankAccountId: clearing.id, lines: [{ transactionDate: "2026-08-15", reference: "P18-BANK", credit: 1180 }] }, { businessId });
+  const match = api.confirmBankMatch(user, { businessId, statementLineId: imported.imported[0].id, sourceType: "payment", sourceId: payment.id }, { businessId });
+  api.unmatchBankReconciliation(user, match.id, { businessId });
+  assert.deepEqual(api.getFinancialReport(user, "compliance-readiness", { businessId }), beforeReadiness);
+  assert.deepEqual(api.getFinancialReport(user, "gst-sales-register", { businessId }), beforeGst);
+});
+
 test("manual payments update invoice payment status", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const user = api.createUser({ name: "Pay User", email: "pay@example.com" });

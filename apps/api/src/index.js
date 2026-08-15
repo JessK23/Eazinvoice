@@ -1037,6 +1037,20 @@ export function createApi(deps = {}) {
           return buildVendorRefundRegister(state, businessId, reportOptions);
         case "bank-reconciliation":
           return store.getBankReconciliationSummary({ ...reportOptions, businessId, bankAccountId: options.bankAccountId });
+        case "gst-sales-register":
+          return store.getGstSalesRegister({ ...reportOptions, businessId });
+        case "gst-purchase-register":
+          return store.getGstPurchaseRegister({ ...reportOptions, businessId });
+        case "gst-reconciliation":
+          return store.getGstComplianceReconciliation({ ...reportOptions, businessId });
+        case "tds-register":
+          return store.getTdsRegister({ ...reportOptions, businessId });
+        case "tds-reconciliation":
+          return store.getTdsReconciliation({ ...reportOptions, businessId });
+        case "compliance-readiness":
+          return store.getComplianceReadiness({ ...reportOptions, businessId });
+        case "compliance-obligations":
+          return { businessId, rows: store.listComplianceObligationsForUser(workspace.owner, businessId) };
         case "reconciliation":
           return buildFinancialReconciliation(state, businessId, reportOptions);
         case "bundle":
@@ -2007,6 +2021,52 @@ export function createApi(deps = {}) {
     getBankReconciliationSummary(user, options = {}) {
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
       return store.getBankReconciliationSummary({ ...options, businessId: workspace.businessId });
+    },
+    updateBusinessTaxProfile(user, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+        businessId: input.businessId || options.businessId || null,
+      }, "writeRecords");
+      return store.upsertBusinessTaxProfile({ ...input, businessId: workspace.businessId, actorUserId: user?.id || "" });
+    },
+    getBusinessTaxProfile(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      const profile = store.getBusinessTaxProfile(workspace.owner, workspace.businessId);
+      if (!profile) throw new Error("Business tax profile not found.");
+      return profile;
+    },
+    createTaxRegistration(user, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+        businessId: input.businessId || options.businessId || null,
+      }, "writeRecords");
+      return store.createTaxRegistration({ ...input, businessId: workspace.businessId, actorUserId: user?.id || "" });
+    },
+    listTaxRegistrations(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return store.listTaxRegistrationsForUser(workspace.owner, workspace.businessId);
+    },
+    createComplianceRuleSet(user, input = {}, options = {}) {
+      this.resolveRecordsWorkspaceAccess(user, options, "writeRecords");
+      return store.createComplianceRuleSet(input);
+    },
+    listComplianceRuleSets(user, options = {}) {
+      this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return store.listComplianceRuleSets(options);
+    },
+    createComplianceObligation(user, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+        businessId: input.businessId || options.businessId || null,
+      }, "writeRecords");
+      return store.createComplianceObligation({ ...input, businessId: workspace.businessId });
+    },
+    updateComplianceObligation(user, obligationId, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "writeRecords");
+      return store.updateComplianceObligation(obligationId, { ...input, businessId: workspace.businessId });
     },
     deletePurchaseOrder(id, user, options = {}) {
       const current = store.getPurchaseOrder(id);

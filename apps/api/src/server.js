@@ -3255,6 +3255,13 @@ export function createServer(options = {}) {
       ["/reports/customer-refunds", "customer-refunds"],
       ["/reports/vendor-refunds", "vendor-refunds"],
       ["/reports/bank-reconciliation", "bank-reconciliation"],
+      ["/reports/gst-sales-register", "gst-sales-register"],
+      ["/reports/gst-purchase-register", "gst-purchase-register"],
+      ["/reports/gst-reconciliation", "gst-reconciliation"],
+      ["/reports/tds-register", "tds-register"],
+      ["/reports/tds-reconciliation", "tds-reconciliation"],
+      ["/reports/compliance-readiness", "compliance-readiness"],
+      ["/reports/compliance-obligations", "compliance-obligations"],
       ["/reports/reconciliation", "reconciliation"],
       ["/reports/financial-bundle", "bundle"],
       ["/accounting/trial-balance", "trial-balance"],
@@ -3615,6 +3622,121 @@ export function createServer(options = {}) {
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
           businessId: body.businessId || null,
         }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/business/tax-profile" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.getBusinessTaxProfile(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/business/tax-profile" && req.method === "PUT") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 200, api.updateBusinessTaxProfile(user, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/tax/registrations" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listTaxRegistrations(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/tax/registrations" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.createTaxRegistration(user, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/compliance/rule-sets" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listComplianceRuleSets(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+          jurisdiction: url.searchParams.get("jurisdiction") || "",
+          taxType: url.searchParams.get("taxType") || "",
+          ruleKey: url.searchParams.get("ruleKey") || "",
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/compliance/rule-sets" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.createComplianceRuleSet(user, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/compliance/obligations" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.createComplianceObligation(user, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/compliance/obligations/") && req.method === "PATCH") {
+      try {
+        const body = await readBody(req);
+        const id = decodeURIComponent(url.pathname.split("/")[3] || "");
+        const obligation = api.updateComplianceObligation(user, id, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        });
+        if (!obligation) sendJson(res, 404, { error: "Compliance obligation not found" });
+        else sendJson(res, 200, obligation);
       } catch (error) {
         sendJson(res, knownRequestErrorStatus(error), { error: error.message });
       }

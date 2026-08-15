@@ -8,6 +8,8 @@ const DEFAULT_ACCOUNT_DEFINITIONS = [
   ["2211", "Input CGST Credit", "asset", "debit", "input_cgst"],
   ["2212", "Input SGST Credit", "asset", "debit", "input_sgst"],
   ["2213", "Input IGST Credit", "asset", "debit", "input_igst"],
+  ["2220", "TDS Payable", "liability", "credit", "tds_payable"],
+  ["1300", "TDS Receivable / Tax Credit", "asset", "debit", "tds_receivable"],
   ["4100", "Sales Revenue", "income", "credit", "sales_revenue"],
   ["4200", "Sales Returns / Adjustments", "income", "debit", "sales_returns"],
   ["5100", "Operating Expense", "expense", "debit", "operating_expense"],
@@ -302,7 +304,10 @@ export function postVendorBillPosted(state, bill = {}, business = {}, options = 
     if (toMinor(bill.cgstAmount) > 0) lines.push({ account: accounts.input_cgst, debit: bill.cgstAmount, description: "Input CGST" });
     if (toMinor(bill.sgstAmount) > 0) lines.push({ account: accounts.input_sgst, debit: bill.sgstAmount, description: "Input SGST" });
     if (toMinor(bill.igstAmount) > 0) lines.push({ account: accounts.input_igst, debit: bill.igstAmount, description: "Input IGST" });
-    lines.push({ account: accounts.accounts_payable, credit: bill.total, description: `Vendor bill ${bill.vendorBillNumber || bill.internalBillNumber || bill.id}` });
+    const tdsAmount = toNumber(bill.tdsSnapshot?.amount || bill.tdsAmount);
+    const netPayable = Math.max(0, toNumber(bill.total) - tdsAmount);
+    lines.push({ account: accounts.accounts_payable, credit: netPayable, description: `Vendor bill ${bill.vendorBillNumber || bill.internalBillNumber || bill.id}` });
+    if (toMinor(tdsAmount) > 0) lines.push({ account: accounts.tds_payable, credit: tdsAmount, description: "TDS payable withheld from vendor bill" });
     const journal = persistJournal(state, event, {
       ownerUserId: bill.ownerUserId,
       journalDate: bill.billDate || bill.createdAt?.slice(0, 10),
