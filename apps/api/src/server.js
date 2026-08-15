@@ -3263,6 +3263,11 @@ export function createServer(options = {}) {
       ["/reports/compliance-readiness", "compliance-readiness"],
       ["/reports/compliance-obligations", "compliance-obligations"],
       ["/reports/balance-sheet", "balance-sheet"],
+      ["/reports/year-end-readiness", "year-end-readiness"],
+      ["/reports/year-end-preview", "year-end-preview"],
+      ["/reports/year-end-report-bundle", "year-end-report-bundle"],
+      ["/reports/opening-roll-forward", "opening-roll-forward"],
+      ["/reports/comparative-financial-years", "comparative-financial-years"],
       ["/reports/reconciliation", "reconciliation"],
       ["/reports/financial-bundle", "bundle"],
       ["/accounting/trial-balance", "trial-balance"],
@@ -3280,6 +3285,9 @@ export function createServer(options = {}) {
           accountId: url.searchParams.get("accountId") || "",
           accountCode: url.searchParams.get("accountCode") || "",
           bankAccountId: url.searchParams.get("bankAccountId") || "",
+          financialYear: url.searchParams.get("financialYear") || "",
+          closeDate: url.searchParams.get("closeDate") || "",
+          includeClosingEntries: url.searchParams.get("includeClosingEntries") === "true",
           includeSettled: url.searchParams.get("includeSettled") === "true",
         }));
       } catch (error) {
@@ -3718,6 +3726,95 @@ export function createServer(options = {}) {
         const body = await readBody(req);
         const id = decodeURIComponent(url.pathname.split("/")[3] || "");
         sendJson(res, 200, api.updateOpeningBalanceSet(user, id, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/financial-years" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listFinancialYears(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/year-end-closes" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listYearEndCloses(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/year-end-close/readiness" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.getYearEndCloseReadiness(user, {
+          businessId: url.searchParams.get("businessId") || null,
+          financialYear: url.searchParams.get("financialYear") || "",
+          closeDate: url.searchParams.get("closeDate") || "",
+        }, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/year-end-close/preview" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.previewYearEndClose(user, {
+          businessId: url.searchParams.get("businessId") || null,
+          financialYear: url.searchParams.get("financialYear") || "",
+          closeDate: url.searchParams.get("closeDate") || "",
+        }, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/year-end-close" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.executeYearEndClose(user, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/accounting/year-end-closes/") && url.pathname.endsWith("/reopen") && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        const id = decodeURIComponent(url.pathname.split("/")[3] || "");
+        sendJson(res, 200, api.reopenYearEndClose(user, id, body, {
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
           businessId: body.businessId || null,

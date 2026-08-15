@@ -137,7 +137,14 @@ export function buildBalanceSheet(state = {}, businessId = "", options = {}) {
   });
   const business = (state.businesses || []).find((entry) => entry.id === businessId) || {};
   const fy = financialYearForAccountingDate(asOf, business.financialYearStartMonth || business.taxProfile?.taxYearStartMonth || 4);
-  const currentYearProfit = buildProfitLoss(state, businessId, { from: fy.startDate, to: asOf });
+  const activeYearClose = (state.yearEndCloses || []).find((close) => (
+    close.businessId === businessId
+    && close.financialYear === fy.label
+    && close.status === "closed"
+    && String(close.closeDate || "") <= asOf
+  ));
+  const includeClosingEntries = options.includeClosingEntries === true || Boolean(activeYearClose);
+  const currentYearProfit = buildProfitLoss(state, businessId, { from: fy.startDate, to: asOf, includeClosingEntries });
   const currentYearEarningsMinor = toMinor(currentYearProfit.profit);
   const totalEquityMinor = postedEquityMinor + currentYearEarningsMinor;
   const differenceMinor = totalAssetsMinor - (totalLiabilitiesMinor + totalEquityMinor);
@@ -209,7 +216,7 @@ export function buildBalanceSheet(state = {}, businessId = "", options = {}) {
       accounts: sections.equityAccounts,
       postedEquity: money(postedEquityMinor),
       currentYearEarnings: money(currentYearEarningsMinor),
-      retainedEarningsTreatment: "reporting_derived_until_explicit_year_end_close",
+      retainedEarningsTreatment: includeClosingEntries ? "post_close_ledger_presentation" : "reporting_derived_until_explicit_year_end_close",
       totalEquity: money(totalEquityMinor),
     },
     totals: {

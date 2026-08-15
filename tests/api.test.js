@@ -2531,6 +2531,191 @@ test("P1-9 period and Balance Sheet tenant isolation protect other businesses", 
   assert.equal(api.listAccountingPeriods(ownerB, { businessId: businessB }).length, 0);
 });
 
+test("P1-10 year-end close transfers profit to retained earnings without erasing historical P&L", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Year Close Profit", email: "year-close-profit@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  api.createOpeningBalanceSet(user, {
+    businessId,
+    cutoverDate: "2026-04-01",
+    lines: [{ accountCode: "1110", debit: 100000 }, { accountCode: "3300", credit: 100000 }],
+  }, { businessId });
+  api.createInvoice({ ownerUserId: user.id, businessId, status: "created", invoiceDate: "2026-05-01", items: [{ description: "FY sale", quantity: 1, rate: 10000, gstRate: 0 }] });
+  api.createVendorBill({ ownerUserId: user.id, businessId, vendorBillNumber: "P110/VB/001", status: "posted", billDate: "2026-06-01", items: [{ description: "FY expense", quantity: 1, rate: 4000, gstRate: 0 }] }, { user, businessId });
+
+  const before = api.getFinancialReport(user, "balance-sheet", { businessId, asOf: "2027-03-31" });
+  assert.equal(before.equity.postedEquity, 100000);
+  assert.equal(before.equity.currentYearEarnings, 6000);
+  assert.equal(before.equity.totalEquity, 106000);
+  const readiness = api.getYearEndCloseReadiness(user, { businessId, financialYear: "2026-27", closeDate: "2027-03-31" }, { businessId });
+  assert.equal(readiness.blockers.length, 0);
+  assert.equal(readiness.preview.totals.netProfitLoss, 6000);
+
+  const close = api.executeYearEndClose(user, {
+    businessId,
+    financialYear: "2026-27",
+    closeDate: "2027-03-31",
+    reason: "FY 2026-27 accountant close approved",
+    idempotencyKey: "p110-profit-close",
+  }, { businessId });
+  assert.equal(close.status, "closed");
+  assert.equal(close.version, 1);
+  assert.equal(close.calculationSnapshot.retainedEarningsAdjustment, 6000);
+  assert.equal(close.journal.sourceType, "year_end_close");
+  assert.deepEqual(close.journal.lines.map((line) => [line.accountCode, line.debit, line.credit]), [
+    ["4100", 10000, 0],
+    ["5100", 0, 4000],
+    ["3200", 0, 6000],
+  ]);
+
+  assert.equal(api.executeYearEndClose(user, { businessId, financialYear: "2026-27", closeDate: "2027-03-31", reason: "Replay", idempotencyKey: "p110-profit-close" }, { businessId }).id, close.id);
+  assert.throws(
+    () => api.executeYearEndClose(user, { businessId, financialYear: "2026-27", closeDate: "2027-03-31", reason: "Duplicate" }, { businessId }),
+    /already|blocking/i,
+  );
+  const historicalPl = api.getFinancialReport(user, "profit-loss", { businessId, from: "2026-04-01", to: "2027-03-31" });
+  assert.equal(historicalPl.profit, 6000);
+  assert.equal(historicalPl.closingEntryTreatment, "excluded_from_operational_profit_loss");
+  const postClosePl = api.getFinancialReport(user, "profit-loss", { businessId, from: "2026-04-01", to: "2027-03-31", includeClosingEntries: true });
+  assert.equal(postClosePl.profit, 0);
+  const after = api.getFinancialReport(user, "balance-sheet", { businessId, asOf: "2027-03-31" });
+  assert.equal(after.equity.postedEquity, 106000);
+  assert.equal(after.equity.currentYearEarnings, 0);
+  assert.equal(after.equity.totalEquity, 106000);
+  assert.equal(after.totals.difference, 0);
+  const retainedLedger = api.getFinancialReport(user, "general-ledger", { businessId, accountCode: "3200", from: "2026-04-01", to: "2027-03-31" });
+  assert.ok(retainedLedger.rows.some((row) => row.sourceType === "year_end_close" && row.sourceId === close.id));
+});
+
+test("P1-10 loss close permits negative retained earnings and next-year roll-forward stays continuous", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Year Close Loss", email: "year-close-loss@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  api.createOpeningBalanceSet(user, {
+    businessId,
+    cutoverDate: "2026-04-01",
+    lines: [{ accountCode: "1110", debit: 100000 }, { accountCode: "3300", credit: 100000 }],
+  }, { businessId });
+  api.createInvoice({ ownerUserId: user.id, businessId, status: "created", invoiceDate: "2026-04-15", items: [{ description: "Small sale", quantity: 1, rate: 1000, gstRate: 0 }] });
+  api.createVendorBill({ ownerUserId: user.id, businessId, vendorBillNumber: "P110/VB/LOSS", status: "posted", billDate: "2026-05-15", items: [{ description: "Large expense", quantity: 1, rate: 5000, gstRate: 0 }] }, { user, businessId });
+  const close = api.executeYearEndClose(user, { businessId, financialYear: "2026-27", closeDate: "2027-03-31", reason: "Loss year approved" }, { businessId });
+  assert.equal(close.calculationSnapshot.netProfitLoss, -4000);
+  assert.equal(close.calculationSnapshot.retainedEarningsAdjustment, -4000);
+  assert.deepEqual(close.journal.lines.map((line) => [line.accountCode, line.debit, line.credit]), [
+    ["4100", 1000, 0],
+    ["5100", 0, 5000],
+    ["3200", 4000, 0],
+  ]);
+  const balanceSheet = api.getFinancialReport(user, "balance-sheet", { businessId, asOf: "2027-03-31" });
+  assert.equal(balanceSheet.equity.postedEquity, 96000);
+  assert.equal(balanceSheet.equity.currentYearEarnings, 0);
+  assert.equal(balanceSheet.equity.totalEquity, 96000);
+  const rollForward = api.getFinancialReport(user, "opening-roll-forward", { businessId, financialYear: "2026-27" });
+  assert.equal(rollForward.method, "continuous_ledger_roll_forward_no_new_opening_journal");
+  assert.equal(rollForward.permanentAccountCarryForward.closingEquity, 96000);
+  assert.equal(rollForward.permanentAccountCarryForward.openingEquity, 96000);
+  assert.equal(rollForward.continuity.equityMatch, true);
+  assert.equal(api.getFinancialReport(user, "profit-loss", { businessId, from: "2027-04-01", to: "2028-03-31" }).profit, 0);
+});
+
+test("P1-10 reopen creates reversal journal and reclose uses corrected earnings exactly once", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Year Reopen", email: "year-reopen@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  api.createOpeningBalanceSet(user, {
+    businessId,
+    cutoverDate: "2026-04-01",
+    lines: [{ accountCode: "1110", debit: 100000 }, { accountCode: "3300", credit: 100000 }],
+  }, { businessId });
+  api.createInvoice({ ownerUserId: user.id, businessId, status: "created", invoiceDate: "2026-05-01", items: [{ description: "Original sale", quantity: 1, rate: 1000, gstRate: 0 }] });
+  api.createVendorBill({ ownerUserId: user.id, businessId, vendorBillNumber: "P110/VB/REOPEN", status: "posted", billDate: "2026-06-01", items: [{ description: "Original expense", quantity: 1, rate: 5000, gstRate: 0 }] }, { user, businessId });
+  const firstClose = api.executeYearEndClose(user, { businessId, financialYear: "2026-27", closeDate: "2027-03-31", reason: "Initial close" }, { businessId });
+  const reopened = api.reopenYearEndClose(user, firstClose.id, { businessId, reason: "Late March invoice discovered" }, { businessId });
+  assert.equal(reopened.status, "reopened");
+  assert.equal(reopened.reversalJournal.sourceType, "year_end_close_reversal");
+  assert.equal(api.getFinancialReport(user, "balance-sheet", { businessId, asOf: "2027-03-31" }).equity.currentYearEarnings, -4000);
+
+  api.createInvoice({ ownerUserId: user.id, businessId, status: "created", invoiceDate: "2027-03-15", items: [{ description: "Late sale", quantity: 1, rate: 6000, gstRate: 0 }] });
+  const secondClose = api.executeYearEndClose(user, { businessId, financialYear: "2026-27", closeDate: "2027-03-31", reason: "Reclose after approved correction" }, { businessId });
+  assert.equal(secondClose.version, 2);
+  assert.equal(secondClose.lineageFromCloseId, firstClose.id);
+  assert.equal(secondClose.calculationSnapshot.netProfitLoss, 2000);
+  assert.equal(secondClose.calculationSnapshot.retainedEarningsAdjustment, 2000);
+  const closes = api.listYearEndCloses(user, { businessId });
+  assert.equal(closes.length, 2);
+  assert.deepEqual(closes.map((close) => close.status), ["reopened", "closed"]);
+  const retainedLedger = api.getFinancialReport(user, "general-ledger", { businessId, accountCode: "3200", from: "2026-04-01", to: "2027-03-31" });
+  assert.deepEqual(retainedLedger.rows.map((row) => row.sourceType), ["year_end_close", "year_end_close_reversal", "year_end_close"]);
+  const balanceSheet = api.getFinancialReport(user, "balance-sheet", { businessId, asOf: "2027-03-31" });
+  assert.equal(balanceSheet.equity.postedEquity, 102000);
+  assert.equal(balanceSheet.equity.currentYearEarnings, 0);
+});
+
+test("P1-10 year-end readiness surfaces opening-equity and bank warnings without manufacturing journals", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Year Readiness", email: "year-readiness@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  api.createOpeningBalanceSet(user, {
+    businessId,
+    cutoverDate: "2026-04-01",
+    lines: [{ accountCode: "1110", debit: 100000 }, { accountCode: "3300", credit: 100000 }],
+  }, { businessId });
+  const bank = api.createBankAccount(user, { businessId, accountType: "bank", displayName: "FY Bank" }, { businessId });
+  api.importBankStatement(user, { businessId, bankAccountId: bank.id, lines: [{ transactionDate: "2027-03-31", credit: 100, reference: "UNMATCHED-FY" }] }, { businessId });
+  const beforeJournals = api.listAccountingEventLedger(user, { businessId }).journals.length;
+  const readiness = api.getYearEndCloseReadiness(user, { businessId, financialYear: "2026-27", closeDate: "2027-03-31" }, { businessId });
+  assert.equal(readiness.status, "ready_with_warnings");
+  assert.equal(readiness.blockers.length, 0);
+  assert.ok(readiness.warnings.some((warning) => warning.code === "opening_balance_equity_unresolved"));
+  assert.ok(readiness.warnings.some((warning) => warning.code === "bank_reconciliation_exception"));
+  assert.equal(api.listAccountingEventLedger(user, { businessId }).journals.length, beforeJournals);
+});
+
+test("P1-10 year-end report bundle and comparative FY reports exclude closing entries from operational P&L", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Year Reports", email: "year-reports@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  api.createOpeningBalanceSet(user, {
+    businessId,
+    cutoverDate: "2026-04-01",
+    lines: [{ accountCode: "1110", debit: 50000 }, { accountCode: "3300", credit: 50000 }],
+  }, { businessId });
+  api.createInvoice({ ownerUserId: user.id, businessId, status: "created", invoiceDate: "2026-07-01", items: [{ description: "FY revenue", quantity: 1, rate: 12000, gstRate: 0 }] });
+  api.executeYearEndClose(user, { businessId, financialYear: "2026-27", closeDate: "2027-03-31", reason: "Report close" }, { businessId });
+  api.createInvoice({ ownerUserId: user.id, businessId, status: "created", invoiceDate: "2027-04-01", items: [{ description: "Next FY revenue", quantity: 1, rate: 3000, gstRate: 0 }] });
+
+  const bundle = api.getFinancialReport(user, "year-end-report-bundle", { businessId, financialYear: "2026-27" });
+  assert.equal(bundle.profitLoss.profit, 12000);
+  assert.equal(bundle.balanceSheet.equity.currentYearEarnings, 0);
+  assert.equal(bundle.rollForward.permanentAccountCarryForward.openingEquity, 62000);
+  assert.equal(bundle.closingJournalSummary.length, 1);
+  const comparative = api.getFinancialReport(user, "comparative-financial-years", { businessId, financialYear: "2027-28" });
+  assert.equal(comparative.previous.profit, 12000);
+  assert.equal(comparative.previous.equity, 62000);
+  assert.equal(comparative.current.profit, 3000);
+  assert.equal(comparative.current.equity, 65000);
+});
+
+test("P1-10 year-end close tenant isolation protects financial-year governance", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const ownerA = api.createUser({ name: "Year Tenant A", email: "year-tenant-a@example.com" });
+  const ownerB = api.createUser({ name: "Year Tenant B", email: "year-tenant-b@example.com" });
+  const businessA = api.listBusinessWorkspaces(ownerA)[0].businessId;
+  const businessB = api.listBusinessWorkspaces(ownerB)[0].businessId;
+  api.createOpeningBalanceSet(ownerA, {
+    businessId: businessA,
+    cutoverDate: "2026-04-01",
+    lines: [{ accountCode: "1110", debit: 100 }, { accountCode: "3300", credit: 100 }],
+  }, { businessId: businessA });
+  const close = api.executeYearEndClose(ownerA, { businessId: businessA, financialYear: "2026-27", closeDate: "2027-03-31", reason: "Tenant close" }, { businessId: businessA });
+  assert.throws(() => api.getYearEndCloseReadiness(ownerB, { businessId: businessA, financialYear: "2026-27" }, { businessId: businessA }), /access|business/i);
+  assert.throws(() => api.previewYearEndClose(ownerB, { businessId: businessA, financialYear: "2026-27" }, { businessId: businessA }), /access|business/i);
+  assert.throws(() => api.executeYearEndClose(ownerB, { businessId: businessA, financialYear: "2026-27", reason: "No access" }, { businessId: businessA }), /access|business/i);
+  assert.throws(() => api.reopenYearEndClose(ownerB, close.id, { businessId: businessA, reason: "No access" }, { businessId: businessA }), /access|business/i);
+  assert.equal(api.listYearEndCloses(ownerA, { businessId: businessA }).length, 1);
+  assert.equal(api.listYearEndCloses(ownerB, { businessId: businessB }).length, 0);
+});
+
 test("manual payments update invoice payment status", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const user = api.createUser({ name: "Pay User", email: "pay@example.com" });

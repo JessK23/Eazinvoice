@@ -62,12 +62,21 @@ import {
 } from "./india-compliance-service.js";
 import {
   ensureAccountingPeriod,
+  financialYearForAccountingDate,
   resolveAccountingPeriod,
   transitionAccountingPeriod,
   validateAccountingDate,
   validatePostingPeriod,
 } from "./accounting-period-service.js";
 import { buildBalanceSheet } from "./balance-sheet-service.js";
+import {
+  buildComparativeFinancialYears,
+  buildOpeningRollForwardSummary,
+  buildYearEndClosePreview,
+  buildYearEndReadiness,
+  buildYearEndReportBundle,
+  normalizeFinancialYear,
+} from "./year-end-close-service.js";
 
 function clone(value) {
   if (value === undefined) return undefined;
@@ -271,6 +280,9 @@ export function createStore(seed = {}, options = {}) {
     accountingPeriodHistory: [],
     openingBalanceSets: [],
     openingBalanceDetails: [],
+    financialYears: [],
+    yearEndCloses: [],
+    yearEndCloseHistory: [],
     invoices: [],
     purchaseOrders: [],
     payments: [],
@@ -315,6 +327,9 @@ export function createStore(seed = {}, options = {}) {
       accountingPeriodHistory: 0,
       openingBalanceSet: 0,
       openingBalanceDetail: 0,
+      financialYear: 0,
+      yearEndClose: 0,
+      yearEndCloseHistory: 0,
       invoice: 0,
       purchaseOrder: 0,
       payment: 0,
@@ -363,6 +378,9 @@ export function createStore(seed = {}, options = {}) {
     accountingPeriodHistory: 0,
     openingBalanceSet: 0,
     openingBalanceDetail: 0,
+    financialYear: 0,
+    yearEndClose: 0,
+    yearEndCloseHistory: 0,
     invoice: 0,
     purchaseOrder: 0,
     payment: 0,
@@ -412,6 +430,9 @@ export function createStore(seed = {}, options = {}) {
       accountingPeriodHistory: state.accountingPeriodHistory,
       openingBalanceSets: state.openingBalanceSets,
       openingBalanceDetails: state.openingBalanceDetails,
+      financialYears: state.financialYears,
+      yearEndCloses: state.yearEndCloses,
+      yearEndCloseHistory: state.yearEndCloseHistory,
       invoices: state.invoices,
       purchaseOrders: state.purchaseOrders,
       payments: state.payments,
@@ -648,6 +669,9 @@ export function createStore(seed = {}, options = {}) {
       state.accountingPeriodHistory,
       state.openingBalanceSets,
       state.openingBalanceDetails,
+      state.financialYears,
+      state.yearEndCloses,
+      state.yearEndCloseHistory,
       state.invoices,
       state.purchaseOrders,
       state.payments,
@@ -3848,6 +3872,296 @@ export function createStore(seed = {}, options = {}) {
     return buildBalanceSheet(state, business.id, input);
   }
 
+  function financialYearIdFor(businessId, label) {
+    return `fy_${businessId}_${String(label || "").replace(/[^A-Za-z0-9]/g, "_")}`;
+  }
+
+  function ensureFinancialYearRecord(business, input = {}) {
+    const fy = normalizeFinancialYear(input, business);
+    state.financialYears = Array.isArray(state.financialYears) ? state.financialYears : [];
+    let record = state.financialYears.find((entry) => entry.businessId === business.id && entry.financialYear === fy.label);
+    if (!record) {
+      record = {
+        id: financialYearIdFor(business.id, fy.label),
+        businessId: business.id,
+        ownerUserId: business.ownerUserId,
+        financialYear: fy.label,
+        startDate: fy.startDate,
+        endDate: fy.endDate,
+        status: "open",
+        closeReadinessStatus: "",
+        closedAt: "",
+        closedByUserId: "",
+        closeReason: "",
+        reopenedAt: "",
+        reopenedByUserId: "",
+        reopenReason: "",
+        yearEndEventId: "",
+        closingJournalId: "",
+        nextFinancialYearId: "",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      state.financialYears.push(record);
+    }
+    return record;
+  }
+
+  function ensureNextFinancialYearAndPeriods(business, financialYear) {
+    const nextFy = financialYearForAccountingDate(new Date(`${financialYear.endDate}T00:00:00.000Z`).toISOString().slice(0, 10), business.financialYearStartMonth || business.taxProfile?.taxYearStartMonth || 4);
+    const nextStart = new Date(`${financialYear.endDate}T00:00:00.000Z`);
+    nextStart.setUTCDate(nextStart.getUTCDate() + 1);
+    const next = ensureFinancialYearRecord(business, { closeDate: nextStart.toISOString().slice(0, 10) });
+    Array.from({ length: 12 }, (_, index) => {
+      const date = new Date(`${next.startDate}T00:00:00.000Z`);
+      date.setUTCMonth(date.getUTCMonth() + index);
+      ensureAccountingPeriod(state, business, date.toISOString().slice(0, 10));
+    });
+    return next;
+  }
+
+  function postYearEndJournal(business, input = {}) {
+    const lines = input.lines.map((line) => {
+      const account = state.ledgerAccounts.find((entry) => entry.id === line.accountId && entry.businessId === business.id);
+      if (!account) throw new Error("Year-end closing account does not belong to this business.");
+      return {
+        account,
+        debit: toNumber(line.debit),
+        credit: toNumber(line.credit),
+        description: line.description,
+      };
+    });
+    if (!lines.length) return null;
+    const totals = validateBalancedJournal(lines);
+    const journal = {
+      id: nextId("ycl", ++state.counters.accountingJournal),
+      businessId: business.id,
+      ownerUserId: business.ownerUserId,
+      journalNumber: input.journalNumber || `YEC-${input.financialYear}-${String(state.counters.accountingJournal).padStart(4, "0")}`,
+      journalDate: input.journalDate,
+      narration: input.narration,
+      status: "posted",
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      financialEventId: "",
+      postingRule: input.postingRule,
+      postingRuleVersion: input.postingRuleVersion || "1",
+      automatic: true,
+      immutable: true,
+      currency: input.currency || "INR",
+      totalDebit: totals.totalDebit,
+      totalCredit: totals.totalCredit,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.accountingJournals.push(journal);
+    lines.forEach((line, index) => {
+      state.accountingJournalLines.push({
+        id: `${journal.id}:line:${index + 1}`,
+        journalId: journal.id,
+        businessId: business.id,
+        ownerUserId: business.ownerUserId,
+        accountId: line.account.id,
+        accountCode: line.account.accountCode,
+        accountName: line.account.accountName,
+        lineIndex: index + 1,
+        description: line.description,
+        debit: toNumber(line.debit),
+        credit: toNumber(line.credit),
+        currency: journal.currency,
+        createdAt: journal.createdAt,
+      });
+    });
+    return journal;
+  }
+
+  function getYearEndCloseReadiness(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for year-end close readiness.");
+    ensureDefaultAccountingAccounts(state, business, business.ownerUserId);
+    return buildYearEndReadiness(state, business, input);
+  }
+
+  function previewYearEndClose(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for year-end close preview.");
+    ensureDefaultAccountingAccounts(state, business, business.ownerUserId);
+    return buildYearEndClosePreview(state, business, input);
+  }
+
+  function executeYearEndClose(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for year-end close.");
+    ensureDefaultAccountingAccounts(state, business, business.ownerUserId);
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    if (idempotencyKey) {
+      const existingByKey = state.yearEndCloses.find((close) => close.businessId === business.id && close.idempotencyKey === idempotencyKey);
+      if (existingByKey) return clone({ ...existingByKey, journal: existingByKey.closingJournalId ? publicJournalWithLines(state, state.accountingJournals.find((journal) => journal.id === existingByKey.closingJournalId)) : null });
+    }
+    const readiness = buildYearEndReadiness(state, business, input);
+    if (readiness.blockers.length) throw new Error(`Year-end close has blocking readiness issues: ${readiness.blockers.map((blocker) => blocker.code).join(", ")}`);
+    const closeReason = String(input.reason || input.closeReason || "").trim();
+    if (!closeReason) throw new Error("A year-end close reason is required.");
+    const financialYear = ensureFinancialYearRecord(business, readiness);
+    const activeClose = state.yearEndCloses.find((close) => close.businessId === business.id && close.financialYear === readiness.financialYear && close.status === "closed");
+    if (activeClose) throw new Error("Year-end close already exists for this financial year.");
+    const version = state.yearEndCloses.filter((close) => close.businessId === business.id && close.financialYear === readiness.financialYear).length + 1;
+    const close = {
+      id: nextId("yec", ++state.counters.yearEndClose),
+      businessId: business.id,
+      ownerUserId: business.ownerUserId,
+      financialYearId: financialYear.id,
+      financialYear: readiness.financialYear,
+      startDate: readiness.startDate,
+      endDate: readiness.endDate,
+      closeDate: readiness.closeDate,
+      closeMethod: readiness.preview.method,
+      retainedEarningsAccountId: readiness.preview.retainedEarningsAccountId,
+      closingJournalId: "",
+      nextFinancialYearId: "",
+      idempotencyKey,
+      version,
+      status: "closed",
+      closedByUserId: input.actorUserId || input.createdByUserId || "",
+      closeReason,
+      readinessStatus: readiness.status,
+      readinessSnapshot: clone(readiness),
+      calculationSnapshot: clone(readiness.preview.totals),
+      lineageFromCloseId: state.yearEndCloses.findLast?.((entry) => entry.businessId === business.id && entry.financialYear === readiness.financialYear)?.id || "",
+      reopenedAt: "",
+      reopenedByUserId: "",
+      reopenReason: "",
+      reversalJournalId: "",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const journal = postYearEndJournal(business, {
+      financialYear: close.financialYear,
+      journalDate: close.closeDate,
+      sourceType: "year_end_close",
+      sourceId: close.id,
+      postingRule: "year_end_close_retained_earnings",
+      narration: `Year-end close for FY ${close.financialYear}`,
+      currency: input.currency || "INR",
+      lines: readiness.preview.lines,
+    });
+    close.closingJournalId = journal?.id || "";
+    const next = ensureNextFinancialYearAndPeriods(business, readiness);
+    close.nextFinancialYearId = next.id;
+    financialYear.status = "closed";
+    financialYear.closeReadinessStatus = readiness.status;
+    financialYear.closedAt = close.createdAt;
+    financialYear.closedByUserId = close.closedByUserId;
+    financialYear.closeReason = close.closeReason;
+    financialYear.yearEndEventId = close.id;
+    financialYear.closingJournalId = close.closingJournalId;
+    financialYear.nextFinancialYearId = next.id;
+    financialYear.updatedAt = new Date().toISOString();
+    state.yearEndCloses.push(close);
+    state.yearEndCloseHistory.push({
+      id: nextId("ych", ++state.counters.yearEndCloseHistory),
+      businessId: business.id,
+      yearEndCloseId: close.id,
+      financialYearId: financialYear.id,
+      action: "close",
+      actorUserId: close.closedByUserId,
+      reason: close.closeReason,
+      journalId: close.closingJournalId,
+      version,
+      createdAt: close.createdAt,
+    });
+    persist();
+    return clone({ ...close, journal: journal ? publicJournalWithLines(state, journal) : null, nextFinancialYear: next, rollForward: buildOpeningRollForwardSummary(state, business, { financialYear: close.financialYear }) });
+  }
+
+  function reopenYearEndClose(id, input = {}) {
+    const close = state.yearEndCloses.find((entry) => entry.id === id);
+    if (!close) throw new Error("Year-end close not found.");
+    const business = findBusinessByIdOrLegacyOwner(close.businessId);
+    if (!business) throw new Error("Business is required for year-end reopen.");
+    if (input.businessId && close.businessId !== input.businessId) throw new Error("Year-end close not found in this business.");
+    if (close.status !== "closed") throw new Error("Only a closed financial year can be reopened.");
+    const reason = String(input.reason || input.reopenReason || "").trim();
+    if (!reason) throw new Error("A year-end reopen reason is required.");
+    const originalJournal = state.accountingJournals.find((journal) => journal.id === close.closingJournalId);
+    const originalLines = state.accountingJournalLines.filter((line) => line.journalId === close.closingJournalId);
+    const reversalJournal = originalJournal ? postYearEndJournal(business, {
+      financialYear: close.financialYear,
+      journalDate: input.reopenDate || close.closeDate,
+      sourceType: "year_end_close_reversal",
+      sourceId: close.id,
+      postingRule: "year_end_close_reversal",
+      narration: `Reopen reversal for FY ${close.financialYear}`,
+      currency: originalJournal.currency || "INR",
+      lines: originalLines.map((line) => ({
+        accountId: line.accountId,
+        description: `Reverse ${line.description || originalJournal.narration}`,
+        debit: line.credit,
+        credit: line.debit,
+      })),
+    }) : null;
+    close.status = "reopened";
+    close.reopenedAt = new Date().toISOString();
+    close.reopenedByUserId = input.actorUserId || input.createdByUserId || "";
+    close.reopenReason = reason;
+    close.reversalJournalId = reversalJournal?.id || "";
+    close.updatedAt = new Date().toISOString();
+    const financialYear = state.financialYears.find((entry) => entry.id === close.financialYearId);
+    if (financialYear) {
+      financialYear.status = "open";
+      financialYear.reopenedAt = close.reopenedAt;
+      financialYear.reopenedByUserId = close.reopenedByUserId;
+      financialYear.reopenReason = reason;
+      financialYear.updatedAt = close.updatedAt;
+    }
+    state.yearEndCloseHistory.push({
+      id: nextId("ych", ++state.counters.yearEndCloseHistory),
+      businessId: business.id,
+      yearEndCloseId: close.id,
+      financialYearId: close.financialYearId,
+      action: "reopen",
+      actorUserId: close.reopenedByUserId,
+      reason,
+      journalId: close.reversalJournalId,
+      version: close.version,
+      createdAt: close.reopenedAt,
+    });
+    persist();
+    return clone({ ...close, reversalJournal: reversalJournal ? publicJournalWithLines(state, reversalJournal) : null });
+  }
+
+  function listFinancialYearsForUser(user, businessId = "") {
+    return clone(state.financialYears.filter((year) => (
+      (!businessId || year.businessId === businessId)
+      && (!user || user.role === "admin" || year.ownerUserId === user.id)
+    )));
+  }
+
+  function listYearEndClosesForUser(user, businessId = "") {
+    return clone(state.yearEndCloses.filter((close) => (
+      (!businessId || close.businessId === businessId)
+      && (!user || user.role === "admin" || close.ownerUserId === user.id)
+    )));
+  }
+
+  function getOpeningRollForwardSummary(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for opening roll-forward.");
+    return buildOpeningRollForwardSummary(state, business, input);
+  }
+
+  function getYearEndReportBundle(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for year-end report bundle.");
+    return buildYearEndReportBundle(state, business, input);
+  }
+
+  function getComparativeFinancialYears(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for comparative financial years.");
+    return buildComparativeFinancialYears(state, business, input);
+  }
+
   function publicBankAccount(account = {}) {
     return clone({
       ...account,
@@ -4233,6 +4547,9 @@ export function createStore(seed = {}, options = {}) {
       accountingPeriodHistory: state.accountingPeriodHistory.length,
       openingBalanceSets: state.openingBalanceSets.length,
       openingBalanceDetails: state.openingBalanceDetails.length,
+      financialYears: state.financialYears.length,
+      yearEndCloses: state.yearEndCloses.length,
+      yearEndCloseHistory: state.yearEndCloseHistory.length,
       invoices: state.invoices.length,
       purchaseOrders: state.purchaseOrders.length,
       payments: state.payments.length,
@@ -4967,6 +5284,15 @@ export function createStore(seed = {}, options = {}) {
     updateOpeningBalanceSet,
     listOpeningBalanceSetsForUser,
     getBalanceSheet,
+    getYearEndCloseReadiness,
+    previewYearEndClose,
+    executeYearEndClose,
+    reopenYearEndClose,
+    listFinancialYearsForUser,
+    listYearEndClosesForUser,
+    getOpeningRollForwardSummary,
+    getYearEndReportBundle,
+    getComparativeFinancialYears,
     createBankAccount,
     importBankStatementLines,
     suggestBankStatementMatches,

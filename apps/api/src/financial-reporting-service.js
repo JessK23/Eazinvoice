@@ -322,8 +322,13 @@ export function buildGeneralLedger(state, businessId, options = {}) {
 export function buildProfitLoss(state, businessId, options = {}) {
   const period = normalizePeriod(options);
   const scoped = scopedState(state, businessId);
-  const revenueLines = scoped.lines.filter((line) => line.account?.accountType === "income" && inPeriod(journalDate(line.journal), period));
-  const expenseLines = scoped.lines.filter((line) => line.account?.accountType === "expense" && inPeriod(journalDate(line.journal), period));
+  const includeClosingEntries = options.includeClosingEntries === true;
+  const isReportLine = (line) => (
+    inPeriod(journalDate(line.journal), period)
+    && (includeClosingEntries || !["year_end_close", "year_end_close_reversal"].includes(String(line.journal?.sourceType || "")))
+  );
+  const revenueLines = scoped.lines.filter((line) => line.account?.accountType === "income" && isReportLine(line));
+  const expenseLines = scoped.lines.filter((line) => line.account?.accountType === "expense" && isReportLine(line));
   const revenueMinor = revenueLines.reduce((sum, line) => sum + toMinor(line.credit) - toMinor(line.debit), 0);
   const expenseMinor = expenseLines.reduce((sum, line) => sum + toMinor(line.debit) - toMinor(line.credit), 0);
   return {
@@ -335,6 +340,7 @@ export function buildProfitLoss(state, businessId, options = {}) {
       { section: "revenue", amount: money(revenueMinor), sourceLineCount: revenueLines.length },
       { section: "expenses", amount: money(expenseMinor), sourceLineCount: expenseLines.length },
     ],
+    closingEntryTreatment: includeClosingEntries ? "included_for_post_close_equity_presentation" : "excluded_from_operational_profit_loss",
   };
 }
 

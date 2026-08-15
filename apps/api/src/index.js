@@ -999,6 +999,9 @@ export function createApi(deps = {}) {
         accountCode: options.accountCode,
         includeSettled: options.includeSettled,
         bankAccountId: options.bankAccountId,
+        financialYear: options.financialYear,
+        closeDate: options.closeDate,
+        includeClosingEntries: options.includeClosingEntries,
       };
       switch (reportType) {
         case "profit-loss":
@@ -1053,6 +1056,16 @@ export function createApi(deps = {}) {
           return { businessId, rows: store.listComplianceObligationsForUser(workspace.owner, businessId) };
         case "balance-sheet":
           return store.getBalanceSheet({ ...reportOptions, businessId });
+        case "year-end-readiness":
+          return store.getYearEndCloseReadiness({ ...reportOptions, businessId });
+        case "year-end-preview":
+          return store.previewYearEndClose({ ...reportOptions, businessId });
+        case "year-end-report-bundle":
+          return store.getYearEndReportBundle({ ...reportOptions, businessId });
+        case "opening-roll-forward":
+          return store.getOpeningRollForwardSummary({ ...reportOptions, businessId });
+        case "comparative-financial-years":
+          return store.getComparativeFinancialYears({ ...reportOptions, businessId });
         case "reconciliation":
           return buildFinancialReconciliation(state, businessId, reportOptions);
         case "bundle":
@@ -2115,6 +2128,44 @@ export function createApi(deps = {}) {
       const visible = store.listOpeningBalanceSetsForUser(workspace.owner, workspace.businessId).find((set) => set.id === id);
       if (!visible) throw new Error("Opening balance set not found in this business.");
       return store.updateOpeningBalanceSet(id, input);
+    },
+    getYearEndCloseReadiness(user, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+        businessId: input.businessId || options.businessId || null,
+      }, "read");
+      return store.getYearEndCloseReadiness({ ...input, businessId: workspace.businessId });
+    },
+    previewYearEndClose(user, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+        businessId: input.businessId || options.businessId || null,
+      }, "read");
+      return store.previewYearEndClose({ ...input, businessId: workspace.businessId });
+    },
+    executeYearEndClose(user, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+        businessId: input.businessId || options.businessId || null,
+      }, "writeRecords");
+      return store.executeYearEndClose({ ...input, businessId: workspace.businessId, actorUserId: user?.id || "" });
+    },
+    reopenYearEndClose(user, closeId, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "writeRecords");
+      const visible = store.listYearEndClosesForUser(workspace.owner, workspace.businessId).find((close) => close.id === closeId);
+      if (!visible) throw new Error("Year-end close not found in this business.");
+      return store.reopenYearEndClose(closeId, { ...input, businessId: workspace.businessId, actorUserId: user?.id || "" });
+    },
+    listFinancialYears(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return store.listFinancialYearsForUser(workspace.owner, workspace.businessId);
+    },
+    listYearEndCloses(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return store.listYearEndClosesForUser(workspace.owner, workspace.businessId);
     },
     deletePurchaseOrder(id, user, options = {}) {
       const current = store.getPurchaseOrder(id);
