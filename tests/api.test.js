@@ -1817,6 +1817,228 @@ test("P1-6 integrated settlement scenario reconciles sales, purchases, credits, 
   assert.equal(bundle.reconciliation.checks.every((check) => check.status === "reconciled"), true);
 });
 
+test("P1-7 bank accounts are business-scoped and validate ledger mapping", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const ownerA = api.createUser({ name: "Bank A", email: "bank-a@example.com" });
+  const ownerB = api.createUser({ name: "Bank B", email: "bank-b@example.com" });
+  const businessA = api.listBusinessWorkspaces(ownerA)[0].businessId;
+  const businessB = api.listBusinessWorkspaces(ownerB)[0].businessId;
+  const ledgerB = api.listAccountingEventLedger(ownerB, { businessId: businessB }).accounts.find((account) => account.accountCode === "1110");
+  const account = api.createBankAccount(ownerA, {
+    businessId: businessA,
+    accountType: "bank",
+    displayName: "HDFC Current Account",
+    institutionName: "HDFC Bank",
+    accountReference: "501234567890",
+  }, { businessId: businessA });
+
+  assert.equal(account.businessId, businessA);
+  assert.equal(account.accountType, "bank");
+  assert.equal(account.accountReference, undefined);
+  assert.equal(account.maskedAccountReference, "****7890");
+  assert.equal(api.listBankAccounts(ownerA, { businessId: businessA }).length, 1);
+  assert.throws(
+    () => api.createBankAccount(ownerA, { businessId: businessA, ledgerAccountId: ledgerB.id, displayName: "Wrong Ledger" }, { businessId: businessA }),
+    /Ledger account does not belong/i,
+  );
+  assert.throws(() => api.listBankAccounts(ownerA, { businessId: businessB }), /access|business/i);
+});
+
+test("P1-7 statement import fingerprints duplicates and rejects malformed lines without journals", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Statement Import", email: "statement-import@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const clearing = api.createBankAccount(user, { businessId, accountType: "clearing", displayName: "Razorpay Clearing" }, { businessId });
+  const beforeJournals = api.listAccountingEventLedger(user, { businessId }).journals.length;
+  const imported = api.importBankStatement(user, {
+    businessId,
+    bankAccountId: clearing.id,
+    sourceType: "csv",
+    fileName: "august.csv",
+    lines: [
+      { transactionDate: "2026-08-15", description: "Receipt PAY-100", reference: "PAY-100", credit: 5000 },
+      { transactionDate: "2026-08-15", description: "Receipt PAY-100", reference: "PAY-100", credit: 5000 },
+      { transactionDate: "bad-date", description: "Bad", debit: 100 },
+    ],
+  }, { businessId });
+
+  assert.equal(imported.imported.length, 1);
+  assert.equal(imported.duplicates.length, 1);
+  assert.equal(imported.errors.length, 1);
+  const replay = api.importBankStatement(user, {
+    businessId,
+    bankAccountId: clearing.id,
+    lines: [{ transactionDate: "2026-08-15", description: "Receipt PAY-100", reference: "PAY-100", credit: 5000 }],
+  }, { businessId });
+  assert.equal(replay.imported.length, 0);
+  assert.equal(replay.duplicates.length, 1);
+  assert.equal(api.listAccountingEventLedger(user, { businessId }).journals.length, beforeJournals);
+});
+
+test("P1-7 exact matching covers customer/vendor payments, refunds, recoveries, and reversals", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Bank Match", email: "bank-match@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const clearing = api.createBankAccount(user, { businessId, accountType: "clearing", displayName: "Payment Clearing" }, { businessId });
+  const vendor = api.createVendor({ name: "Match Vendor", businessId }, { user, businessId });
+  const invoice = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    status: "created",
+    invoiceDate: "2026-08-15",
+    items: [{ description: "Match sale", quantity: 1, rate: 10000, gstRate: 0 }],
+  });
+  const customerPayment = api.recordInvoicePayment(invoice.id, { businessId, amount: 10000, paymentDate: "2026-08-15", reference: "PAY-100", idempotencyKey: "p17-pay-100" }, { user, businessId }).payment;
+  const creditNote = api.createSalesCreditNote({ businessId, sourceInvoiceId: invoice.id, status: "posted", creditNoteDate: "2026-08-15", items: [{ description: "Refund credit", quantity: 1, rate: 1000, gstRate: 0 }] }, { user, businessId });
+  const customerRefund = api.createCustomerRefund({ businessId, sourceCreditNoteId: creditNote.id, amount: 1000, refundDate: "2026-08-15", reference: "CREF-100", idempotencyKey: "p17-cref-100" }, { user, businessId });
+  const bill = api.createVendorBill({
+    ownerUserId: user.id,
+    businessId,
+    vendorId: vendor.id,
+    vendorBillNumber: "P17/VB/001",
+    status: "posted",
+    billDate: "2026-08-15",
+    items: [{ description: "Match purchase", quantity: 1, rate: 4000, gstRate: 0 }],
+  }, { user, businessId });
+  const vendorPayment = api.recordVendorBillPayment(bill.id, { businessId, amount: 4000, paymentDate: "2026-08-15", reference: "VPAY-400", idempotencyKey: "p17-vpay-400" }, { user, businessId }).payment;
+  const vendorCredit = api.createVendorCredit({ businessId, sourceVendorBillId: bill.id, status: "posted", vendorCreditDate: "2026-08-15", items: [{ description: "Vendor recovery credit", quantity: 1, rate: 500, gstRate: 0 }] }, { user, businessId });
+  const vendorRefund = api.createVendorRefund({ businessId, sourceVendorCreditId: vendorCredit.id, amount: 500, receivedDate: "2026-08-15", reference: "VREF-500", idempotencyKey: "p17-vref-500" }, { user, businessId });
+
+  const reversalInvoice = api.createInvoice({ ownerUserId: user.id, businessId, status: "created", invoiceDate: "2026-08-14", items: [{ description: "Reversal source", quantity: 1, rate: 5000, gstRate: 0 }] });
+  const reversedPayment = api.recordInvoicePayment(reversalInvoice.id, { businessId, amount: 5000, paymentDate: "2026-08-14", reference: "REV-PAY", idempotencyKey: "p17-rev-pay" }, { user, businessId }).payment;
+  const paymentReversal = api.reverseCustomerPayment({ businessId, originalPaymentId: reversedPayment.id, reversalDate: "2026-08-15", reference: "REV-PAY", idempotencyKey: "p17-payment-reversal" }, { user, businessId });
+
+  const imported = api.importBankStatement(user, {
+    businessId,
+    bankAccountId: clearing.id,
+    lines: [
+      { transactionDate: "2026-08-15", reference: "PAY-100", description: "Customer receipt", credit: 10000 },
+      { transactionDate: "2026-08-15", reference: "VPAY-400", description: "Vendor payment", debit: 4000 },
+      { transactionDate: "2026-08-15", reference: "CREF-100", description: "Customer refund", debit: 1000 },
+      { transactionDate: "2026-08-15", reference: "VREF-500", description: "Vendor recovery", credit: 500 },
+      { transactionDate: "2026-08-15", reference: "REV-PAY", description: "Payment reversal", debit: 5000 },
+    ],
+  }, { businessId });
+
+  const expectedSources = [
+    ["payment", customerPayment.id],
+    ["vendor_payment", vendorPayment.id],
+    ["customer_refund", customerRefund.id],
+    ["vendor_refund", vendorRefund.id],
+    ["customer_payment_reversal", paymentReversal.id],
+  ];
+  imported.imported.forEach((line, index) => {
+    const suggestion = api.suggestBankMatches(user, line.id, { businessId, toleranceDays: 1 });
+    assert.equal(suggestion.status, "suggested");
+    assert.equal(suggestion.candidates[0].sourceType, expectedSources[index][0]);
+    const match = api.confirmBankMatch(user, {
+      businessId,
+      statementLineId: line.id,
+      sourceType: expectedSources[index][0],
+      sourceId: expectedSources[index][1],
+    }, { businessId });
+    assert.equal(match.status, "matched");
+    assert.equal(api.listBankStatementLines(user, { businessId, bankAccountId: clearing.id }).find((entry) => entry.id === line.id).reconciliationStatus, "matched");
+  });
+  assert.equal(api.getBankReconciliationSummary(user, { businessId, bankAccountId: clearing.id, from: "2026-08-15", to: "2026-08-15" }).status, "reconciled");
+});
+
+test("P1-7 matching rejects ambiguity, wrong direction, duplicate matches, and supports unmatch without accounting impact", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Bank Safety", email: "bank-safety@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const clearing = api.createBankAccount(user, { businessId, accountType: "clearing", displayName: "Clearing" }, { businessId });
+  const invoiceA = api.createInvoice({ ownerUserId: user.id, businessId, status: "created", invoiceDate: "2026-08-14", items: [{ description: "A", quantity: 1, rate: 10000, gstRate: 0 }] });
+  const invoiceB = api.createInvoice({ ownerUserId: user.id, businessId, status: "created", invoiceDate: "2026-08-14", items: [{ description: "B", quantity: 1, rate: 10000, gstRate: 0 }] });
+  const payA = api.recordInvoicePayment(invoiceA.id, { businessId, amount: 10000, paymentDate: "2026-08-14", idempotencyKey: "p17-amb-a" }, { user, businessId }).payment;
+  api.recordInvoicePayment(invoiceB.id, { businessId, amount: 10000, paymentDate: "2026-08-14", idempotencyKey: "p17-amb-b" }, { user, businessId });
+  const vendor = api.createVendor({ name: "Safety Vendor", businessId }, { user, businessId });
+  const bill = api.createVendorBill({ ownerUserId: user.id, businessId, vendorId: vendor.id, vendorBillNumber: "P17/SAFE/VB", status: "posted", billDate: "2026-08-14", items: [{ description: "Safety", quantity: 1, rate: 2000, gstRate: 0 }] }, { user, businessId });
+  const vendorPayment = api.recordVendorBillPayment(bill.id, { businessId, amount: 2000, paymentDate: "2026-08-14", reference: "VPAY-WRONG", idempotencyKey: "p17-wrong-vpay" }, { user, businessId }).payment;
+  const beforeTrial = api.getFinancialReport(user, "trial-balance", { businessId });
+  const beforePl = api.getFinancialReport(user, "profit-loss", { businessId });
+  const beforeGst = api.getFinancialReport(user, "gst-summary", { businessId });
+  const imported = api.importBankStatement(user, {
+    businessId,
+    bankAccountId: clearing.id,
+    lines: [
+      { transactionDate: "2026-08-15", description: "Ambiguous customer deposit", credit: 10000 },
+      { transactionDate: "2026-08-14", reference: "VPAY-WRONG", description: "Wrong direction", credit: 2000 },
+      { transactionDate: "2026-08-14", description: "Exact chosen payment", credit: 10000, reference: "chosen-a" },
+    ],
+  }, { businessId });
+
+  assert.equal(api.suggestBankMatches(user, imported.imported[0].id, { businessId, toleranceDays: 2 }).status, "ambiguous");
+  assert.equal(api.suggestBankMatches(user, imported.imported[1].id, { businessId, toleranceDays: 0 }).status, "unmatched");
+  assert.throws(
+    () => api.confirmBankMatch(user, { businessId, statementLineId: imported.imported[1].id, sourceType: "vendor_payment", sourceId: vendorPayment.id }, { businessId }),
+    /not compatible/i,
+  );
+  assert.equal(api.listBankStatementLines(user, { businessId, bankAccountId: clearing.id }).find((entry) => entry.id === imported.imported[0].id).reconciliationStatus, "unmatched");
+  const exactLine = imported.imported[2];
+  const exactSuggestion = api.suggestBankMatches(user, exactLine.id, { businessId, toleranceDays: 2 });
+  assert.equal(exactSuggestion.status, "ambiguous");
+  const match = api.confirmBankMatch(user, { businessId, statementLineId: exactLine.id, sourceType: "payment", sourceId: payA.id }, { businessId });
+  assert.throws(
+    () => api.confirmBankMatch(user, { businessId, statementLineId: exactLine.id, sourceType: "payment", sourceId: payA.id }, { businessId }),
+    /already matched/i,
+  );
+  const unmatched = api.unmatchBankReconciliation(user, match.id, { businessId });
+  assert.equal(unmatched.status, "unmatched");
+  assert.equal(api.getFinancialReport(user, "trial-balance", { businessId }).totals.difference, beforeTrial.totals.difference);
+  assert.deepEqual(api.getFinancialReport(user, "profit-loss", { businessId }).rows, beforePl.rows);
+  assert.equal(api.getFinancialReport(user, "gst-summary", { businessId }).totals.netOutputTax, beforeGst.totals.netOutputTax);
+});
+
+test("P1-7 integrated bank reconciliation keeps bank fees external and protects tenant isolation", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const ownerA = api.createUser({ name: "Recon A", email: "recon-a@example.com" });
+  const ownerB = api.createUser({ name: "Recon B", email: "recon-b@example.com" });
+  const businessA = api.listBusinessWorkspaces(ownerA)[0].businessId;
+  const businessB = api.listBusinessWorkspaces(ownerB)[0].businessId;
+  const clearingA = api.createBankAccount(ownerA, { businessId: businessA, accountType: "clearing", displayName: "Business A Clearing" }, { businessId: businessA });
+  const vendor = api.createVendor({ name: "Recon Vendor", businessId: businessA }, { user: ownerA, businessId: businessA });
+  const invoice = api.createInvoice({ ownerUserId: ownerA.id, businessId: businessA, status: "created", invoiceDate: "2026-08-15", items: [{ description: "Recon sale", quantity: 1, rate: 10000, gstRate: 0 }] });
+  const payment = api.recordInvoicePayment(invoice.id, { businessId: businessA, amount: 10000, paymentDate: "2026-08-15", reference: "REC-PAY", idempotencyKey: "p17-rec-pay" }, { user: ownerA, businessId: businessA }).payment;
+  const bill = api.createVendorBill({ ownerUserId: ownerA.id, businessId: businessA, vendorId: vendor.id, vendorBillNumber: "P17/REC/VB", status: "posted", billDate: "2026-08-15", items: [{ description: "Recon purchase", quantity: 1, rate: 4000, gstRate: 0 }] }, { user: ownerA, businessId: businessA });
+  const vendorPayment = api.recordVendorBillPayment(bill.id, { businessId: businessA, amount: 4000, paymentDate: "2026-08-15", reference: "REC-VPAY", idempotencyKey: "p17-rec-vpay" }, { user: ownerA, businessId: businessA }).payment;
+  const creditNote = api.createSalesCreditNote({ businessId: businessA, sourceInvoiceId: invoice.id, status: "posted", creditNoteDate: "2026-08-15", items: [{ description: "Recon credit", quantity: 1, rate: 1000, gstRate: 0 }] }, { user: ownerA, businessId: businessA });
+  const customerRefund = api.createCustomerRefund({ businessId: businessA, sourceCreditNoteId: creditNote.id, amount: 1000, refundDate: "2026-08-15", reference: "REC-CREF", idempotencyKey: "p17-rec-cref" }, { user: ownerA, businessId: businessA });
+  const vendorCredit = api.createVendorCredit({ businessId: businessA, sourceVendorBillId: bill.id, status: "posted", vendorCreditDate: "2026-08-15", items: [{ description: "Recon vendor credit", quantity: 1, rate: 500, gstRate: 0 }] }, { user: ownerA, businessId: businessA });
+  const vendorRefund = api.createVendorRefund({ businessId: businessA, sourceVendorCreditId: vendorCredit.id, amount: 500, receivedDate: "2026-08-15", reference: "REC-VREF", idempotencyKey: "p17-rec-vref" }, { user: ownerA, businessId: businessA });
+  const beforeJournalCount = api.listAccountingEventLedger(ownerA, { businessId: businessA }).journals.length;
+  const imported = api.importBankStatement(ownerA, {
+    businessId: businessA,
+    bankAccountId: clearingA.id,
+    lines: [
+      { transactionDate: "2026-08-15", reference: "REC-PAY", credit: 10000, description: "Receipt" },
+      { transactionDate: "2026-08-15", reference: "REC-VPAY", debit: 4000, description: "Vendor payment" },
+      { transactionDate: "2026-08-15", reference: "REC-CREF", debit: 1000, description: "Customer refund" },
+      { transactionDate: "2026-08-15", reference: "REC-VREF", credit: 500, description: "Vendor recovery" },
+      { transactionDate: "2026-08-15", reference: "BANK-FEE", debit: 100, description: "Bank fee" },
+    ],
+  }, { businessId: businessA });
+  [
+    ["payment", payment.id],
+    ["vendor_payment", vendorPayment.id],
+    ["customer_refund", customerRefund.id],
+    ["vendor_refund", vendorRefund.id],
+  ].forEach(([sourceType, sourceId], index) => {
+    api.confirmBankMatch(ownerA, { businessId: businessA, statementLineId: imported.imported[index].id, sourceType, sourceId }, { businessId: businessA });
+  });
+
+  const summary = api.getBankReconciliationSummary(ownerA, { businessId: businessA, bankAccountId: clearingA.id, from: "2026-08-01", to: "2026-08-31" });
+  assert.equal(summary.status, "exception");
+  assert.equal(summary.matchedStatementAmount, 15500);
+  assert.equal(summary.unmatchedStatementDebits, 100);
+  assert.equal(summary.unmatchedStatementCredits, 0);
+  assert.equal(summary.reconciliationDifference, -100);
+  assert.equal(summary.clearingOutstanding, 5500);
+  assert.equal(api.listAccountingEventLedger(ownerA, { businessId: businessA }).journals.length, beforeJournalCount);
+  assert.throws(() => api.getBankReconciliationSummary(ownerA, { businessId: businessB, bankAccountId: clearingA.id }), /access|business/i);
+  assert.throws(() => api.listBankStatementLines(ownerB, { businessId: businessA, bankAccountId: clearingA.id }), /access|business/i);
+});
+
 test("manual payments update invoice payment status", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const user = api.createUser({ name: "Pay User", email: "pay@example.com" });

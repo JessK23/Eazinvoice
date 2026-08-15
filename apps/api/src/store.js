@@ -30,6 +30,16 @@ import {
   paymentIdempotencyKey,
   validatePaymentApplication,
 } from "./financial-service.js";
+import {
+  buildInternalBankTransactions,
+  calculateBankReconciliationSummary,
+  maskAccountReference,
+  moneyFromMinor,
+  normalizeBankAccountType,
+  normalizeStatementLine,
+  suggestMatchesForLine,
+  toMinor,
+} from "./bank-reconciliation-service.js";
 
 function clone(value) {
   if (value === undefined) return undefined;
@@ -220,6 +230,10 @@ export function createStore(seed = {}, options = {}) {
     customerRefunds: [],
     vendorPaymentReversals: [],
     vendorRefunds: [],
+    bankAccounts: [],
+    bankStatementImportBatches: [],
+    bankStatementLines: [],
+    bankReconciliationMatches: [],
     invoices: [],
     purchaseOrders: [],
     payments: [],
@@ -251,6 +265,10 @@ export function createStore(seed = {}, options = {}) {
       customerRefund: 0,
       vendorPaymentReversal: 0,
       vendorRefund: 0,
+      bankAccount: 0,
+      bankStatementImportBatch: 0,
+      bankStatementLine: 0,
+      bankReconciliationMatch: 0,
       invoice: 0,
       purchaseOrder: 0,
       payment: 0,
@@ -286,6 +304,10 @@ export function createStore(seed = {}, options = {}) {
     customerRefund: 0,
     vendorPaymentReversal: 0,
     vendorRefund: 0,
+    bankAccount: 0,
+    bankStatementImportBatch: 0,
+    bankStatementLine: 0,
+    bankReconciliationMatch: 0,
     invoice: 0,
     purchaseOrder: 0,
     payment: 0,
@@ -322,6 +344,10 @@ export function createStore(seed = {}, options = {}) {
       customerRefunds: state.customerRefunds,
       vendorPaymentReversals: state.vendorPaymentReversals,
       vendorRefunds: state.vendorRefunds,
+      bankAccounts: state.bankAccounts,
+      bankStatementImportBatches: state.bankStatementImportBatches,
+      bankStatementLines: state.bankStatementLines,
+      bankReconciliationMatches: state.bankReconciliationMatches,
       invoices: state.invoices,
       purchaseOrders: state.purchaseOrders,
       payments: state.payments,
@@ -545,6 +571,10 @@ export function createStore(seed = {}, options = {}) {
       state.customerRefunds,
       state.vendorPaymentReversals,
       state.vendorRefunds,
+      state.bankAccounts,
+      state.bankStatementImportBatches,
+      state.bankStatementLines,
+      state.bankReconciliationMatches,
       state.invoices,
       state.purchaseOrders,
       state.payments,
@@ -3155,6 +3185,244 @@ export function createStore(seed = {}, options = {}) {
     return clone(refund);
   }
 
+  function publicBankAccount(account = {}) {
+    return clone({
+      ...account,
+      maskedAccountReference: account.maskedAccountReference || maskAccountReference(account.accountReference),
+      accountReference: undefined,
+    });
+  }
+
+  function findBankAccount(id) {
+    return state.bankAccounts.find((account) => account.id === id && account.status !== "deleted");
+  }
+
+  function createBankLedgerAccount(business, input = {}) {
+    const accountType = normalizeBankAccountType(input.accountType);
+    const existingCount = state.ledgerAccounts.filter((account) => account.businessId === business.id && ["bank", "cash", "clearing"].includes(String(account.bankAccountType || ""))).length;
+    const defaultCode = accountType === "cash" ? `113${existingCount}` : accountType === "clearing" ? "1110" : `112${existingCount}`;
+    if (accountType === "clearing") {
+      return ensureDefaultAccountingAccounts(state, business, business.ownerUserId).bank_clearing;
+    }
+    const account = {
+      id: nextId("acct", ++state.counters.ledgerAccount),
+      businessId: business.id,
+      ownerUserId: business.ownerUserId,
+      accountCode: String(input.accountCode || defaultCode).trim(),
+      accountName: String(input.ledgerAccountName || input.displayName || (accountType === "cash" ? "Cash Account" : "Bank Account")).trim(),
+      accountType: "asset",
+      normalBalance: "debit",
+      bankAccountType: accountType,
+      systemAccount: false,
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.ledgerAccounts.push(account);
+    return account;
+  }
+
+  function createBankAccount(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for bank account.");
+    ensureDefaultAccountingAccounts(state, business, business.ownerUserId);
+    const accountType = normalizeBankAccountType(input.accountType);
+    let ledgerAccount = input.ledgerAccountId
+      ? state.ledgerAccounts.find((account) => account.id === input.ledgerAccountId)
+      : createBankLedgerAccount(business, { ...input, accountType });
+    if (!ledgerAccount && input.ledgerAccountCode) {
+      ledgerAccount = state.ledgerAccounts.find((account) => account.businessId === business.id && account.accountCode === input.ledgerAccountCode);
+    }
+    if (!ledgerAccount || ledgerAccount.businessId !== business.id) throw new Error("Ledger account does not belong to this business.");
+    const account = {
+      id: nextId("bacc", ++state.counters.bankAccount),
+      businessId: business.id,
+      ownerUserId: business.ownerUserId,
+      ledgerAccountId: ledgerAccount.id,
+      ledgerAccountCode: ledgerAccount.accountCode,
+      accountType,
+      displayName: String(input.displayName || ledgerAccount.accountName || "Bank Account").trim(),
+      institutionName: String(input.institutionName || "").trim(),
+      accountReference: String(input.accountReference || "").trim(),
+      maskedAccountReference: maskAccountReference(input.accountReference || input.maskedAccountReference || ""),
+      currency: String(input.currency || "INR").trim(),
+      openingBalance: moneyFromMinor(toMinor(input.openingBalance)),
+      status: String(input.status || "active").trim(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.bankAccounts.push(account);
+    persist();
+    return publicBankAccount(account);
+  }
+
+  function listBankAccountsForUser(user, businessId = "") {
+    if (!user || user.role === "admin") return state.bankAccounts.filter((account) => !businessId || account.businessId === businessId).map(publicBankAccount);
+    return state.bankAccounts.filter((account) => account.ownerUserId === user.id && (!businessId || account.businessId === businessId)).map(publicBankAccount);
+  }
+
+  function getBankAccount(id, user) {
+    const account = findBankAccount(id);
+    if (!account) return null;
+    if (!user || user.role === "admin" || account.ownerUserId === user.id) return publicBankAccount(account);
+    return null;
+  }
+
+  function importBankStatementLines(input = {}) {
+    const account = findBankAccount(input.bankAccountId);
+    const business = findBusinessByIdOrLegacyOwner(input.businessId || account?.businessId);
+    if (!account || !business || account.businessId !== business.id) throw new Error("Bank account not found in this business.");
+    const linesInput = Array.isArray(input.lines) ? input.lines : [];
+    if (!linesInput.length) throw new Error("At least one statement line is required.");
+    const batch = {
+      id: nextId("bstmt", ++state.counters.bankStatementImportBatch),
+      businessId: business.id,
+      ownerUserId: business.ownerUserId,
+      bankAccountId: account.id,
+      sourceType: String(input.sourceType || input.source || "manual").trim(),
+      fileName: String(input.fileName || input.filename || "").trim(),
+      reference: String(input.reference || "").trim(),
+      importedByUserId: input.importedByUserId || input.actorUserId || "",
+      status: "imported",
+      lineCount: 0,
+      duplicateCount: 0,
+      errorCount: 0,
+      importedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+    };
+    const imported = [];
+    const duplicates = [];
+    const errors = [];
+    linesInput.forEach((lineInput, index) => {
+      try {
+        const normalized = normalizeStatementLine(lineInput, {
+          businessId: business.id,
+          bankAccountId: account.id,
+          importBatchId: batch.id,
+          currency: account.currency,
+          source: batch.sourceType,
+        });
+        const duplicate = state.bankStatementLines.find((line) => line.businessId === business.id && line.bankAccountId === account.id && line.fingerprint === normalized.fingerprint);
+        if (duplicate) {
+          duplicates.push({ index, statementLineId: duplicate.id, fingerprint: normalized.fingerprint });
+          return;
+        }
+        const line = {
+          id: nextId("bline", ++state.counters.bankStatementLine),
+          ...normalized,
+          status: "active",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        state.bankStatementLines.push(line);
+        imported.push(clone(line));
+      } catch (error) {
+        errors.push({ index, error: error.message });
+      }
+    });
+    batch.lineCount = imported.length;
+    batch.duplicateCount = duplicates.length;
+    batch.errorCount = errors.length;
+    batch.status = errors.length ? "completed_with_errors" : "imported";
+    state.bankStatementImportBatches.push(batch);
+    persist();
+    return clone({ batch, imported, duplicates, errors });
+  }
+
+  function listBankStatementLinesForUser(user, businessId = "", bankAccountId = "") {
+    const visibleAccounts = new Set(listBankAccountsForUser(user, businessId).map((account) => account.id));
+    return clone(state.bankStatementLines.filter((line) => visibleAccounts.has(line.bankAccountId) && (!bankAccountId || line.bankAccountId === bankAccountId)));
+  }
+
+  function suggestBankStatementMatches(statementLineId, input = {}) {
+    const line = state.bankStatementLines.find((entry) => entry.id === statementLineId);
+    if (!line) return null;
+    const account = findBankAccount(line.bankAccountId);
+    if (!account || (input.businessId && account.businessId !== input.businessId)) throw new Error("Bank statement line not found in this business.");
+    return clone({
+      statementLineId,
+      ...suggestMatchesForLine(state, account, line, input),
+    });
+  }
+
+  function refreshStatementLineMatchState(line) {
+    const lineMinor = Math.max(toMinor(line.debit), toMinor(line.credit));
+    const matchedMinor = state.bankReconciliationMatches
+      .filter((match) => match.statementLineId === line.id && match.status === "matched")
+      .reduce((sum, match) => sum + toMinor(match.matchedAmount), 0);
+    line.matchedAmount = moneyFromMinor(matchedMinor);
+    line.unmatchedAmount = moneyFromMinor(Math.max(0, lineMinor - matchedMinor));
+    line.reconciliationStatus = matchedMinor <= 0 ? "unmatched" : matchedMinor >= lineMinor ? "matched" : "partially_matched";
+    line.updatedAt = new Date().toISOString();
+  }
+
+  function confirmBankReconciliationMatch(input = {}) {
+    const line = state.bankStatementLines.find((entry) => entry.id === input.statementLineId);
+    if (!line) throw new Error("Bank statement line is required for reconciliation match.");
+    const account = findBankAccount(input.bankAccountId || line.bankAccountId);
+    if (!account || line.businessId !== account.businessId || line.bankAccountId !== account.id) throw new Error("Bank account does not match statement line.");
+    if (input.businessId && input.businessId !== account.businessId) throw new Error("Bank reconciliation business does not match.");
+    if (state.bankReconciliationMatches.some((match) => match.statementLineId === line.id && match.status === "matched")) {
+      throw new Error("Statement line is already matched.");
+    }
+    const suggestions = suggestMatchesForLine(state, account, line, input);
+    const candidate = suggestions.candidates.find((entry) => (
+      entry.sourceType === input.sourceType
+      && entry.sourceId === input.sourceId
+      && (!input.journalId || entry.journalId === input.journalId)
+    ));
+    if (!candidate) throw new Error("Statement line and internal transaction are not compatible for reconciliation.");
+    const amountMinor = input.matchedAmount === undefined ? Math.max(toMinor(line.debit), toMinor(line.credit)) : toMinor(input.matchedAmount);
+    if (amountMinor <= 0 || amountMinor !== candidate.amountMinor) throw new Error("Only exact one-to-one reconciliation matches are supported in this phase.");
+    if (state.bankReconciliationMatches.some((match) => match.sourceType === candidate.sourceType && match.sourceId === candidate.sourceId && match.status === "matched")) {
+      throw new Error("Internal transaction is already matched.");
+    }
+    const match = {
+      id: nextId("bmatch", ++state.counters.bankReconciliationMatch),
+      businessId: account.businessId,
+      ownerUserId: account.ownerUserId,
+      bankAccountId: account.id,
+      statementLineId: line.id,
+      sourceType: candidate.sourceType,
+      sourceId: candidate.sourceId,
+      journalId: candidate.journalId,
+      journalLineId: candidate.journalLineId,
+      matchedAmount: moneyFromMinor(amountMinor),
+      matchMethod: input.matchMethod || "manual",
+      confidence: candidate.confidence,
+      reason: input.reason || candidate.confidence,
+      status: "matched",
+      matchedByUserId: input.matchedByUserId || input.actorUserId || "",
+      matchedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.bankReconciliationMatches.push(match);
+    refreshStatementLineMatchState(line);
+    persist();
+    return clone(match);
+  }
+
+  function unmatchBankReconciliation(matchId, input = {}) {
+    const match = state.bankReconciliationMatches.find((entry) => entry.id === matchId);
+    if (!match) return null;
+    if (input.businessId && match.businessId !== input.businessId) throw new Error("Bank reconciliation match not found in this business.");
+    match.status = "unmatched";
+    match.unmatchedByUserId = input.unmatchedByUserId || input.actorUserId || "";
+    match.unmatchedAt = new Date().toISOString();
+    match.updatedAt = new Date().toISOString();
+    const line = state.bankStatementLines.find((entry) => entry.id === match.statementLineId);
+    if (line) refreshStatementLineMatchState(line);
+    persist();
+    return clone(match);
+  }
+
+  function getBankReconciliationSummary(input = {}) {
+    const account = findBankAccount(input.bankAccountId);
+    if (!account || (input.businessId && account.businessId !== input.businessId)) throw new Error("Bank account not found in this business.");
+    return clone(calculateBankReconciliationSummary(state, account, input));
+  }
+
   function listPaymentsForUser(user) {
     if (!user || user.role === "admin") return clone(state.payments);
     const invoiceIds = new Set(listInvoicesForUser(user).map((invoice) => invoice.id));
@@ -3289,6 +3557,10 @@ export function createStore(seed = {}, options = {}) {
       customerRefunds: state.customerRefunds.length,
       vendorPaymentReversals: state.vendorPaymentReversals.length,
       vendorRefunds: state.vendorRefunds.length,
+      bankAccounts: state.bankAccounts.length,
+      bankStatementImportBatches: state.bankStatementImportBatches.length,
+      bankStatementLines: state.bankStatementLines.length,
+      bankReconciliationMatches: state.bankReconciliationMatches.length,
       invoices: state.invoices.length,
       purchaseOrders: state.purchaseOrders.length,
       payments: state.payments.length,
@@ -3966,6 +4238,12 @@ export function createStore(seed = {}, options = {}) {
     createVendorPaymentReversal,
     createCustomerRefund,
     createVendorRefund,
+    createBankAccount,
+    importBankStatementLines,
+    suggestBankStatementMatches,
+    confirmBankReconciliationMatch,
+    unmatchBankReconciliation,
+    getBankReconciliationSummary,
     runRecurringInvoiceScheduler,
     listInvoicesForUser,
     listPurchaseOrdersForUser,
@@ -3976,6 +4254,8 @@ export function createStore(seed = {}, options = {}) {
     listCustomerRefundsForUser,
     listVendorPaymentReversalsForUser,
     listVendorRefundsForUser,
+    listBankAccountsForUser,
+    listBankStatementLinesForUser,
     getVendorBill,
     getCreditNote,
     getVendorCredit,
@@ -3983,6 +4263,7 @@ export function createStore(seed = {}, options = {}) {
     getCustomerRefund,
     getVendorPaymentReversal,
     getVendorRefund,
+    getBankAccount,
     createSubscription,
     createBillingOrder,
     getBillingOrderByGatewayOrderId,

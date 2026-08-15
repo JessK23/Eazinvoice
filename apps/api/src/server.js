@@ -3254,6 +3254,7 @@ export function createServer(options = {}) {
       ["/reports/vendor-credits", "vendor-credits"],
       ["/reports/customer-refunds", "customer-refunds"],
       ["/reports/vendor-refunds", "vendor-refunds"],
+      ["/reports/bank-reconciliation", "bank-reconciliation"],
       ["/reports/reconciliation", "reconciliation"],
       ["/reports/financial-bundle", "bundle"],
       ["/accounting/trial-balance", "trial-balance"],
@@ -3270,6 +3271,7 @@ export function createServer(options = {}) {
           asOf: url.searchParams.get("asOf") || "",
           accountId: url.searchParams.get("accountId") || "",
           accountCode: url.searchParams.get("accountCode") || "",
+          bankAccountId: url.searchParams.get("bankAccountId") || "",
           includeSettled: url.searchParams.get("includeSettled") === "true",
         }));
       } catch (error) {
@@ -3612,6 +3614,126 @@ export function createServer(options = {}) {
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
           businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/bank/accounts" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listBankAccounts(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/bank/accounts" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.createBankAccount(user, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/bank/statement-lines" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listBankStatementLines(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+          bankAccountId: url.searchParams.get("bankAccountId") || "",
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/bank/statement-imports" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.importBankStatement(user, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/bank/statement-lines/") && url.pathname.endsWith("/suggestions") && req.method === "GET") {
+      try {
+        const id = decodeURIComponent(url.pathname.split("/")[3] || "");
+        const suggestions = api.suggestBankMatches(user, id, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+          toleranceDays: url.searchParams.get("toleranceDays") || "",
+        });
+        if (!suggestions) sendJson(res, 404, { error: "Statement line not found" });
+        else sendJson(res, 200, suggestions);
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/bank/reconciliation/matches" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, api.confirmBankMatch(user, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/bank/reconciliation/matches/") && req.method === "DELETE") {
+      try {
+        const id = decodeURIComponent(url.pathname.split("/")[4] || "");
+        const match = api.unmatchBankReconciliation(user, id, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        });
+        if (!match) sendJson(res, 404, { error: "Reconciliation match not found" });
+        else sendJson(res, 200, match);
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/bank/reconciliation/summary" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.getBankReconciliationSummary(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+          bankAccountId: url.searchParams.get("bankAccountId") || "",
+          from: url.searchParams.get("from") || "",
+          to: url.searchParams.get("to") || "",
+          openingBalance: url.searchParams.get("openingBalance") || undefined,
+          closingBalance: url.searchParams.get("closingBalance") || undefined,
         }));
       } catch (error) {
         sendJson(res, knownRequestErrorStatus(error), { error: error.message });

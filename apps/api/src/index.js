@@ -998,6 +998,7 @@ export function createApi(deps = {}) {
         accountId: options.accountId,
         accountCode: options.accountCode,
         includeSettled: options.includeSettled,
+        bankAccountId: options.bankAccountId,
       };
       switch (reportType) {
         case "profit-loss":
@@ -1034,6 +1035,8 @@ export function createApi(deps = {}) {
           return buildCustomerRefundRegister(state, businessId, reportOptions);
         case "vendor-refunds":
           return buildVendorRefundRegister(state, businessId, reportOptions);
+        case "bank-reconciliation":
+          return store.getBankReconciliationSummary({ ...reportOptions, businessId, bankAccountId: options.bankAccountId });
         case "reconciliation":
           return buildFinancialReconciliation(state, businessId, reportOptions);
         case "bundle":
@@ -1938,6 +1941,72 @@ export function createApi(deps = {}) {
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
       if (workspace.businessId) return store.listVendorRefundsForUser(null).filter((entry) => entry.businessId === workspace.businessId || entry.ownerUserId === workspace.ownerUserId);
       return store.listVendorRefundsForUser(workspace.owner);
+    },
+    createBankAccount(user, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+        businessId: input.businessId || options.businessId || null,
+      }, "writeRecords");
+      return store.createBankAccount({
+        ...input,
+        businessId: workspace.businessId,
+      });
+    },
+    listBankAccounts(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return store.listBankAccountsForUser(workspace.owner, workspace.businessId);
+    },
+    getBankAccount(id, user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      const account = store.getBankAccount(id, workspace.owner);
+      if (!account || (workspace.businessId && account.businessId !== workspace.businessId)) return null;
+      return account;
+    },
+    importBankStatement(user, input = {}, options = {}) {
+      const account = store.getBankAccount(input.bankAccountId, null);
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || account?.ownerUserId || user?.id,
+        businessId: input.businessId || options.businessId || account?.businessId || null,
+      }, "writeRecords");
+      if (!account || account.businessId !== workspace.businessId) throw new Error("Bank account not found in this business.");
+      return store.importBankStatementLines({
+        ...input,
+        businessId: workspace.businessId,
+        actorUserId: user?.id || "",
+      });
+    },
+    listBankStatementLines(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return store.listBankStatementLinesForUser(workspace.owner, workspace.businessId, options.bankAccountId || "");
+    },
+    suggestBankMatches(user, statementLineId, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      const line = store.listBankStatementLinesForUser(workspace.owner, workspace.businessId).find((entry) => entry.id === statementLineId);
+      if (!line) return null;
+      return store.suggestBankStatementMatches(statementLineId, { ...options, businessId: workspace.businessId });
+    },
+    confirmBankMatch(user, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "writeRecords");
+      const line = store.listBankStatementLinesForUser(workspace.owner, workspace.businessId).find((entry) => entry.id === input.statementLineId);
+      if (!line) throw new Error("Bank statement line not found in this business.");
+      return store.confirmBankReconciliationMatch({
+        ...input,
+        businessId: workspace.businessId,
+        actorUserId: user?.id || "",
+      });
+    },
+    unmatchBankReconciliation(user, matchId, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "writeRecords");
+      return store.unmatchBankReconciliation(matchId, {
+        businessId: workspace.businessId,
+        actorUserId: user?.id || "",
+      });
+    },
+    getBankReconciliationSummary(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return store.getBankReconciliationSummary({ ...options, businessId: workspace.businessId });
     },
     deletePurchaseOrder(id, user, options = {}) {
       const current = store.getPurchaseOrder(id);
