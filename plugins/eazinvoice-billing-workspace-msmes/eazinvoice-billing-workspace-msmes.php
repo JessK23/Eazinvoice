@@ -3,12 +3,12 @@
  * Plugin Name: EazInvoice Billing Workspace for MSMEs
  * Plugin URI: https://www.eazinvoice.com/wordpress
  * Description: Connect WordPress sites to EazInvoice for simple invoice links, customer billing CTAs, and upgrade-ready MSME invoicing workflows.
- * Version: 1.0.5
+ * Version: 1.0.7
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: EazInvoice
  * Author URI: https://www.eazinvoice.com
- * Text Domain: eazinvoice-invoicing-for-msmes
+ * Text Domain: eazinvoice-billing-workspace-msmes
  * Domain Path: /languages
  * License: GPLv2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'EAZINVOICE_VERSION', '1.0.5' );
+define( 'EAZINVOICE_VERSION', '1.0.7' );
 define( 'EAZINVOICE_PLUGIN_FILE', __FILE__ );
 define( 'EAZINVOICE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'EAZINVOICE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );

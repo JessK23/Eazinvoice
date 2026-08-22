@@ -6,6 +6,141 @@
   --ei-ink: #101828;
   --ei-muted: #667085;
 }
+
+.eazinvoice-admin .eazinvoice-admin-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 9px;
+  border: 1px solid #d8e0ec;
+  border-radius: 8px;
+  background: #f7f9fc;
+}
+
+.eazinvoice-admin .eazinvoice-admin-search input[type="search"] {
+  flex: 1;
+  min-width: 0;
+  min-height: 40px;
+  margin: 0;
+  border-color: #c8d2e1;
+  background: #fff;
+}
+
+.eazinvoice-admin .eazinvoice-search-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 6px;
+  background: #123d7a;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.eazinvoice-admin .eazinvoice-search-submit:hover,
+.eazinvoice-admin .eazinvoice-search-submit:focus {
+  background: #0b2d5c;
+  color: #fff;
+}
+
+.eazinvoice-admin .eazinvoice-feature-search-form label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 700;
+  color: #17233a;
+}
+
+.eazinvoice-admin .eazinvoice-feature-search-form > div {
+  display: flex;
+  gap: 10px;
+}
+
+.eazinvoice-admin .eazinvoice-feature-search-form input[type="search"] {
+  flex: 1;
+  min-width: 0;
+  min-height: 46px;
+}
+
+.eazinvoice-admin .eazinvoice-search-results {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.eazinvoice-admin .eazinvoice-feature-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid #dce3ed;
+  border-radius: 8px;
+  background: #fff;
+  color: #17233a;
+  text-decoration: none;
+  box-shadow: 0 8px 22px rgba(20, 42, 78, 0.06);
+}
+
+.eazinvoice-admin .eazinvoice-feature-result:hover,
+.eazinvoice-admin .eazinvoice-feature-result:focus {
+  border-color: #2a66c9;
+  color: #123d7a;
+  box-shadow: 0 10px 26px rgba(20, 61, 122, 0.12);
+}
+
+.eazinvoice-admin .eazinvoice-feature-result > span:first-child {
+  display: grid;
+  gap: 6px;
+}
+
+.eazinvoice-admin .eazinvoice-feature-result small {
+  color: #59677e;
+  line-height: 1.5;
+}
+
+.eazinvoice-admin .eazinvoice-feature-result .dashicons {
+  flex: 0 0 auto;
+}
+
+.eazinvoice-admin .eazinvoice-privacy-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.eazinvoice-admin .eazinvoice-privacy-layout .eazinvoice-card {
+  margin: 0;
+}
+
+@media (max-width: 960px) {
+  .eazinvoice-admin .eazinvoice-search-results,
+  .eazinvoice-admin .eazinvoice-privacy-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .eazinvoice-admin .eazinvoice-admin-search,
+  .eazinvoice-admin .eazinvoice-feature-search-form > div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .eazinvoice-admin .eazinvoice-search-submit {
+    width: 100%;
+  }
+
+  .eazinvoice-admin .eazinvoice-feature-result {
+    align-items: flex-start;
+  }
+}
 .eazinvoice-admin .eazinvoice-hero {
   display: flex;
   justify-content: space-between;
@@ -328,6 +463,36 @@
   border-radius: 12px;
   background: #fff;
 }
+.eazinvoice-admin .eazinvoice-record-summary {
+  min-width: 0;
+  flex: 1 1 260px;
+}
+.eazinvoice-admin .eazinvoice-record-actions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+.eazinvoice-admin .eazinvoice-record-actions form {
+  margin: 0;
+}
+.eazinvoice-admin .eazinvoice-record-actions .button {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.eazinvoice-admin .eazinvoice-feature-lock {
+  padding: 8px 10px;
+  border: 1px solid #f4c779;
+  border-radius: 999px;
+  background: #fff8e7;
+  color: #8a4b08;
+  font-size: 12px;
+  font-weight: 800;
+}
 .eazinvoice-admin .eazinvoice-record-list strong,
 .eazinvoice-admin .eazinvoice-record-list span {
   display: block;
@@ -538,5 +703,9 @@
     min-height: 32px;
     padding: 7px 10px;
     font-size: 12px;
+  }
+  .eazinvoice-admin .eazinvoice-record-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 }

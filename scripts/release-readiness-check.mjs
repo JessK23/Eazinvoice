@@ -17,10 +17,9 @@ function check(name, passed, detail = '') {
   checks.push({ name, passed, detail });
 }
 
-const pluginRoot = 'plugins/eazinvoice-invoicing-for-msmes';
-const pluginFile = `${pluginRoot}/eazinvoice-invoicing-for-msmes.php`;
+const pluginRoot = 'plugins/eazinvoice-billing-workspace-msmes';
+const pluginFile = `${pluginRoot}/eazinvoice-billing-workspace-msmes.php`;
 const pluginReadme = `${pluginRoot}/readme.txt`;
-const pluginZip = `${pluginRoot}-1.0.5.zip`;
 
 const pluginPhp = read(pluginFile);
 const readme = read(pluginReadme);
@@ -32,6 +31,7 @@ const stableMatch = readme.match(/Stable tag:\s*([^\n]+)/);
 const pluginVersion = versionMatch?.[1]?.trim();
 const constantVersion = constantMatch?.[1]?.trim();
 const stableTag = stableMatch?.[1]?.trim();
+const pluginZip = `${pluginRoot}-${pluginVersion || 'unknown'}.zip`;
 
 check('Plugin header version exists', Boolean(pluginVersion), pluginVersion || 'missing');
 check('Plugin constant version matches header', pluginVersion === constantVersion, `${pluginVersion || 'missing'} / ${constantVersion || 'missing'}`);
@@ -43,7 +43,7 @@ check('Android user manual exists', exists('docs/user-manual-android.md'));
 check('Release SOP exists', exists('docs/release-and-verification-sop.md'));
 check('AI Agent roadmap exists', exists('docs/ai-agent-roadmap.md'));
 check('Android debug APK exists', exists('android/app/build/outputs/apk/debug/app-debug.apk'));
-check('Plugin 1.0.5 zip exists', exists(pluginZip), pluginZip);
+check(`Plugin ${pluginVersion || 'current'} zip exists`, exists(pluginZip), pluginZip);
 
 for (const item of checks) {
   const marker = item.passed ? 'PASS' : 'FAIL';

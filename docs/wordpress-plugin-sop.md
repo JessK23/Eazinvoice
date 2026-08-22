@@ -46,7 +46,7 @@ The automatic button can be shown on the public site. The site owner can also pl
 ## WordPress.org SVN Release Process
 
 1. Prepare the plugin folder:
-   `C:\Users\r\Documents\eazinvoice\plugins\eazinvoice-invoicing-for-msmes`
+   `C:\Users\Jess\Documents\eazinvoice\plugins\eazinvoice-billing-workspace-msmes`
 2. Confirm `readme.txt` stable tag matches the plugin header version.
 3. Copy plugin files into SVN `trunk`.
 4. Copy banners/icons/screenshots into SVN `assets`.
@@ -60,4 +60,3 @@ The automatic button can be shown on the public site. The site owner can also pl
 - Use WordPress nonces for form submissions.
 - Escape all output and sanitize all input.
 - Do not add public external links without user-controlled settings.
-
