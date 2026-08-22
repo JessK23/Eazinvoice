@@ -79,5 +79,9 @@ create index if not exists idx_accounting_periods_status on eazinvoice_accountin
 create index if not exists idx_accounting_period_history_period on eazinvoice_accounting_period_history (business_id, accounting_period_id, created_at);
 create index if not exists idx_opening_balance_sets_business_cutover on eazinvoice_opening_balance_sets (business_id, cutover_date, status);
 create index if not exists idx_opening_balance_details_business_type on eazinvoice_opening_balance_details (business_id, detail_type, opening_balance_set_id);
-create index if not exists idx_accounting_journals_business_date on eazinvoice_accounting_journals (business_id, journal_date);
+create index if not exists idx_accounting_journals_business_date on eazinvoice_journal_entries (business_id, journal_date);
 create index if not exists idx_ledger_accounts_balance_sheet_category on eazinvoice_ledger_accounts (business_id, balance_sheet_category);
+
+insert into eazinvoice_migrations (migration_name)
+values ('020_accounting_periods_balance_sheet_readiness')
+on conflict (migration_name) do nothing;

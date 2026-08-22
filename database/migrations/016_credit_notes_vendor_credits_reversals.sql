@@ -95,3 +95,7 @@ alter table eazinvoice_financial_events
 alter table eazinvoice_journal_entries
   add column if not exists corrects_document_id text,
   add column if not exists reverses_journal_id text;
+
+insert into eazinvoice_migrations (migration_name)
+values ('016_credit_notes_vendor_credits_reversals')
+on conflict (migration_name) do nothing;

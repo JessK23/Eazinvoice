@@ -356,6 +356,12 @@ async function runEndpointAudit() {
 }
 
 function runPostgresEntitlementVerifierIfConfigured() {
+  if (String(process.env.SKIP_POSTGRES_ENTITLEMENT_VERIFY || "").trim().toLowerCase() === "true") {
+    return {
+      status: "skipped",
+      reason: "SKIP_POSTGRES_ENTITLEMENT_VERIFY=true",
+    };
+  }
   if (!process.env.DATABASE_URL) {
     return {
       status: "skipped",

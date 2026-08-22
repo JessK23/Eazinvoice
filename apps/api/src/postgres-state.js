@@ -1,4 +1,6 @@
-import { withPostgresClient } from "./postgres.js";
+import { withPostgresTransaction } from "./postgres.js";
+import { syncCoreTables } from "./postgres-core-sync.js";
+import { detectFinancialStateDivergence, syncFinancialTables } from "./postgres-financial-sync.js";
 
 export const STATE_COLLECTIONS = [
   "users",
@@ -70,6 +72,11 @@ export function ownerUserIdForRecord(recordType, record) {
 export function companyIdForRecord(record) {
   if (!record || typeof record !== "object") return null;
   return record.companyId || record.businessId || null;
+}
+
+export function businessIdForRecord(record) {
+  if (!record || typeof record !== "object") return null;
+  return record.businessId || null;
 }
 
 export function statusForRecord(record) {
@@ -210,18 +217,51 @@ async function replaceIndexedRecords(client, state) {
       const record = records[index];
       await client.query(
         `insert into eazinvoice_records
-          (id, record_type, owner_user_id, company_id, status, record, updated_at)
-         values ($1, $2, $3, $4, $5, $6::jsonb, now())`,
+          (id, record_type, owner_user_id, company_id, business_id, status, record, updated_at)
+         values ($1, $2, $3, $4, $5, $6, $7::jsonb, now())`,
         [
           idForRecord(collection, record, index),
           collection,
           ownerUserIdForRecord(collection, record),
           companyIdForRecord(record),
+          businessIdForRecord(record),
           statusForRecord(record),
           JSON.stringify(record),
         ],
       );
     }
+  }
+}
+
+async function pruneNormalizedFinancialTables(client) {
+  const tables = [
+    "eazinvoice_bank_reconciliation_matches",
+    "eazinvoice_bank_statement_lines",
+    "eazinvoice_bank_statement_import_batches",
+    "eazinvoice_bank_accounts",
+    "eazinvoice_transaction_compliance_snapshots",
+    "eazinvoice_compliance_obligations",
+    "eazinvoice_tds_transactions",
+    "eazinvoice_payment_reversals",
+    "eazinvoice_vendor_payment_reversals",
+    "eazinvoice_customer_refunds",
+    "eazinvoice_vendor_refunds",
+    "eazinvoice_credit_notes",
+    "eazinvoice_vendor_credits",
+    "eazinvoice_journal_lines",
+    "eazinvoice_journal_entries",
+    "eazinvoice_financial_events",
+    "eazinvoice_vendor_bills",
+    "eazinvoice_payments",
+    "eazinvoice_invoice_items",
+    "eazinvoice_purchase_order_items",
+    "eazinvoice_invoices",
+    "eazinvoice_purchase_orders",
+    "eazinvoice_customers",
+    "eazinvoice_vendors",
+  ];
+  for (const table of tables) {
+    await client.query(`delete from ${table}`);
   }
 }
 
@@ -233,9 +273,7 @@ export async function saveStateToPostgres(state, options = {}) {
     counts: Object.fromEntries(STATE_COLLECTIONS.map((collection) => [collection, normalized[collection].length])),
   };
 
-  await withPostgresClient(async (client) => {
-    await client.query("BEGIN");
-    try {
+  await withPostgresTransaction(async (client) => {
       await client.query(
         `insert into eazinvoice_state_documents (state_key, state, source, source_path, updated_at)
          values ($1, $2::jsonb, $3, $4, now())
@@ -248,23 +286,46 @@ export async function saveStateToPostgres(state, options = {}) {
         [STATE_KEY, JSON.stringify(normalized), metadata.source, metadata.sourcePath],
       );
       await replaceIndexedRecords(client, normalized);
+      if (options.testFailurePoint === "after_state_document" && process.env.NODE_ENV !== "production") {
+        throw new Error("Injected Postgres state persistence failure after state document.");
+      }
+      if (options.syncNormalized !== false) {
+        await pruneNormalizedFinancialTables(client);
+        await syncCoreTables(client, normalized, {
+          audit: false,
+          pruneChildRows: true,
+          source: options.source || "runtime-postgres",
+        });
+        await syncFinancialTables(client, normalized);
+        const divergences = await detectFinancialStateDivergence(client, normalized);
+        if (divergences.length) {
+          await client.query(
+            `insert into eazinvoice_financial_divergence_checks (business_id, domain, record_id, severity, expected, actual)
+             values ($1, $2, $3, $4, $5::jsonb, $6::jsonb)`,
+            [
+              divergences[0].businessId || null,
+              divergences[0].domain,
+              divergences[0].recordId || null,
+              divergences[0].severity || "critical",
+              JSON.stringify(divergences[0].expected || {}),
+              JSON.stringify(divergences[0].actual || {}),
+            ],
+          );
+          throw new Error(`Postgres financial divergence detected in ${divergences[0].domain}.`);
+        }
+      }
       await client.query(
         `insert into eazinvoice_audit_events (event_type, entity_type, metadata)
          values ($1, $2, $3::jsonb)`,
         ["postgres_state_saved", "system", JSON.stringify(metadata)],
       );
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    }
-  });
+  }, { rlsBypass: true });
 
   return metadata;
 }
 
 export async function loadStateFromPostgres() {
-  return withPostgresClient(async (client) => {
+  return withPostgresTransaction(async (client) => {
     const document = await client.query(
       "select state from eazinvoice_state_documents where state_key = $1",
       [STATE_KEY],
@@ -286,11 +347,11 @@ export async function loadStateFromPostgres() {
     });
     state.counters = deriveCounters(state);
     return normalizeStateDocument(state);
-  });
+  }, { rlsBypass: true });
 }
 
 export async function describePostgresState() {
-  return withPostgresClient(async (client) => {
+  return withPostgresTransaction(async (client) => {
     const document = await client.query(
       `select state_key, source, source_path, version, updated_at
        from eazinvoice_state_documents
@@ -305,5 +366,5 @@ export async function describePostgresState() {
       stateDocument: document.rows[0] || null,
       recordCounts: counts.rows,
     };
-  });
+  }, { rlsBypass: true });
 }

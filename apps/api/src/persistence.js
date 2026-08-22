@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { saveStateToPostgres } from "./postgres-state.js";
+import { resolveStorageMode } from "./production-config.js";
 
 function configuredDataDir() {
   const configured = process.env.EAZINVOICE_DATA_DIR || process.env.DATA_DIR || "";
@@ -95,6 +96,7 @@ export function describePersistence() {
   const stats = fs.statSync(DATA_FILE);
   return {
     mode: process.env.EAZINVOICE_DATA_DIR || process.env.DATA_DIR ? "mounted-json" : "local-json",
+    configuredStorageMode: resolveStorageMode(),
     postgresDualWrite: postgresDualWriteEnabled(),
     dataDir: DATA_DIR,
     dataFile: DATA_FILE,

@@ -25,7 +25,8 @@ import {
   syncPurchaseOrderToCoreTable,
   syncSubscriptions,
 } from "./postgres-core-sync.js";
-import { hasPostgresConfig, withPostgresClient } from "./postgres.js";
+import { hasPostgresConfig, validatePostgresConnection, validatePostgresSchema, withPostgresClient } from "./postgres.js";
+import { assertProductionConfig } from "./production-config.js";
 import { createSessionStore } from "./session-store.js";
 import { getFeatureRequirement, PLAN_CATALOG, resolvePlanUsageStatus } from "./plans.js";
 import { sendSmtpMail } from "./smtp.js";
@@ -1180,6 +1181,37 @@ function extractToken(req) {
   return null;
 }
 
+function isE2eAuthConfigured() {
+  const env = String(process.env.EAZINVOICE_ENV || process.env.NODE_ENV || "development").trim().toLowerCase();
+  return process.env.NODE_ENV === "test"
+    && env !== "production"
+    && String(process.env.EAZINVOICE_E2E_AUTH || "").trim().toLowerCase() === "true"
+    && String(process.env.EAZINVOICE_E2E_AUTH_SECRET || "").trim().length >= 16;
+}
+
+function isLocalRequest(req) {
+  const address = String(req.socket?.remoteAddress || "").trim();
+  return !address || address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
+function assertE2eAuthRequest(req) {
+  if (!isE2eAuthConfigured()) {
+    throw new Error("E2E auth is disabled. Set NODE_ENV=test, EAZINVOICE_E2E_AUTH=true and a strong EAZINVOICE_E2E_AUTH_SECRET.");
+  }
+  if (!isLocalRequest(req)) throw new Error("E2E auth only accepts local requests.");
+  const supplied = String(req.headers["x-eazinvoice-e2e-secret"] || "");
+  const expected = String(process.env.EAZINVOICE_E2E_AUTH_SECRET || "");
+  const suppliedBuffer = Buffer.from(supplied);
+  const expectedBuffer = Buffer.from(expected);
+  if (suppliedBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(suppliedBuffer, expectedBuffer)) {
+    throw new Error("Invalid E2E auth secret.");
+  }
+}
+
+function e2eEmail(prefix = "owner") {
+  return `${prefix}.${Date.now()}.${crypto.randomBytes(4).toString("hex")}@e2e.eazinvoice.local`;
+}
+
 const PAID_PLAN_CATALOG = Object.fromEntries(
   Object.entries(PLAN_CATALOG).filter(([plan]) => plan !== "free")
 );
@@ -1318,6 +1350,9 @@ async function tryServeStatic(urlPath, res) {
 }
 
 export function createServer(options = {}) {
+  if (String(process.env.EAZINVOICE_E2E_AUTH || "").trim().toLowerCase() === "true" && !isE2eAuthConfigured()) {
+    throw new Error("Refusing to enable E2E auth outside a local test environment.");
+  }
   const persistenceAdapter = options.persistenceAdapter
     ?? (options.persist !== false && isCoreTableSyncEnabled(options) ? createCoreTableSyncPersistenceAdapter() : undefined);
   const store = options.store ?? createStore({}, {
@@ -1862,6 +1897,104 @@ export function createServer(options = {}) {
     return null;
   }
 
+  function createE2eSession(body = {}, req = null) {
+    assertE2eAuthRequest(req);
+    const ownerEmail = String(body.email || e2eEmail("owner")).trim().toLowerCase();
+    const betaOwnerEmail = String(body.betaOwnerEmail || e2eEmail("beta-owner")).trim().toLowerCase();
+    const passwordHash = hashPassword(String(body.password || "EazInvoice-E2E-Only-Password-2026"));
+    const owner = api.createUser({
+      name: String(body.name || "P2C Alpha Books"),
+      email: ownerEmail,
+      phone: "+919999999991",
+      mobileVerified: true,
+      emailVerified: true,
+      passwordHash,
+      subscriberType: "company",
+      registrant: {
+        name: "P2C E2E Owner",
+        designation: "Owner",
+        email: ownerEmail,
+        phone: "+919999999991",
+      },
+      role: "user",
+    });
+    const betaOwner = api.createUser({
+      name: String(body.betaBusinessName || "P2C Beta Books"),
+      email: betaOwnerEmail,
+      phone: "+919999999992",
+      mobileVerified: true,
+      emailVerified: true,
+      passwordHash,
+      subscriberType: "company",
+      registrant: {
+        name: "P2C E2E Beta Owner",
+        designation: "Owner",
+        email: betaOwnerEmail,
+        phone: "+919999999992",
+      },
+      role: "user",
+    });
+    const alphaBusiness = store.getBusinessById(owner.id);
+    const betaBusiness = store.getBusinessById(betaOwner.id);
+    api.createSubscription({
+      subscriberType: "company",
+      subscriberName: owner.name,
+      userId: owner.id,
+      businessId: alphaBusiness?.id || null,
+      plan: "business",
+      amount: 9999,
+      monthlyAmount: 999,
+      annualAmount: 9999,
+      currency: "INR",
+      billingCycle: "yearly",
+      status: "active",
+      gateway: "e2e_local",
+      gatewayOrderId: `e2e_${owner.id}`,
+      gatewayPaymentId: `e2e_pay_${owner.id}`,
+    });
+    api.createSubscription({
+      subscriberType: "company",
+      subscriberName: betaOwner.name,
+      userId: betaOwner.id,
+      businessId: betaBusiness?.id || null,
+      plan: "business",
+      amount: 9999,
+      monthlyAmount: 999,
+      annualAmount: 9999,
+      currency: "INR",
+      billingCycle: "yearly",
+      status: "active",
+      gateway: "e2e_local",
+      gatewayOrderId: `e2e_${betaOwner.id}`,
+      gatewayPaymentId: `e2e_pay_${betaOwner.id}`,
+    });
+    store.createTeamMember({
+      ownerUserId: betaOwner.id,
+      businessId: betaBusiness?.id || null,
+      name: owner.name,
+      email: owner.email,
+      role: "accountant",
+      status: "active",
+      invitedByUserId: betaOwner.id,
+      acceptedUserId: owner.id,
+      inviteDeliveryStatus: "not_sent_e2e",
+    });
+    const token = sessions.create(owner);
+    return {
+      token,
+      user: owner,
+      workspaces: api.listBusinessWorkspaces(owner),
+      fixtures: {
+        alpha: { ownerUserId: owner.id, businessId: alphaBusiness?.id || null, label: alphaBusiness?.name || owner.name },
+        beta: { ownerUserId: betaOwner.id, businessId: betaBusiness?.id || null, label: betaBusiness?.name || betaOwner.name },
+      },
+      e2e: {
+        auth: "local-test-only",
+        persistence: process.env.EAZINVOICE_STORAGE || (process.env.DATABASE_URL ? "postgres-configured" : "isolated-json"),
+      },
+    };
+  }
+
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://localhost");
@@ -1891,6 +2024,12 @@ export function createServer(options = {}) {
 
     if (url.pathname === "/health" && req.method === "GET") {
       sendJson(res, 200, api.healthCheck());
+      return;
+    }
+
+    if (url.pathname === "/readyz" && req.method === "GET") {
+      const readiness = await api.readinessCheck();
+      sendJson(res, readiness.ok ? 200 : 503, readiness);
       return;
     }
 
@@ -2248,6 +2387,20 @@ export function createServer(options = {}) {
         sendJson(res, 200, api.validateWordPressConnection(body));
       } catch (error) {
         sendJson(res, /invalid|not found|revoked|does not belong/i.test(error.message) ? 401 : 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/__e2e__/session" && req.method === "POST") {
+      if (!isE2eAuthConfigured()) {
+        sendJson(res, 404, { error: "Not found" });
+        return;
+      }
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, createE2eSession(body, req));
+      } catch (error) {
+        sendJson(res, /secret|local|disabled/i.test(error.message) ? 403 : 400, { error: error.message });
       }
       return;
     }
@@ -3190,6 +3343,19 @@ export function createServer(options = {}) {
         sendJson(res, 200, await api.getLedgerAccountEntries(user, accountId, Object.fromEntries(url.searchParams.entries())));
       } catch (error) {
         sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/accounting/event-ledger" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listAccountingEventLedger(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
       }
       return;
     }
@@ -5561,7 +5727,13 @@ function setupBusinessNotificationScheduler(server) {
 }
 
 export async function createServerAsync(options = {}) {
+  assertProductionConfig(options);
   if (!options.store && options.persist !== false && wantsPostgresStorage(options)) {
+    await validatePostgresConnection();
+    const schema = await validatePostgresSchema();
+    if (!schema.compatible) {
+      throw new Error(`Postgres schema is not compatible. Required migration ${schema.requiredMigration}; current ${schema.currentMigration || "none"}.`);
+    }
     const persistenceAdapter = await createPostgresPersistenceAdapter();
     return createServer({
       ...options,

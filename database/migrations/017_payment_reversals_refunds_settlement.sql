@@ -142,3 +142,7 @@ create index if not exists eazinvoice_vendor_refunds_vendor_idx
 create unique index if not exists eazinvoice_vendor_refunds_idempotency_idx
   on eazinvoice_vendor_refunds (business_id, idempotency_key)
   where idempotency_key is not null and idempotency_key <> '';
+
+insert into eazinvoice_migrations (migration_name)
+values ('017_payment_reversals_refunds_settlement')
+on conflict (migration_name) do nothing;

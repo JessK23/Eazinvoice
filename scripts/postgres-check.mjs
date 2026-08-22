@@ -57,6 +57,10 @@ function listMigrationFiles() {
     .map((file) => path.join(MIGRATIONS_DIR, file));
 }
 
+function migrationNameFromFile(filePath) {
+  return path.basename(filePath, ".sql");
+}
+
 loadLocalEnv(ROOT);
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -84,17 +88,55 @@ if (process.argv.includes("--migrate")) {
     console.log("No migrations found.");
     process.exit(0);
   }
+  const appliedOutput = runPsql(psql, [
+    databaseUrl,
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-At",
+    "-c",
+    "create table if not exists eazinvoice_migrations (id bigserial primary key, migration_name text not null unique, applied_at timestamptz not null default now()); select migration_name from eazinvoice_migrations order by migration_name;",
+  ], "Migration metadata check");
+  const applied = new Set(appliedOutput.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
 
   for (const migrationFile of migrationFiles) {
-    console.log(`Applying migration: ${path.basename(migrationFile)}`);
+    const migrationName = migrationNameFromFile(migrationFile);
+    if (applied.has(migrationName)) {
+      console.log(`Skipping applied migration: ${migrationName}`);
+      continue;
+    }
+    console.log(`Applying migration: ${migrationName}`);
     runPsql(psql, [
       databaseUrl,
       "-v",
       "ON_ERROR_STOP=1",
       "-f",
       migrationFile,
-    ], `Migration ${path.basename(migrationFile)}`);
+    ], `Migration ${migrationName}`);
   }
 
   console.log("Postgres migrations completed.");
+}
+
+if (process.argv.includes("--verify-schema")) {
+  const required = process.env.EAZINVOICE_REQUIRED_SCHEMA_MIGRATION || "023_transactional_financial_persistence";
+  const output = runPsql(psql, [
+    databaseUrl,
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-At",
+    "-c",
+    "select migration_name from eazinvoice_migrations where migration_name = current_setting('app.required_migration', true);",
+  ], "Schema version check");
+  if (!output.trim()) {
+    const direct = runPsql(psql, [
+      databaseUrl,
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-At",
+      "-c",
+      `select migration_name from eazinvoice_migrations where migration_name = '${required.replace(/'/g, "''")}';`,
+    ], "Schema version check");
+    if (!direct.trim()) throw new Error(`Required migration ${required} has not been applied.`);
+  }
+  console.log(`Schema version verified: ${required}`);
 }

@@ -3,7 +3,11 @@
 !.env.example
 node_modules/
 dist/
+.tmp/
 data/*.json
+data/uploads/
+test-results/
+tmp/
 *.log
 server.err.log
 server.out.log
@@ -13,3 +17,12 @@ temp.txt
 Thumbs.db
 .idea/
 android/.idea/
+android/key.properties
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+android/local.properties
+android/app/google-services.json

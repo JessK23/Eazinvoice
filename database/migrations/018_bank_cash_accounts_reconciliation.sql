@@ -103,3 +103,7 @@ create index if not exists eazinvoice_bank_recon_matches_statement_idx
 
 create index if not exists eazinvoice_bank_recon_matches_source_idx
   on eazinvoice_bank_reconciliation_matches (business_id, source_type, source_id, status);
+
+insert into eazinvoice_migrations (migration_name)
+values ('018_bank_cash_accounts_reconciliation')
+on conflict (migration_name) do nothing;

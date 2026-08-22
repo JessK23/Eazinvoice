@@ -28,3 +28,7 @@ create index if not exists idx_business_audit_category
 
 create index if not exists idx_business_audit_target
   on eazinvoice_business_audit_events (target_type, target_id);
+
+insert into eazinvoice_migrations (migration_name)
+values ('006_business_audit_events')
+on conflict (migration_name) do nothing;

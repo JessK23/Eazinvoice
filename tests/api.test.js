@@ -5,10 +5,11 @@ import path from "node:path";
 import test from "node:test";
 import { createApi } from "../apps/api/src/index.js";
 import { describePersistence } from "../apps/api/src/persistence.js";
+import { redactMessage, resolveStorageMode, validateProductionConfig } from "../apps/api/src/production-config.js";
 import { resolveReportPeriod } from "../apps/api/src/postgres-reporting.js";
 import { buildPlanUsageDetails, getFeatureRequirement, getPlanDefinition, resolvePlanUsageStatus } from "../apps/api/src/plans.js";
 import { createStore } from "../apps/api/src/store.js";
-import { createServer } from "../apps/api/src/server.js";
+import { createServer, createServerAsync } from "../apps/api/src/server.js";
 
 const TEST_ADMIN_EMAIL = "support@eazinvoice.com";
 
@@ -144,6 +145,120 @@ test("store can use an injected persistence adapter", () => {
   assert.equal(created.id, "usr_0002");
   assert.equal(savedStates.length, 1);
   assert.equal(savedStates[0].users.length, 2);
+});
+
+test("P2-1 production storage validation fails closed unless Postgres is authoritative", () => {
+  const baseEnv = {
+    NODE_ENV: "production",
+    EAZINVOICE_ENV: "production",
+    EAZINVOICE_STORAGE: "json",
+    DATABASE_URL: "postgres://user:password@db.example.com:5432/eazinvoice",
+    EAZINVOICE_POSTGRES_SSL_REQUIRED: "true",
+    API_KEY_HASH_SECRET: "0123456789abcdefghijklmnopqrstuvwxyz",
+    ADMIN_ACCESS_KEY: "admin-access-key-that-is-long",
+    CORS_ALLOWED_ORIGINS: "https://www.eazinvoice.com",
+  };
+  const invalid = validateProductionConfig({}, baseEnv);
+  assert.equal(invalid.valid, false);
+  assert.ok(invalid.issues.some((issue) => issue.code === "production_requires_postgres_storage"));
+  const valid = validateProductionConfig({}, { ...baseEnv, EAZINVOICE_STORAGE: "postgres" });
+  assert.equal(valid.valid, true);
+  assert.equal(resolveStorageMode({}, { NODE_ENV: "development" }), "json");
+  assert.equal(resolveStorageMode({ persist: false }, baseEnv), "memory");
+});
+
+test("P2-1 production config rejects weak secrets, localhost CORS and missing SSL", () => {
+  const result = validateProductionConfig({}, {
+    NODE_ENV: "production",
+    EAZINVOICE_STORAGE: "postgres",
+    DATABASE_URL: "postgres://user:password@db.example.com:5432/eazinvoice",
+    EAZINVOICE_POSTGRES_SSL_REQUIRED: "false",
+    API_KEY_HASH_SECRET: "replace_with_a_long_random_api_key_hash_secret",
+    ADMIN_ACCESS_KEY: "eazinvoice-admin",
+    CORS_ALLOWED_ORIGINS: "http://localhost:3001",
+  });
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.issues.map((issue) => issue.code), [
+    "postgres_ssl_required",
+    "api_key_hash_secret_weak",
+    "admin_access_key_weak",
+    "cors_dev_origin_in_production",
+  ]);
+  assert.equal(redactMessage("DATABASE_URL=postgres://user:secret@host/db API_KEY=abc123"), "DATABASE_URL=postgres://user:***@host/db API_KEY=***");
+});
+
+test("P2-1 production server startup refuses JSON fallback before opening a listener", async () => {
+  const previous = {
+    NODE_ENV: process.env.NODE_ENV,
+    EAZINVOICE_ENV: process.env.EAZINVOICE_ENV,
+    EAZINVOICE_STORAGE: process.env.EAZINVOICE_STORAGE,
+    DATABASE_URL: process.env.DATABASE_URL,
+    EAZINVOICE_POSTGRES_SSL_REQUIRED: process.env.EAZINVOICE_POSTGRES_SSL_REQUIRED,
+    API_KEY_HASH_SECRET: process.env.API_KEY_HASH_SECRET,
+    ADMIN_ACCESS_KEY: process.env.ADMIN_ACCESS_KEY,
+    CORS_ALLOWED_ORIGINS: process.env.CORS_ALLOWED_ORIGINS,
+  };
+  try {
+    process.env.NODE_ENV = "production";
+    process.env.EAZINVOICE_ENV = "production";
+    process.env.EAZINVOICE_STORAGE = "json";
+    process.env.DATABASE_URL = "postgres://user:password@db.example.com:5432/eazinvoice";
+    process.env.EAZINVOICE_POSTGRES_SSL_REQUIRED = "true";
+    process.env.API_KEY_HASH_SECRET = "0123456789abcdefghijklmnopqrstuvwxyz";
+    process.env.ADMIN_ACCESS_KEY = "admin-access-key-that-is-long";
+    process.env.CORS_ALLOWED_ORIGINS = "https://www.eazinvoice.com";
+    await assert.rejects(
+      () => createServerAsync({ persist: true }),
+      /production_requires_postgres_storage/i,
+    );
+  } finally {
+    Object.entries(previous).forEach(([key, value]) => {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    });
+  }
+});
+
+test("P2-1 readiness endpoint reports unsafe production without exposing database secrets", async () => {
+  const previous = {
+    NODE_ENV: process.env.NODE_ENV,
+    EAZINVOICE_ENV: process.env.EAZINVOICE_ENV,
+    EAZINVOICE_STORAGE: process.env.EAZINVOICE_STORAGE,
+    DATABASE_URL: process.env.DATABASE_URL,
+    EAZINVOICE_POSTGRES_SSL_REQUIRED: process.env.EAZINVOICE_POSTGRES_SSL_REQUIRED,
+    API_KEY_HASH_SECRET: process.env.API_KEY_HASH_SECRET,
+    ADMIN_ACCESS_KEY: process.env.ADMIN_ACCESS_KEY,
+    CORS_ALLOWED_ORIGINS: process.env.CORS_ALLOWED_ORIGINS,
+  };
+  try {
+    process.env.NODE_ENV = "production";
+    process.env.EAZINVOICE_ENV = "production";
+    process.env.EAZINVOICE_STORAGE = "json";
+    process.env.DATABASE_URL = "postgres://user:password@db.example.com:5432/eazinvoice";
+    process.env.EAZINVOICE_POSTGRES_SSL_REQUIRED = "false";
+    process.env.API_KEY_HASH_SECRET = "weak";
+    process.env.ADMIN_ACCESS_KEY = "eazinvoice-admin";
+    process.env.CORS_ALLOWED_ORIGINS = "http://localhost:3001";
+    const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+    await new Promise((resolve) => server.listen(0, resolve));
+    try {
+      const { port } = server.address();
+      const response = await fetch(`http://127.0.0.1:${port}/readyz`);
+      const payload = await response.json();
+      assert.equal(response.status, 503);
+      assert.equal(payload.ok, false);
+      assert.equal(payload.storageMode, "json");
+      assert.ok(payload.issues.some((issue) => issue.code === "production_requires_postgres_storage"));
+      assert.doesNotMatch(JSON.stringify(payload), /password|db\.example\.com/);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  } finally {
+    Object.entries(previous).forEach(([key, value]) => {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    });
+  }
 });
 
 test("can create invoice and calculate totals", () => {

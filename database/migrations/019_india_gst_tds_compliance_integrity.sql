@@ -145,3 +145,7 @@ create index if not exists idx_compliance_snapshots_status on eazinvoice_transac
 create index if not exists idx_compliance_obligations_business_due on eazinvoice_compliance_obligations (business_id, compliance_type, due_date, status);
 create index if not exists idx_tds_transactions_business_vendor on eazinvoice_tds_transactions (business_id, vendor_id, deduction_date);
 create index if not exists idx_tds_transactions_rule on eazinvoice_tds_transactions (business_id, rule_set_id, rule_version);
+
+insert into eazinvoice_migrations (migration_name)
+values ('019_india_gst_tds_compliance_integrity')
+on conflict (migration_name) do nothing;

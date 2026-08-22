@@ -82,3 +82,7 @@ create table if not exists eazinvoice_year_end_close_history (
 
 create index if not exists idx_eazinvoice_year_end_close_history_business
   on eazinvoice_year_end_close_history (business_id, year_end_close_id, created_at);
+
+insert into eazinvoice_migrations (migration_name)
+values ('021_year_end_close_retained_earnings_roll_forward')
+on conflict (migration_name) do nothing;

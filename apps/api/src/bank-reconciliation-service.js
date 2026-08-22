@@ -60,7 +60,7 @@ export function statementFingerprint(input = {}) {
 }
 
 export function normalizeStatementLine(input = {}, context = {}) {
-  const transactionDate = validateDateOnly(input.transactionDate || input.date, "transaction date");
+  const transactionDate = validateDateOnly(input.transactionDate || input.statementDate || input.date, "transaction date");
   const valueDate = input.valueDate ? validateDateOnly(input.valueDate, "value date") : "";
   let debitMinor = toMinor(input.debit);
   let creditMinor = toMinor(input.credit);

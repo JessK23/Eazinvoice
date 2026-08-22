@@ -147,6 +147,42 @@ export const apiClient = {
   listPayments(token, options = {}) {
     return request(`/payments${queryString(options)}`, { token });
   },
+  listCreditNotes(token, options = {}) {
+    return request(`/credit-notes${queryString(options)}`, { token });
+  },
+  createCreditNote(token, body) {
+    return request("/credit-notes", { method: "POST", token, body });
+  },
+  listVendorCredits(token, options = {}) {
+    return request(`/vendor-credits${queryString(options)}`, { token });
+  },
+  createVendorCredit(token, body) {
+    return request("/vendor-credits", { method: "POST", token, body });
+  },
+  listPaymentReversals(token, options = {}) {
+    return request(`/payment-reversals${queryString(options)}`, { token });
+  },
+  reverseCustomerPayment(token, body) {
+    return request("/payment-reversals", { method: "POST", token, body });
+  },
+  listVendorPaymentReversals(token, options = {}) {
+    return request(`/vendor-payment-reversals${queryString(options)}`, { token });
+  },
+  reverseVendorPayment(token, body) {
+    return request("/vendor-payment-reversals", { method: "POST", token, body });
+  },
+  listCustomerRefunds(token, options = {}) {
+    return request(`/customer-refunds${queryString(options)}`, { token });
+  },
+  createCustomerRefund(token, body) {
+    return request("/customer-refunds", { method: "POST", token, body });
+  },
+  listVendorRefunds(token, options = {}) {
+    return request(`/vendor-refunds${queryString(options)}`, { token });
+  },
+  createVendorRefund(token, body) {
+    return request("/vendor-refunds", { method: "POST", token, body });
+  },
   listPurchaseOrders(token, options = {}) {
     return request(`/purchase-orders${queryString(options)}`, { token });
   },
@@ -288,6 +324,66 @@ export const apiClient = {
   },
   getLedgerAccountEntries(token, accountId, filters = {}) {
     return request(`/accounting/accounts/${encodeURIComponent(accountId)}/ledger${queryString(filters)}`, { token });
+  },
+  getFinancialReport(token, reportType, filters = {}) {
+    return request(`/reports/${encodeURIComponent(reportType)}${queryString(filters)}`, { token });
+  },
+  listAccountingPeriods(token, options = {}) {
+    return request(`/accounting/periods${queryString(options)}`, { token });
+  },
+  getAccountingPeriodReadiness(token, options = {}) {
+    return request(`/accounting/periods/readiness${queryString(options)}`, { token });
+  },
+  changeAccountingPeriodStatus(token, body) {
+    return request("/accounting/periods/status", { method: "POST", token, body });
+  },
+  listOpeningBalances(token, options = {}) {
+    return request(`/accounting/opening-balances${queryString(options)}`, { token });
+  },
+  createOpeningBalance(token, body) {
+    return request("/accounting/opening-balances", { method: "POST", token, body });
+  },
+  listFinancialYears(token, options = {}) {
+    return request(`/accounting/financial-years${queryString(options)}`, { token });
+  },
+  listYearEndCloses(token, options = {}) {
+    return request(`/accounting/year-end-closes${queryString(options)}`, { token });
+  },
+  getYearEndCloseReadiness(token, options = {}) {
+    return request(`/accounting/year-end-close/readiness${queryString(options)}`, { token });
+  },
+  previewYearEndClose(token, options = {}) {
+    return request(`/accounting/year-end-close/preview${queryString(options)}`, { token });
+  },
+  executeYearEndClose(token, body) {
+    return request("/accounting/year-end-close", { method: "POST", token, body });
+  },
+  reopenYearEndClose(token, closeId, body) {
+    return request(`/accounting/year-end-closes/${encodeURIComponent(closeId)}/reopen`, { method: "POST", token, body });
+  },
+  listBankAccounts(token, options = {}) {
+    return request(`/bank/accounts${queryString(options)}`, { token });
+  },
+  createBankAccount(token, body) {
+    return request("/bank/accounts", { method: "POST", token, body });
+  },
+  listBankStatementLines(token, options = {}) {
+    return request(`/bank/statement-lines${queryString(options)}`, { token });
+  },
+  importBankStatement(token, body) {
+    return request("/bank/statement-imports", { method: "POST", token, body });
+  },
+  getBankMatchSuggestions(token, statementLineId, options = {}) {
+    return request(`/bank/statement-lines/${encodeURIComponent(statementLineId)}/suggestions${queryString(options)}`, { token });
+  },
+  confirmBankMatch(token, body) {
+    return request("/bank/reconciliation/matches", { method: "POST", token, body });
+  },
+  unmatchBankReconciliation(token, matchId, options = {}) {
+    return request(`/bank/reconciliation/matches/${encodeURIComponent(matchId)}${queryString(options)}`, { method: "DELETE", token });
+  },
+  getBankReconciliationSummary(token, options = {}) {
+    return request(`/bank/reconciliation/summary${queryString(options)}`, { token });
   },
   listTeamMembers(token, options = {}) {
     return request(`/business/team${queryString(options)}`, { token });

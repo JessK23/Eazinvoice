@@ -1,10 +1,10 @@
 import { loadStateFromPostgres, saveStateToPostgres } from "./postgres-state.js";
 import { loadPersistedState, savePersistedState } from "./persistence.js";
 import { syncCoreTablesFromState } from "./postgres-core-sync.js";
+import { resolveStorageMode } from "./production-config.js";
 
 export function wantsPostgresStorage(options = {}) {
-  const requested = options.storage || process.env.EAZINVOICE_STORAGE || "";
-  return String(requested).trim().toLowerCase() === "postgres";
+  return resolveStorageMode(options) === "postgres";
 }
 
 export function isCoreTableSyncEnabled(options = {}) {
@@ -71,20 +71,11 @@ export async function createPostgresPersistenceAdapter(options = {}) {
     load() {
       return initialState;
     },
-    save(state) {
-      saveStateToPostgres(state, {
+    async save(state) {
+      await saveStateToPostgres(state, {
         source: options.source || "runtime-postgres",
         sourcePath: "postgres",
-      })
-        .then(() => {
-          scheduleCoreTableSync(state, {
-            ...options,
-            source: options.source || "runtime-postgres",
-          });
-        })
-        .catch((error) => {
-          console.error("Postgres persistence save failed:", error.message);
-        });
+      });
     },
   };
 }

@@ -19,3 +19,7 @@ WHERE payment_status IS NULL OR balance_amount IS NULL OR paid_amount IS NULL;
 
 CREATE INDEX IF NOT EXISTS eazinvoice_purchase_orders_payment_status_idx
   ON eazinvoice_purchase_orders (payment_status);
+
+INSERT INTO eazinvoice_migrations (migration_name)
+VALUES ('007_purchase_order_payables')
+ON CONFLICT (migration_name) DO NOTHING;

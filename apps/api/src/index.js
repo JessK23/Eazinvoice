@@ -12,7 +12,8 @@ import {
 } from "./plans.js";
 import { describePersistence } from "./persistence.js";
 import { describePostgresState } from "./postgres-state.js";
-import { hasPostgresConfig, maskDatabaseUrl } from "./postgres.js";
+import { hasPostgresConfig, maskDatabaseUrl, validatePostgresSchema } from "./postgres.js";
+import { validateProductionConfig } from "./production-config.js";
 import {
   createJournalEntry,
   createLedgerAccount,
@@ -80,6 +81,52 @@ export function createApi(deps = {}) {
         ok: true,
         service: "eazinvoice-api",
       };
+    },
+
+    async readinessCheck() {
+      const production = validateProductionConfig();
+      const response = {
+        ok: production.valid,
+        service: "eazinvoice-api",
+        environment: production.environment,
+        storageMode: production.storageMode,
+        productionSafe: production.valid,
+        issues: production.issues.map((issue) => ({ code: issue.code })),
+      };
+      if (production.storageMode === "postgres" || hasPostgresConfig()) {
+        try {
+          const schema = await validatePostgresSchema();
+          response.database = {
+            configured: true,
+            reachable: true,
+            schemaCompatible: schema.compatible,
+            requiredMigration: schema.requiredMigration,
+          };
+          if (!schema.compatible) {
+            response.ok = false;
+            response.productionSafe = false;
+            response.issues.push({ code: "postgres_schema_incompatible" });
+          }
+        } catch {
+          response.database = {
+            configured: hasPostgresConfig(),
+            reachable: false,
+            schemaCompatible: false,
+          };
+          if (production.production || production.storageMode === "postgres") {
+            response.ok = false;
+            response.productionSafe = false;
+            response.issues.push({ code: "postgres_unreachable" });
+          }
+        }
+      } else {
+        response.database = {
+          configured: false,
+          reachable: false,
+          schemaCompatible: false,
+        };
+      }
+      return response;
     },
 
     getFreePlanSummary(user, options = {}) {
@@ -2195,13 +2242,17 @@ export function createApi(deps = {}) {
         configured: hasPostgresConfig(),
         database: hasPostgresConfig() ? maskDatabaseUrl() : "",
         reachable: false,
+        schemaCompatible: false,
         error: "",
       };
       if (hasPostgresConfig()) {
         try {
+          const schema = await validatePostgresSchema();
           postgres = {
             ...postgres,
             reachable: true,
+            schemaCompatible: schema.compatible,
+            schema,
             ...(await describePostgresState()),
           };
         } catch (error) {
@@ -2211,11 +2262,15 @@ export function createApi(deps = {}) {
           };
         }
       }
+      const production = validateProductionConfig();
       return {
         persistence: describePersistence(),
         postgres,
+        production,
         records: store.summarizeRecords(),
-        warning: "Render disks are ephemeral unless persistent storage or an external database is configured. Verify this before production releases.",
+        warning: !production.valid && production.production
+          ? "Production configuration has blocking issues. Do not accept production financial writes until resolved."
+          : "Render disks are ephemeral unless persistent storage or an external database is configured. Verify this before production releases.",
       };
     },
 

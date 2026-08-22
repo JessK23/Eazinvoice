@@ -73,10 +73,11 @@ async function syncUsers(client, users) {
   for (const user of users) {
     await client.query(
       `insert into eazinvoice_users
-        (id, email, name, phone, subscriber_type, account_status, email_verified, mobile_verified, is_admin, record, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, coalesce($11::timestamptz, now()), now())
+        (id, email, canonical_email, name, phone, subscriber_type, account_status, email_verified, mobile_verified, is_admin, record, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, coalesce($12::timestamptz, now()), now())
        on conflict (id) do update set
         email = excluded.email,
+        canonical_email = excluded.canonical_email,
         name = excluded.name,
         phone = excluded.phone,
         subscriber_type = excluded.subscriber_type,
@@ -89,6 +90,7 @@ async function syncUsers(client, users) {
       [
         text(user.id),
         text(user.email),
+        lowerText(user.canonicalEmail, user.email),
         text(user.name, user.fullName, user.businessName),
         text(user.phone, user.mobile, user.mobileNumber),
         text(user.subscriberType, user.plan, "free"),
@@ -98,6 +100,34 @@ async function syncUsers(client, users) {
         user.role === "admin" || user.isAdmin === true,
         json(user),
         timestamp(user.createdAt),
+      ],
+    );
+  }
+}
+
+async function syncBusinesses(client, businesses) {
+  for (const business of businesses) {
+    await client.query(
+      `insert into eazinvoice_businesses
+        (id, owner_user_id, legacy_owner_user_id, name, legal_name, status, record, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7::jsonb, coalesce($8::timestamptz, now()), now())
+       on conflict (id) do update set
+        owner_user_id = excluded.owner_user_id,
+        legacy_owner_user_id = excluded.legacy_owner_user_id,
+        name = excluded.name,
+        legal_name = excluded.legal_name,
+        status = excluded.status,
+        record = excluded.record,
+        updated_at = now()`,
+      [
+        text(business.id),
+        text(business.ownerUserId),
+        text(business.legacyOwnerUserId, business.ownerUserId),
+        text(business.name, "Business workspace"),
+        text(business.legalName) || "",
+        text(business.status, "active"),
+        json(business),
+        timestamp(business.createdAt),
       ],
     );
   }
@@ -148,12 +178,13 @@ async function syncCustomers(client, customers) {
   for (const customer of customers) {
     await client.query(
       `insert into eazinvoice_customers
-        (id, owner_user_id, company_id, customer_code, customer_type, name, business_name, email, phone,
+        (id, owner_user_id, company_id, business_id, customer_code, customer_type, name, business_name, email, phone,
          gst_number, pan_number, status, record, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, coalesce($14::timestamptz, now()), now())
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, coalesce($15::timestamptz, now()), now())
        on conflict (id) do update set
         owner_user_id = excluded.owner_user_id,
         company_id = excluded.company_id,
+        business_id = excluded.business_id,
         customer_code = excluded.customer_code,
         customer_type = excluded.customer_type,
         name = excluded.name,
@@ -169,6 +200,7 @@ async function syncCustomers(client, customers) {
         text(customer.id),
         text(customer.ownerUserId, customer.userId),
         text(customer.companyId),
+        text(customer.businessId, customer.companyId),
         text(customer.customerCode),
         text(customer.customerType, customer.category, customer.type),
         text(customer.name, customer.customerName),
@@ -189,12 +221,13 @@ async function syncInvoices(client, invoices, options = {}) {
   for (const invoice of invoices) {
     await client.query(
       `insert into eazinvoice_invoices
-        (id, owner_user_id, company_id, customer_id, invoice_number, invoice_date, due_date, currency, status,
+        (id, owner_user_id, company_id, business_id, customer_id, invoice_number, invoice_date, due_date, currency, status,
          payment_status, subtotal, discount, tax_amount, total, paid_amount, balance_amount, record, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6::date, $7::date, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, coalesce($18::timestamptz, now()), now())
+       values ($1, $2, $3, $4, $5, $6, $7::date, $8::date, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::jsonb, coalesce($19::timestamptz, now()), now())
        on conflict (id) do update set
         owner_user_id = excluded.owner_user_id,
         company_id = excluded.company_id,
+        business_id = excluded.business_id,
         customer_id = excluded.customer_id,
         invoice_number = excluded.invoice_number,
         invoice_date = excluded.invoice_date,
@@ -214,6 +247,7 @@ async function syncInvoices(client, invoices, options = {}) {
         text(invoice.id),
         text(invoice.ownerUserId, invoice.userId),
         text(invoice.companyId),
+        text(invoice.businessId, invoice.companyId),
         text(invoice.customerId),
         text(invoice.invoiceNumber),
         dateOnly(invoice.invoiceDate, invoice.createdAt),
@@ -276,12 +310,13 @@ async function syncPurchaseOrders(client, purchaseOrders, options = {}) {
   for (const purchaseOrder of purchaseOrders) {
     await client.query(
       `insert into eazinvoice_purchase_orders
-        (id, owner_user_id, company_id, vendor_id, document_type, po_number, po_date, due_date, currency, status,
+        (id, owner_user_id, company_id, business_id, vendor_id, document_type, po_number, po_date, due_date, currency, status,
          payment_status, subtotal, discount, tax_amount, total, paid_amount, balance_amount, record, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7::date, $8::date, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::jsonb, coalesce($19::timestamptz, now()), now())
+       values ($1, $2, $3, $4, $5, $6, $7, $8::date, $9::date, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, coalesce($20::timestamptz, now()), now())
        on conflict (id) do update set
         owner_user_id = excluded.owner_user_id,
         company_id = excluded.company_id,
+        business_id = excluded.business_id,
         vendor_id = excluded.vendor_id,
         document_type = excluded.document_type,
         po_number = excluded.po_number,
@@ -302,6 +337,7 @@ async function syncPurchaseOrders(client, purchaseOrders, options = {}) {
         text(purchaseOrder.id),
         text(purchaseOrder.ownerUserId, purchaseOrder.userId),
         text(purchaseOrder.companyId),
+        text(purchaseOrder.businessId, purchaseOrder.companyId),
         text(purchaseOrder.vendorId, purchaseOrder.customerId),
         text(purchaseOrder.documentType, "po").toLowerCase(),
         text(purchaseOrder.poNumber, purchaseOrder.purchaseOrderNumber),
@@ -365,11 +401,14 @@ async function syncPayments(client, payments) {
   for (const payment of payments) {
     await client.query(
       `insert into eazinvoice_payments
-        (id, owner_user_id, invoice_id, amount, currency, mode, reference, payment_date, status, record, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8::date, $9, $10::jsonb, coalesce($11::timestamptz, now()), now())
+        (id, owner_user_id, business_id, invoice_id, vendor_bill_id, idempotency_key, amount, currency, mode, reference, payment_date, status, record, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date, $12, $13::jsonb, coalesce($14::timestamptz, now()), now())
        on conflict (id) do update set
         owner_user_id = excluded.owner_user_id,
+        business_id = excluded.business_id,
         invoice_id = excluded.invoice_id,
+        vendor_bill_id = excluded.vendor_bill_id,
+        idempotency_key = excluded.idempotency_key,
         amount = excluded.amount,
         currency = excluded.currency,
         mode = excluded.mode,
@@ -381,7 +420,10 @@ async function syncPayments(client, payments) {
       [
         text(payment.id),
         text(payment.ownerUserId, payment.userId),
+        text(payment.businessId, payment.companyId),
         text(payment.invoiceId),
+        text(payment.vendorBillId),
+        text(payment.idempotencyKey),
         num(payment.amount),
         text(payment.currency, "INR"),
         text(payment.mode, payment.gateway, "manual"),
@@ -716,18 +758,20 @@ async function syncTeamMembers(client, teamMembers) {
   for (const member of teamMembers) {
     await client.query(
       `insert into eazinvoice_team_members
-        (id, owner_user_id, company_id, email, name, role, status, invited_by_user_id, accepted_user_id,
-         invite_expires_at, invite_delivery_status, record, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11, $12::jsonb, coalesce($13::timestamptz, now()), now())
+        (id, owner_user_id, company_id, email, canonical_email, name, role, status, invited_by_user_id, accepted_user_id,
+         identity_conflict, invite_expires_at, invite_delivery_status, record, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::timestamptz, $13, $14::jsonb, coalesce($15::timestamptz, now()), now())
        on conflict (id) do update set
         owner_user_id = excluded.owner_user_id,
         company_id = excluded.company_id,
         email = excluded.email,
+        canonical_email = excluded.canonical_email,
         name = excluded.name,
         role = excluded.role,
         status = excluded.status,
         invited_by_user_id = excluded.invited_by_user_id,
         accepted_user_id = excluded.accepted_user_id,
+        identity_conflict = excluded.identity_conflict,
         invite_expires_at = excluded.invite_expires_at,
         invite_delivery_status = excluded.invite_delivery_status,
         record = excluded.record,
@@ -737,11 +781,13 @@ async function syncTeamMembers(client, teamMembers) {
         text(member.ownerUserId, member.userId),
         text(member.companyId),
         lowerText(member.email),
+        lowerText(member.canonicalEmail, member.email),
         text(member.name),
         lowerText(member.role, "viewer"),
         lowerText(member.status, "invited"),
         text(member.invitedByUserId),
         text(member.acceptedUserId),
+        text(member.identityConflict),
         timestamp(member.inviteExpiresAt, member.expiresAt),
         text(member.inviteDeliveryStatus, member.deliveryStatus),
         json(member),
@@ -790,16 +836,21 @@ async function syncApiKeys(client, apiKeys) {
   for (const apiKey of apiKeys) {
     await client.query(
       `insert into eazinvoice_api_keys
-        (id, owner_user_id, company_id, label, token_preview, scopes, status, revoked_at, record, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::timestamptz, $9::jsonb, coalesce($10::timestamptz, now()), now())
+        (id, owner_user_id, company_id, label, token_preview, token_prefix, token_hash, token_hash_algorithm,
+         scopes, status, revoked_at, last_used_at, record, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11::timestamptz, $12::timestamptz, $13::jsonb, coalesce($14::timestamptz, now()), now())
        on conflict (id) do update set
         owner_user_id = excluded.owner_user_id,
         company_id = excluded.company_id,
         label = excluded.label,
         token_preview = excluded.token_preview,
+        token_prefix = excluded.token_prefix,
+        token_hash = excluded.token_hash,
+        token_hash_algorithm = excluded.token_hash_algorithm,
         scopes = excluded.scopes,
         status = excluded.status,
         revoked_at = excluded.revoked_at,
+        last_used_at = excluded.last_used_at,
         record = excluded.record,
         updated_at = now()`,
       [
@@ -808,9 +859,13 @@ async function syncApiKeys(client, apiKeys) {
         text(apiKey.companyId),
         text(apiKey.label, apiKey.name),
         text(apiKey.tokenPreview, apiKey.preview),
+        text(apiKey.tokenPrefix),
+        text(apiKey.tokenHash),
+        text(apiKey.tokenHashAlgorithm),
         json(toArray(apiKey.scopes)),
         lowerText(apiKey.status, apiKey.revokedAt ? "revoked" : "active"),
         timestamp(apiKey.revokedAt),
+        timestamp(apiKey.lastUsedAt),
         json(apiKey),
         timestamp(apiKey.createdAt),
       ],
@@ -950,6 +1005,7 @@ export async function syncSubscriptionToCoreTable(subscription, options = {}) {
 export function countCoreState(state = {}) {
   return {
     users: toArray(state.users).length,
+    businesses: toArray(state.businesses).length,
     businessProfiles: toArray(state.companies).length,
     customers: toArray(state.customers).length,
     invoices: toArray(state.invoices).length,
@@ -968,6 +1024,7 @@ export function countCoreState(state = {}) {
 
 export async function syncCoreTables(client, state = {}, options = {}) {
   await syncUsers(client, toArray(state.users));
+  await syncBusinesses(client, toArray(state.businesses));
   await syncBusinessProfiles(client, toArray(state.companies));
   await syncCustomers(client, toArray(state.customers));
   await syncInvoices(client, toArray(state.invoices), options);
