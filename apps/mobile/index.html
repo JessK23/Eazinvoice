@@ -3,417 +3,58 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#071f60" />
-  <title>EazInvoice - Money Managed Easy</title>
+  <meta name="theme-color" content="#0b2b64" />
+  <title>EazInvoice Android</title>
   <link rel="manifest" href="./manifest.json" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
-<body>
-  <main class="app-shell">
-    <header class="app-header">
-      <button id="menuButton" class="icon-button" type="button" aria-label="Open workspace menu">
-        <span></span><span></span><span></span>
-      </button>
-      <img class="brand-logo" src="../web/assets/logo-header.png" alt="EazInvoice Money Managed Easy" />
-      <button id="profileButton" class="profile-button" type="button" aria-label="Open profile">
-        <span>EI</span>
-      </button>
+<body data-signed-in="false" data-busy="false">
+  <div id="offlineBanner" class="system-banner" hidden>Offline. Financial posting is blocked until the app reconnects.</div>
+  <div id="installRisk" class="system-banner warning" hidden>Development API endpoint. Release builds must use HTTPS.</div>
+
+  <main class="mobile-shell">
+    <header class="top-app-bar">
+      <div class="brand-lockup">
+        <img src="./assets/logo-icon.png" alt="" />
+        <div>
+          <span id="routeTitle">Home</span>
+          <strong>EazInvoice</strong>
+        </div>
+      </div>
+      <button id="refreshButton" class="icon-action" type="button" aria-label="Refresh workspace" hidden>↻</button>
     </header>
 
-    <aside id="drawer" class="drawer" aria-hidden="true">
-      <div class="drawer-card">
-        <div class="drawer-head">
-          <img src="../web/assets/logo-icon.png" alt="" />
-          <div>
-            <strong>EazInvoice</strong>
-            <span>Money Managed Easy</span>
-          </div>
-        </div>
-        <label class="drawer-search">
-          <span>Find a feature</span>
-          <input id="mobileSearchInput" type="search" placeholder="Invoice, reports, privacy..." autocomplete="off" />
-        </label>
-        <div id="mobileSearchResults" class="drawer-search-results" aria-live="polite"></div>
-        <button class="drawer-link active" type="button" data-view="home">Home</button>
-        <button class="drawer-link" type="button" data-view="ai">AI Agent</button>
-        <button class="drawer-link" type="button" data-view="invoice">Invoices</button>
-        <button class="drawer-link" type="button" data-view="po">PO / WO</button>
-        <button class="drawer-link" type="button" data-view="reports">Reports</button>
-        <button class="drawer-link" type="button" data-view="business">Business</button>
-        <button class="drawer-link" type="button" data-view="subscription">Subscription</button>
-        <button class="drawer-link" type="button" data-view="help">Help</button>
-        <button class="drawer-link" type="button" data-view="privacy">Privacy</button>
+    <section class="workspace-bar" aria-label="Current business workspace">
+      <div>
+        <strong id="profileName">Not signed in</strong>
+        <span id="profileMeta">Configure API and sign in</span>
       </div>
-    </aside>
-
-    <section class="hero-card">
-      <div class="hero-copy">
-        <span class="eyebrow">Mobile MSME workspace</span>
-        <h1>Invoice, collect, report.</h1>
-        <p>Run invoices, PO/WO, payment tracking, AI drafts, and subscription tools from one mobile-first dashboard.</p>
-      </div>
-      <div class="hero-visual" aria-hidden="true">
-        <div class="phone-card">
-          <span></span><span></span><span></span>
-          <strong>INR</strong>
-        </div>
-      </div>
+      <select id="workspaceSelect" aria-label="Switch business" hidden></select>
+      <button id="logoutButton" class="text-action" type="button" hidden>Logout</button>
     </section>
 
-    <section class="summary-strip" aria-label="Business summary">
-      <article><span>Revenue</span><strong id="incomeTotal">INR 0.00</strong></article>
-      <article><span>Expenses</span><strong id="expenseTotal">INR 0.00</strong></article>
-      <article><span>Profit</span><strong id="homeProfitTotal">INR 0.00</strong></article>
-    </section>
+    <form id="apiBaseForm" class="endpoint-form">
+      <label>
+        <span>API</span>
+        <input id="apiBase" name="apiBase" inputmode="url" autocomplete="url" />
+      </label>
+      <button class="secondary compact" type="submit">Save</button>
+    </form>
 
-    <section class="view active" data-panel="home">
-      <section class="panel profile-panel">
-        <div>
-          <span class="soft-label">Signed in</span>
-          <h2>Rachel Antony</h2>
-          <p class="muted">support@eazinvoice.com</p>
-        </div>
-        <label class="plan-preview">Preview tier
-          <select id="planSelect">
-            <option value="free">Free</option>
-            <option value="standard">Standard</option>
-            <option value="pro" selected>Pro</option>
-            <option value="business">Business</option>
-          </select>
-        </label>
-      </section>
+    <div id="status" class="status-line" role="status" aria-live="polite"></div>
 
-      <section class="plan-usage" aria-label="Plan usage and limits">
-        <article>
-          <span>Manual invoices</span>
-          <strong id="manualInvoiceLimit">Available</strong>
-        </article>
-        <article>
-          <span>AI Agent</span>
-          <strong id="aiLimitText">Pro tier</strong>
-        </article>
-        <article>
-          <span>Business tools</span>
-          <strong id="businessLimitText">Business tier</strong>
-        </article>
-      </section>
+    <section id="content" class="content-area"></section>
 
-      <div class="metric-grid">
-        <article><span>Invoices</span><strong id="invoiceCount">0</strong></article>
-        <article><span>PO / WO</span><strong id="poCount">0</strong></article>
-        <article><span>Customers</span><strong id="customerCount">0</strong></article>
-        <article><span>Plan</span><strong id="planName">PRO</strong></article>
-      </div>
-
-      <div class="action-grid">
-        <button class="primary" type="button" data-jump="invoice">Create Invoice</button>
-        <button class="secondary" type="button" data-jump="po">Create PO / WO</button>
-        <button class="secondary pro-only" type="button" data-jump="ai">Ask AI</button>
-        <button class="secondary business-only" type="button" data-jump="business">Business Tools</button>
-      </div>
-
-      <section class="panel">
-        <div class="panel-head">
-          <div>
-            <span class="soft-label">Activity</span>
-            <h2>Recent records</h2>
-          </div>
-          <span class="soft-pill">Live local</span>
-        </div>
-        <div id="recentList" class="record-list"></div>
-      </section>
-    </section>
-
-    <section class="view" data-panel="ai">
-      <section class="panel ai-panel">
-        <div class="panel-head">
-          <div>
-            <span class="soft-label">Pro feature</span>
-            <h2>AI Agent</h2>
-          </div>
-          <span id="aiAccessPill" class="soft-pill blue">Enabled</span>
-        </div>
-        <p class="muted">Ask EazAI to plan invoice drafts, PO/WO drafts, or report summaries from saved mobile data. Drafts are saved only after you confirm.</p>
-        <textarea id="aiPrompt" rows="5" placeholder="Example: Create invoice for Rachel Antony for website design INR 40000 plus 18% GST."></textarea>
-        <div class="chip-row">
-          <button type="button" data-example="invoice">Invoice</button>
-          <button type="button" data-example="po">PO</button>
-          <button type="button" data-example="report">Report</button>
-        </div>
-        <button id="runAiButton" class="primary full" type="button">Run AI Agent</button>
-        <div id="aiResult" class="ai-result"></div>
-      </section>
-    </section>
-
-    <section class="view" data-panel="invoice">
-      <section class="panel document-panel">
-        <div class="panel-head">
-          <div>
-            <span class="soft-label">Income</span>
-            <h2>Create invoice</h2>
-          </div>
-          <span class="soft-pill blue">Tax invoice</span>
-        </div>
-        <form id="invoiceForm" class="mobile-form">
-          <input type="hidden" name="type" value="invoice" />
-          <label>Customer Type<select name="partyMode"><option value="existing">Existing Customer</option><option value="new">New Customer</option></select></label>
-          <label>Customer / Business Name<input name="partyName" required placeholder="ABC Consultants" /></label>
-          <label>Customer Email<input name="partyEmail" type="email" placeholder="billing@example.com" /></label>
-          <label>Currency<select name="currency"><option>INR</option><option>USD</option><option>AUD</option><option>EUR</option><option>GBP</option></select></label>
-          <label>Goods / Service<input name="itemName" required placeholder="Website design" /></label>
-          <label>HSN/SAC / Tax Code<input name="itemCode" placeholder="9983" /></label>
-          <div class="split">
-            <label>Qty<input name="quantity" type="number" min="0" step="0.01" value="1" required /></label>
-            <label>Rate<input name="rate" type="number" min="0" step="0.01" value="0" required /></label>
-          </div>
-          <div class="split">
-            <label>Discount Amt<input name="discount" type="number" min="0" step="0.01" value="0" /></label>
-            <label>GST / Tax %<input name="taxRate" type="number" min="0" step="0.01" value="18" /></label>
-          </div>
-          <label>Payment Terms<select name="paymentTerms"><option>Due in 7 days</option><option>Due in 15 days</option><option>Due in 30 days</option><option>Immediate</option></select></label>
-          <label>Mode of Payment<select name="paymentMode"><option>UPI</option><option>Bank Transfer</option><option>Cash</option><option>Card</option></select></label>
-          <div class="form-actions">
-            <button class="secondary" type="submit" data-status="draft">Save Draft</button>
-            <button class="primary" type="submit" data-status="created">Create Invoice</button>
-          </div>
-        </form>
-        <div id="invoiceStatus" class="status"></div>
-      </section>
-      <section class="panel">
-        <div class="panel-head compact">
-          <h2>Invoice records</h2>
-          <span class="soft-pill">Income</span>
-        </div>
-        <div id="invoiceList" class="record-list"></div>
-      </section>
-    </section>
-
-    <section class="view" data-panel="po">
-      <section class="panel document-panel">
-        <div class="panel-head">
-          <div>
-            <span class="soft-label">Expense</span>
-            <h2>Create PO / WO</h2>
-          </div>
-          <span class="soft-pill gold">Outflow</span>
-        </div>
-        <form id="poForm" class="mobile-form">
-          <input type="hidden" name="type" value="order" />
-          <label>Document Type<select name="documentType"><option value="po">Purchase Order</option><option value="wo">Work Order</option></select></label>
-          <label>Vendor Type<select name="partyMode"><option value="existing">Existing Vendor</option><option value="new">New Vendor</option></select></label>
-          <label>Vendor / Supplier Name<input name="partyName" required placeholder="ABC Suppliers" /></label>
-          <label>Vendor Email<input name="partyEmail" type="email" placeholder="vendor@example.com" /></label>
-          <label>Currency<select name="currency"><option>INR</option><option>USD</option><option>AUD</option><option>EUR</option><option>GBP</option></select></label>
-          <label>Goods / Service<input name="itemName" required placeholder="Laptop supply" /></label>
-          <label>HSN/SAC / Tax Code<input name="itemCode" placeholder="8471" /></label>
-          <div class="split">
-            <label>Qty<input name="quantity" type="number" min="0" step="0.01" value="1" required /></label>
-            <label>Rate<input name="rate" type="number" min="0" step="0.01" value="0" required /></label>
-          </div>
-          <div class="split">
-            <label>Discount Amt<input name="discount" type="number" min="0" step="0.01" value="0" /></label>
-            <label>GST / Tax %<input name="taxRate" type="number" min="0" step="0.01" value="18" /></label>
-          </div>
-          <div class="form-actions">
-            <button class="secondary" type="submit" data-status="draft">Save Draft</button>
-            <button class="primary" type="submit" data-status="created">Create PO / WO</button>
-          </div>
-        </form>
-        <div id="poStatus" class="status"></div>
-      </section>
-      <section class="panel">
-        <div class="panel-head compact">
-          <h2>PO / WO records</h2>
-          <span class="soft-pill gold">Expense</span>
-        </div>
-        <div id="poList" class="record-list"></div>
-      </section>
-    </section>
-
-    <section class="view" data-panel="reports">
-      <section class="panel report-panel">
-        <div class="panel-head">
-          <div>
-            <span class="soft-label">Realtime</span>
-            <h2>Reports</h2>
-          </div>
-          <select id="reportFilter" class="compact-select">
-            <option value="all">All time</option>
-            <option value="month">This month</option>
-            <option value="year">This year</option>
-          </select>
-        </div>
-        <div class="report-stack">
-          <article><span>Revenue</span><strong id="reportRevenue">INR 0.00</strong></article>
-          <article><span>Expenses</span><strong id="reportExpenses">INR 0.00</strong></article>
-          <article><span>Profit</span><strong id="reportProfit">INR 0.00</strong></article>
-          <article><span>Unpaid</span><strong id="reportUnpaid">INR 0.00</strong></article>
-        </div>
-        <div class="statement-grid" aria-label="Accounting statements">
-          <article>
-            <span>Balance Sheet</span>
-            <strong id="mobileBalanceAssets">Assets INR 0.00</strong>
-            <small id="mobileBalanceLiabilities">Liabilities + equity INR 0.00</small>
-          </article>
-          <article>
-            <span>Cash Flow</span>
-            <strong id="mobileCashFlow">Operating INR 0.00</strong>
-            <small id="mobileWorkingCapital">Receivables minus payables INR 0.00</small>
-          </article>
-        </div>
-        <div id="miniChart" class="mini-chart" aria-label="Income expense chart"></div>
-      </section>
-    </section>
-
-    <section class="view" data-panel="business">
-      <section class="panel">
-        <div class="panel-head">
-          <div>
-            <span class="soft-label">Business tier</span>
-            <h2>Workspace tools</h2>
-          </div>
-          <span id="businessAccessPill" class="soft-pill gold">Preview</span>
-        </div>
-        <details open>
-          <summary>Team access</summary>
-          <form id="teamForm" class="mobile-form compact-form">
-            <label>Member Email<input name="memberEmail" type="email" placeholder="accountant@company.com" /></label>
-            <label>Role<select name="role"><option>Accountant</option><option>Approver</option><option>Viewer</option></select></label>
-            <button class="primary full" type="submit">Invite Member</button>
-          </form>
-          <div id="teamList" class="record-list"></div>
-        </details>
-        <details>
-          <summary>SMTP email settings</summary>
-          <div class="settings-grid">
-            <span>SMTP Host</span><strong>mail.privateemail.com</strong>
-            <span>Port</span><strong>465 SSL</strong>
-            <span>Status</span><strong id="smtpStatus">Not validated</strong>
-          </div>
-          <button id="validateSmtpButton" class="secondary full" type="button">Validate SMTP Settings</button>
-        </details>
-        <details>
-          <summary>Razorpay gateway</summary>
-          <div class="settings-grid">
-            <span>Gateway</span><strong>Razorpay</strong>
-            <span>Mode</span><strong>Live ready</strong>
-            <span>Status</span><strong id="gatewayStatus">Not configured</strong>
-          </div>
-          <button id="gatewayButton" class="secondary full" type="button">Mark Gateway Configured</button>
-        </details>
-        <details>
-          <summary>API access</summary>
-          <button id="apiKeyButton" class="primary full" type="button">Generate API Key</button>
-          <div id="apiKeyResult" class="api-key-box">No API key generated in this mobile test workspace.</div>
-        </details>
-      </section>
-    </section>
-
-    <section class="view" data-panel="subscription">
-      <section class="panel">
-        <div class="panel-head">
-          <div>
-            <span class="soft-label">Yearly billing</span>
-            <h2>Subscription</h2>
-          </div>
-          <span class="soft-pill">Upgrade ready</span>
-        </div>
-        <div class="plan-list">
-          <article data-plan-card="free"><strong>Free</strong><em>INR 0</em><span>Invoice, PO/WO, drafts, basic reports, one workspace.</span></article>
-          <article data-plan-card="standard"><strong>Standard</strong><em>INR 199/month, INR 2,388 yearly</em><span>Free features plus WhatsApp sharing, recurring invoices, payment tracking, and WordPress paid access.</span></article>
-          <article data-plan-card="pro"><strong>Pro</strong><em>INR 499/month, INR 5,988 yearly</em><span>Standard features plus AI invoice/PO assistant, AI reports, and advanced analytics.</span></article>
-          <article data-plan-card="business"><strong>Business</strong><em>INR 999/month, INR 11,988 yearly</em><span>Pro features plus teams, approvals, API access, SMTP, and Razorpay business gateway.</span></article>
-        </div>
-      </section>
-    </section>
-
-    <section class="view" data-panel="help">
-      <section class="panel">
-        <div class="panel-head">
-          <div>
-            <span class="soft-label">User manual</span>
-            <h2>Help and SOP</h2>
-          </div>
-          <span class="soft-pill">Release ready</span>
-        </div>
-        <div class="action-grid">
-          <article><strong>Daily use</strong><span>Login, update profile, create invoices, create PO/WO, record payments, and review reports.</span></article>
-          <article><strong>Paid features</strong><span>Standard unlocks sharing and recurring tools. Pro unlocks AI. Business unlocks team, approvals, SMTP, API, and gateway tools.</span></article>
-          <article><strong>Release checks</strong><span>Before Play Store release, verify production URL, login, reports, subscription status, and signed AAB configuration.</span></article>
-          <article><strong>Privacy</strong><span>Review how account, business, document, payment, and AI feature information is handled.</span><button class="tiny-button" type="button" data-jump="privacy">Open privacy policy</button></article>
-        </div>
-      </section>
-    </section>
-
-    <section class="view" data-panel="privacy">
-      <section class="panel privacy-panel">
-        <div class="panel-head">
-          <div>
-            <span class="soft-label">Trust and transparency</span>
-            <h2>Privacy Policy</h2>
-          </div>
-          <span class="soft-pill">Effective 27 July 2026</span>
-        </div>
-        <p class="mobile-policy-intro">EazInvoice - Money Managed Easy processes information needed to provide invoicing, PO/WO, payment tracking, reporting, subscriptions, team tools, and optional AI features.</p>
-        <div class="policy-sections">
-          <article>
-            <strong>Information</strong>
-            <span>Account and contact details, business and tax information you enter, customers and vendors, documents, payments, subscription status, security events, and AI prompts or outputs when used.</span>
-          </article>
-          <article>
-            <strong>Purpose</strong>
-            <span>To authenticate users, provide requested business features, prepare records and reports, process subscriptions, send requested communications, protect accounts, and meet applicable legal obligations.</span>
-          </article>
-          <article>
-            <strong>Sharing</strong>
-            <span>We do not sell personal information. Information is shared only with providers needed to operate a requested feature, recipients selected by the user, or where required by law.</span>
-          </article>
-          <article>
-            <strong>Security and choices</strong>
-            <span>We use authentication, HTTPS, workspace access controls, and audit safeguards. You may request access, correction, export, or deletion, subject to legal financial-record retention.</span>
-          </article>
-        </div>
-        <a class="primary full policy-link" href="https://www.eazinvoice.com/apps/web/privacy.html" target="_blank" rel="noopener">Read the complete privacy policy</a>
-        <p class="privacy-contact">Privacy requests: <a href="mailto:support@eazinvoice.com">support@eazinvoice.com</a></p>
-      </section>
-    </section>
-
-    <section id="paymentSheet" class="modal-sheet" aria-hidden="true">
-      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="paymentTitle">
-        <div class="panel-head compact">
-          <div>
-            <span class="soft-label">Record payment</span>
-            <h2 id="paymentTitle">Update invoice payment</h2>
-          </div>
-          <button id="closePaymentSheet" class="tiny-button" type="button">Close</button>
-        </div>
-        <p id="paymentSummary" class="muted">Select an invoice to record payment.</p>
-        <form id="paymentForm" class="mobile-form compact-form">
-          <input type="hidden" name="invoiceId" />
-          <label>Amount Received<input name="amount" type="number" min="0" step="0.01" required /></label>
-          <label>Payment Date<input name="paymentDate" type="date" /></label>
-          <label>Mode of Payment<select name="mode"><option>UPI</option><option>Bank Transfer</option><option>Cash</option><option>Card</option></select></label>
-          <label>Reference / UTR<input name="reference" placeholder="Optional payment reference" /></label>
-          <label class="full-width">Notes<textarea name="notes" rows="3" placeholder="Optional internal note"></textarea></label>
-          <div class="form-actions">
-            <button class="secondary" type="button" id="cancelPaymentSheet">Cancel</button>
-            <button class="primary" type="submit">Update Payment</button>
-          </div>
-        </form>
-        <div id="paymentStatus" class="status"></div>
-      </div>
-    </section>
-
-    <button class="fab" type="button" data-jump="invoice" aria-label="Create invoice">+</button>
-
-    <nav class="bottom-nav" aria-label="Mobile workspace">
-      <button class="nav-chip active" type="button" data-view="home"><span>Home</span></button>
-      <button class="nav-chip" type="button" data-view="ai"><span>AI</span></button>
-      <button class="nav-chip" type="button" data-view="invoice"><span>Invoice</span></button>
-      <button class="nav-chip" type="button" data-view="po"><span>PO</span></button>
-      <button class="nav-chip" type="button" data-view="reports"><span>Reports</span></button>
+    <nav id="bottomNav" class="bottom-nav" aria-label="Primary mobile navigation">
+      <button class="active" type="button" data-route="home">Home</button>
+      <button type="button" data-route="sales">Sales</button>
+      <button type="button" data-route="purchases">Purchases</button>
+      <button type="button" data-route="money">Money</button>
+      <button type="button" data-route="reports">Reports</button>
+      <button type="button" data-route="more">More</button>
     </nav>
   </main>
+
   <script type="module" src="./app.js"></script>
 </body>
 </html>

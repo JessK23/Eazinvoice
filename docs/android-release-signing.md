@@ -30,6 +30,29 @@ When `android/key.properties` exists, the Android release build will:
 3. Upload the AAB to Play Console internal testing first.
 4. Verify sign-in, invoice creation, PO/WO, reports, and subscription access on a real device.
 
+## Local Gradle notes
+
+If the machine default `java -version` is Java 8, set Java explicitly before running Gradle:
+
+```powershell
+$env:JAVA_HOME="C:\Program Files\Android\Android Studio\jbr"
+$env:Path="$env:JAVA_HOME\bin;$env:Path"
+```
+
+If the user home Gradle cache is not writable in a sandboxed terminal, redirect Gradle to the project temp folder:
+
+```powershell
+$env:GRADLE_USER_HOME="C:\Users\Jess\Documents\eazinvoice\.tmp\gradle-home"
+```
+
+The `.tmp/` folder is ignored by Git.
+
 ## Status
 
 The app is now **release-signing ready**, but it will only become Play Store upload ready after you place your actual `android/key.properties` file and keystore locally.
+
+Latest local signing report on 2026-08-22:
+
+- Debug variant: debug config found, but debug keystore missing from the sandboxed Android home.
+- Release variant: `Config: null`, `Store: null`, `Alias: null`.
+- Conclusion: release signing is not configured until `android/key.properties` points to the real upload keystore.
