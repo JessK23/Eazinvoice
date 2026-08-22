@@ -6,7 +6,7 @@ Purpose: track the remaining work required before EazInvoice is safe to sell to 
 
 ## Current Position
 
-EazInvoice has a strong functional foundation across web, Android, WordPress, paid tiers, PostgreSQL hardening, accounting workflows, and AI-assisted drafting. The product should not be advertised broadly until the external production blockers below are closed.
+EazInvoice has a strong functional foundation across the web SaaS, Android app, paid tiers, PostgreSQL hardening, accounting workflows, and AI-assisted drafting. The WordPress plugin is a separate plugin product that can integrate with and lead users into EazInvoice, but it should be tracked and marketed separately from the web/Android application. The web/Android product should not be advertised broadly until the external production blockers below are closed.
 
 ## Step 1: Stabilize Current Moved Repo
 
@@ -158,13 +158,13 @@ Remaining staging/prod validation:
 - Test real Razorpay Business gateway configuration behavior.
 - Review production/staging logs for secret leakage.
 
-## Step 7: WordPress Plugin Parity And Packaging
+## Step 7: Separate WordPress Plugin Product Parity And Packaging
 
 Status: local package alignment complete; WordPress.org upload validation pending.
 
 Already present:
 
-- Plugin source exists at `plugins/eazinvoice-billing-workspace-msmes`.
+- Separate plugin product source exists at `plugins/eazinvoice-billing-workspace-msmes`.
 - Plugin version checks pass for header/readme/constant.
 - WordPress SOP exists.
 - WordPress connection validation is covered by API tests.
@@ -173,7 +173,7 @@ Already present:
 Must verify:
 
 - Free plugin remains WordPress.org compliant.
-- Paid-tier messaging is clear and entitlement-backed.
+- Paid-tier messaging is clear and entitlement-backed without implying the plugin is the same product as the EazInvoice web/Android app.
 - Plugin delegates financial authority to the EazInvoice API.
 - Inputs are sanitized, output is escaped, nonces are used, and API secrets are not exposed publicly.
 - Run WordPress Plugin Check and WordPress.org SVN upload validation outside this local repo.
@@ -188,7 +188,7 @@ Audit artifact:
 
 Implementation requirement:
 
-- Sales-safe public entry first pass completed in `apps/web/index.html`, `apps/web/home.js`, and `apps/web/landing-phase1.css`.
+- Sales-safe public entry first pass completed in `apps/web/index.html`, `apps/web/home.js`, and `apps/web/styles.css`.
 - Next implement first-run onboarding and dashboard daily-action improvements.
 - Preserve backend financial authority.
 - Do not change accounting, GST, reports, auth, entitlements, or database behavior for visual convenience.
