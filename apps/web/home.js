@@ -52,8 +52,8 @@ function showLoggedOutHome() {
     primaryAction.textContent = "Start Free";
   }
   if (secondaryAction) {
-    secondaryAction.href = "/apps/web/auth.html?tab=login";
-    secondaryAction.textContent = "Login";
+    secondaryAction.href = "#pricing";
+    secondaryAction.textContent = "See Plans";
   }
 }
 
@@ -80,12 +80,12 @@ function showLoggedInHome(user) {
   if (loggedName) loggedName.textContent = `Welcome, ${displayName}`;
   if (loggedMeta) loggedMeta.textContent = user?.email || "Signed in";
   if (primaryAction) {
-    primaryAction.href = "/apps/web/access.html";
-    primaryAction.textContent = "Open User Access";
+    primaryAction.href = "/apps/web/dashboard.html";
+    primaryAction.textContent = "Open Workspace";
   }
   if (secondaryAction) {
-    secondaryAction.href = "/apps/web/dashboard.html";
-    secondaryAction.textContent = "View Reports Dashboard";
+    secondaryAction.href = "/apps/web/invoice.html";
+    secondaryAction.textContent = "Create Invoice";
   }
 }
 
