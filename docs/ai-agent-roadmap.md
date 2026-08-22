@@ -4,6 +4,18 @@
 
 EazInvoice currently has an AI Assistant that parses structured user commands and can draft invoices, PO/WO records, and report summaries. It also has an optional LLM wrapper when `OPENAI_API_KEY` is configured.
 
+The guided AI Agent wrapper is implemented at `/ai-agent/command`. It wraps assistant output with checks, a plan, warnings, and next actions. Current tests confirm the Agent does not auto-save financial records and keeps Pro/Business gates intact.
+
+Commercially safe current claim: "AI-assisted invoice, PO/WO, and report drafting for Pro and Business plans."
+
+Claims to avoid until later phases are complete:
+
+- Fully autonomous accounting.
+- Automatic tax filing.
+- Legal, tax, or CA-certified advice.
+- Unsupplied customer/vendor data completion without review.
+- Background financial record creation without user confirmation.
+
 ## Target State
 
 The AI Agent should become a guided business operator, not just a command parser. It should:
@@ -19,7 +31,7 @@ The AI Agent should become a guided business operator, not just a command parser
 
 ### Phase 1: Agent Shell
 
-- Add chat-style UI.
+- Add chat-style UI. Current dashboard UI has a chat-style Agent workspace; continue polishing it rather than starting again.
 - Keep current AI Assistant as the execution engine.
 - Add safe responses for missing customer/vendor/account data.
 - Add clear confirm/cancel actions before creating drafts.
@@ -57,3 +69,6 @@ The AI Agent should become a guided business operator, not just a command parser
 - Never expose hidden API keys, SMTP passwords, Razorpay secrets, or another user's records.
 - Keep generated actions reversible while in draft state.
 
+## Launch Readiness Position
+
+The current AI feature can remain in the sales story as an assisted drafting feature for paid plans after subscription verification is complete. The full tool-based AI Agent should stay after stabilization, because subscriptions, permissions, audit logging, and production persistence must remain the authority before the AI layer gains more actions.

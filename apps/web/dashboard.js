@@ -22,6 +22,7 @@ const profileDropdownEmail = document.getElementById("profileDropdownEmail");
 const profileAdminLink = document.getElementById("profileAdminLink");
 const profileLogoutBtn = document.getElementById("profileLogoutBtn");
 const contextBusinessName = document.getElementById("contextBusinessName");
+const globalBusinessSwitcher = document.getElementById("globalBusinessSwitcher");
 const contextBusinessMeta = document.getElementById("contextBusinessMeta");
 const contextGstin = document.getElementById("contextGstin");
 const contextGstStatus = document.getElementById("contextGstStatus");
@@ -173,6 +174,7 @@ const businessWorkspaceNotice = document.getElementById("businessWorkspaceNotice
 const businessWorkspaceStatusBoard = document.getElementById("businessWorkspaceStatusBoard");
 const businessWorkspacePermissionPanel = document.getElementById("businessWorkspacePermissionPanel");
 const businessWorkspaceFlowChecklist = document.getElementById("businessWorkspaceFlowChecklist");
+const businessWorkspaceGovernancePanel = document.getElementById("businessWorkspaceGovernancePanel");
 const businessWorkspaceNavGroup = document.getElementById("businessWorkspaceNavGroup");
 const businessWorkspaceSwitcher = document.getElementById("businessWorkspaceSwitcher");
 const businessWorkspaceRoleBadge = document.getElementById("businessWorkspaceRoleBadge");
@@ -220,6 +222,34 @@ const workspaceTargetLinks = document.querySelectorAll("[data-workspace-target]"
 const workspaceSectionSelect = document.getElementById("workspaceSectionSelect");
 const workspaceSectionHint = document.getElementById("workspaceSectionHint");
 const workspaceGroups = document.querySelectorAll(".workspace-group");
+const advancedRefreshBtn = document.getElementById("advancedRefreshBtn");
+const advancedStatus = document.getElementById("advancedStatus");
+const advancedTabs = document.querySelectorAll("[data-advanced-tab]");
+const advancedActionTitle = document.getElementById("advancedActionTitle");
+const advancedActionHint = document.getElementById("advancedActionHint");
+const advancedRoleBadge = document.getElementById("advancedRoleBadge");
+const advancedActionForm = document.getElementById("advancedActionForm");
+const advancedActionFields = document.getElementById("advancedActionFields");
+const advancedActionPreview = document.getElementById("advancedActionPreview");
+const advancedActionSubmit = document.getElementById("advancedActionSubmit");
+const advancedRegisterTitle = document.getElementById("advancedRegisterTitle");
+const advancedRegisterHint = document.getElementById("advancedRegisterHint");
+const advancedSummary = document.getElementById("advancedSummary");
+const advancedRegister = document.getElementById("advancedRegister");
+const p22ProfitMetric = document.getElementById("p22ProfitMetric");
+const p22ProfitHint = document.getElementById("p22ProfitHint");
+const p22ReceivablesMetric = document.getElementById("p22ReceivablesMetric");
+const p22ReceivablesHint = document.getElementById("p22ReceivablesHint");
+const p22PayablesMetric = document.getElementById("p22PayablesMetric");
+const p22PayablesHint = document.getElementById("p22PayablesHint");
+const p22GstMetric = document.getElementById("p22GstMetric");
+const p22GstHint = document.getElementById("p22GstHint");
+const p22OwnerActionList = document.getElementById("p22OwnerActionList");
+const p22AccountantControlList = document.getElementById("p22AccountantControlList");
+const p22ComplianceReadinessList = document.getElementById("p22ComplianceReadinessList");
+const firstRunSetupPanel = document.getElementById("firstRunSetupPanel");
+const firstRunChecklist = document.getElementById("firstRunChecklist");
+const dailyActionBand = document.getElementById("dailyActionBand");
 
 let planCatalog = [
   { id: "free", label: "Free", amount: 0, monthlyAmount: 0, annualAmount: 0, billingCycle: "yearly", description: "Basic invoice creation and tracking", features: ["1 company", "limited invoices", "basic reports", "dashboard access", "free WordPress CTA plugin"] },
@@ -247,6 +277,29 @@ let dashboardBusinessWorkspaces = [];
 let dashboardBusinessAuditEvents = [];
 let dashboardBusinessNotifications = [];
 let dashboardBusinessDeliveryEvents = [];
+let advancedActiveTab = "corrections";
+let advancedLoadedForWorkspace = "";
+let advancedData = {
+  creditNotes: [],
+  vendorCredits: [],
+  paymentReversals: [],
+  vendorPaymentReversals: [],
+  customerRefunds: [],
+  vendorRefunds: [],
+  bankAccounts: [],
+  bankStatementLines: [],
+  bankSummary: null,
+  accountingPeriods: [],
+  openingBalances: [],
+  financialYears: [],
+  yearEndCloses: [],
+  gstSales: null,
+  gstPurchases: null,
+  gstReconciliation: null,
+  tdsRegister: null,
+  tdsReconciliation: null,
+  complianceObligations: null,
+};
 let selectedBusinessWorkspaceOwnerId = window.localStorage?.getItem("eazinvoice_business_workspace_owner") || "";
 let currentReportExport = { title: "Detailed Report", headers: [], rows: [] };
 let razorpayCheckoutPromise = null;
@@ -314,6 +367,7 @@ function showDashboardPage(page = currentDashboardPage()) {
     });
   }
   if (page === "reports") renderMainReportCharts();
+  if (page === "advanced-workflows") loadAdvancedWorkflows();
   if (page === "admin-operations") loadAdminOperations();
 }
 
@@ -378,6 +432,36 @@ function selectedWorkspaceOptions(extra = {}) {
     ...extra,
     workspaceOwnerUserId: workspace?.ownerUserId || currentUser?.id || "",
   };
+}
+
+function businessWorkspaceOptionLabel(item) {
+  const label = item?.label || item?.email || currentUser?.name || currentUser?.email || "Business workspace";
+  const role = String(item?.role || "owner").replace(/_/g, " ");
+  return `${label} (${role})`;
+}
+
+function renderBusinessSwitcher(select) {
+  if (!select) return;
+  const workspace = activeBusinessWorkspace();
+  const fallbackOwnerId = currentUser?.id || "";
+  const options = dashboardBusinessWorkspaces.length
+    ? dashboardBusinessWorkspaces
+    : [{
+      ownerUserId: fallbackOwnerId,
+      label: currentUser?.name || currentUser?.email || "My workspace",
+      role: currentUser?.role === "admin" ? "admin" : "owner",
+    }];
+  select.innerHTML = options.map((item) => (
+    `<option value="${escapeHtml(item.ownerUserId || fallbackOwnerId)}">${escapeHtml(businessWorkspaceOptionLabel(item))}</option>`
+  )).join("");
+  select.value = workspace?.ownerUserId || fallbackOwnerId;
+  select.disabled = options.length <= 1;
+}
+
+function selectBusinessWorkspace(ownerUserId) {
+  selectedBusinessWorkspaceOwnerId = ownerUserId || currentUser?.id || "";
+  window.localStorage?.setItem("eazinvoice_business_workspace_owner", selectedBusinessWorkspaceOwnerId);
+  window.location.reload();
 }
 
 function workspaceCan(permission) {
@@ -649,7 +733,7 @@ function renderBusinessWorkspaceFlowChecklist(enabled) {
       detail: workspaceCan("manageTeam")
         ? dashboardTeamMembers.length
           ? `${dashboardTeamMembers.length} member${dashboardTeamMembers.length === 1 ? "" : "s"} invited`
-          : "Invite an accountant, admin, or viewer"
+          : "Add an accountant or viewer"
         : "This role can view team records only",
       state: dashboardTeamMembers.length ? "done" : workspaceCan("manageTeam") ? "open" : "locked",
     },
@@ -684,6 +768,101 @@ function renderBusinessWorkspaceFlowChecklist(enabled) {
       <span>${escapeHtml(step.detail)}</span>
     </div>
   `).join("");
+}
+
+function governanceTone(level) {
+  if (level === "critical") return "danger";
+  if (level === "attention") return "attention";
+  if (level === "locked") return "locked";
+  return "ready";
+}
+
+function renderBusinessGovernancePanel(enabled) {
+  if (!businessWorkspaceGovernancePanel) return;
+  const workspace = activeBusinessWorkspace();
+  if (!enabled) {
+    businessWorkspaceGovernancePanel.innerHTML = `
+      <section class="workspace-governance-card" data-tone="locked">
+        <div>
+          <span class="pill gold">Governance</span>
+          <h3>Business controls are locked</h3>
+          <p>Upgrade to Business to monitor team access, compliance readiness, delivery failures, gateway status, and audit activity in one place.</p>
+        </div>
+      </section>
+    `;
+    return;
+  }
+  const emailSettings = dashboardBusinessSettings.emailSettings || {};
+  const paymentSettings = dashboardBusinessSettings.paymentSettings || {};
+  const reminderCounts = dashboardBusinessCompliance?.complianceEngine?.reminders?.counts || {};
+  const criticalAlerts = dashboardBusinessNotifications.filter((notification) => notification.severity === "red").length;
+  const attentionAlerts = dashboardBusinessNotifications.filter((notification) => notification.severity === "amber").length;
+  const failedDeliveries = dashboardBusinessDeliveryEvents.filter((event) => ["failed", "blocked"].includes(String(event.outcome || "").toLowerCase())).length;
+  const notConfiguredDeliveries = dashboardBusinessDeliveryEvents.filter((event) => String(event.outcome || "").toLowerCase() === "not_configured").length;
+  const activeKeys = dashboardApiKeys.filter((key) => String(key.status || "active").toLowerCase() === "active");
+  const smtpReady = Boolean(emailSettings.smtpHost && emailSettings.smtpUser && emailSettings.fromEmail);
+  const gatewayReady = ["test_mode", "live_ready"].includes(String(paymentSettings.status || "").toLowerCase());
+  const complianceReady = Boolean(dashboardBusinessCompliance?.readiness?.compliance);
+  const roleRisk = workspace?.source === "team" && !workspaceCan("manageSettings")
+    ? "Scoped team access"
+    : "Owner controls";
+  const posture = criticalAlerts || failedDeliveries
+    ? "critical"
+    : attentionAlerts || notConfiguredDeliveries || !complianceReady || !smtpReady
+      ? "attention"
+      : "ready";
+  const checks = [
+    {
+      label: "Access Control",
+      value: roleRisk,
+      detail: workspace?.source === "team"
+        ? `${selectedWorkspaceRoleLabel()} permissions apply to records and settings.`
+        : "Owner/admin can manage team, settings, API, and approvals.",
+      tone: workspace?.source === "team" ? "attention" : "ready",
+    },
+    {
+      label: "Compliance",
+      value: complianceReady ? "Profile ready" : "Profile gaps",
+      detail: `${Number(reminderCounts.overdue || 0)} overdue, ${Number(reminderCounts.dueThisMonth || 0)} due this month.`,
+      tone: complianceReady && !Number(reminderCounts.overdue || 0) ? "ready" : "attention",
+    },
+    {
+      label: "External Delivery",
+      value: failedDeliveries ? `${failedDeliveries} failed` : smtpReady ? "SMTP ready" : "SMTP pending",
+      detail: `${notConfiguredDeliveries} not configured delivery event${notConfiguredDeliveries === 1 ? "" : "s"}.`,
+      tone: failedDeliveries ? "danger" : smtpReady ? "ready" : "attention",
+    },
+    {
+      label: "Collections",
+      value: gatewayReady ? "Gateway ready" : "Gateway pending",
+      detail: paymentSettings.paymentLinkEnabled ? "Invoice payment links are enabled." : "Payment links are disabled.",
+      tone: gatewayReady ? "ready" : "attention",
+    },
+    {
+      label: "Audit Trail",
+      value: `${dashboardBusinessAuditEvents.length} event${dashboardBusinessAuditEvents.length === 1 ? "" : "s"}`,
+      detail: activeKeys.length ? `${activeKeys.length} active API key${activeKeys.length === 1 ? "" : "s"} also needs periodic review.` : "No active API keys.",
+      tone: dashboardBusinessAuditEvents.length ? "ready" : "attention",
+    },
+  ];
+  businessWorkspaceGovernancePanel.innerHTML = `
+    <section class="workspace-governance-card" data-tone="${governanceTone(posture)}">
+      <div>
+        <span class="pill ${posture === "critical" ? "red" : posture === "attention" ? "gold" : "blue"}">Governance</span>
+        <h3>${posture === "critical" ? "Action needed before production use" : posture === "attention" ? "Review controls before scale-up" : "Business controls look healthy"}</h3>
+        <p>One control view for role access, statutory readiness, delivery reliability, collections, and audit evidence.</p>
+      </div>
+      <div class="workspace-governance-grid">
+        ${checks.map((check) => `
+          <article data-tone="${escapeHtml(check.tone)}">
+            <span>${escapeHtml(check.label)}</span>
+            <strong>${escapeHtml(check.value)}</strong>
+            <small>${escapeHtml(check.detail)}</small>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
 }
 
 function latestByDate(records = [], field = "updatedAt") {
@@ -1553,6 +1732,7 @@ function renderAppContext(user, organization) {
   const planLabel = activePlanSummary?.label || currentSubscription?.plan || "Free";
 
   if (contextBusinessName) contextBusinessName.textContent = businessName;
+  renderBusinessSwitcher(globalBusinessSwitcher);
   if (contextBusinessMeta) {
     contextBusinessMeta.textContent = organization
       ? `${String(entityType).replace(/_/g, " ")} · ${organization.state || organization.address || "Profile saved"}`
@@ -1782,6 +1962,830 @@ function escapeHtml(value) {
 
 function metricCard(label, value) {
   return `<article class="metric-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`;
+}
+
+function summaryNumber(...paths) {
+  const roots = [dashboardReportSummary?.totals || {}, dashboardReportSummary || {}];
+  for (const path of paths) {
+    for (const root of roots) {
+      const value = String(path).split(".").reduce((current, key) => current?.[key], root);
+      if (value !== undefined && value !== null && value !== "") return Number(value || 0);
+    }
+  }
+  return 0;
+}
+
+function readinessItem(label, detail, tone = "ready") {
+  return `
+    <div class="readiness-item" data-tone="${escapeHtml(tone)}">
+      <span>${escapeHtml(label)}</span>
+      <small>${escapeHtml(detail)}</small>
+    </div>
+  `;
+}
+
+function renderFinanceCockpit() {
+  if (!p22ProfitMetric) return;
+  const hasSummary = Boolean(dashboardReportSummary?.available && dashboardReportSummary?.totals);
+  const revenue = summaryNumber("revenue", "income", "totalIncome");
+  const expenses = summaryNumber("expenses", "totalExpenses");
+  const profit = summaryNumber("profit", "netProfit", "profitLoss.netProfit");
+  const receivables = summaryNumber("unpaidAmount", "receivables", "accountsReceivable", "arOutstanding");
+  const payables = summaryNumber("payables", "accountsPayable", "apOutstanding");
+  const outputGst = summaryNumber("outputGst", "gst.outputGst", "gstSummary.outputGst");
+  const inputGst = summaryNumber("inputGst", "gst.inputGst", "gstSummary.inputGst");
+  const netGst = summaryNumber("netGstPayable", "gst.netGstPayable", "gstSummary.netGstPayable") || (outputGst - inputGst);
+  const workspace = activeBusinessWorkspace();
+  const complianceProfile = dashboardBusinessSettings?.complianceProfile || {};
+  const businessProfileReady = dashboardCompanies.length > 0;
+  const gstProfileReady = Boolean(complianceProfile.gstin || dashboardCompanies.some((company) => company.gstNumber || company.gstin));
+  const bankEvidenceReady = Array.isArray(dashboardPayments) && dashboardPayments.length > 0;
+  const writable = workspaceCanWriteRecords();
+
+  p22ProfitMetric.textContent = hasSummary ? `INR ${money(profit)}` : "API pending";
+  if (p22ProfitHint) p22ProfitHint.textContent = hasSummary ? `Revenue INR ${money(revenue)} less expenses INR ${money(expenses)}` : "Backend report summary unavailable";
+  if (p22ReceivablesMetric) p22ReceivablesMetric.textContent = hasSummary ? `INR ${money(receivables)}` : "API pending";
+  if (p22ReceivablesHint) p22ReceivablesHint.textContent = hasSummary ? "From backend sales and payment state" : "Open the API before relying on A/R";
+  if (p22PayablesMetric) p22PayablesMetric.textContent = hasSummary ? `INR ${money(payables)}` : "API pending";
+  if (p22PayablesHint) p22PayablesHint.textContent = hasSummary ? "From backend purchase and vendor payment state" : "A/P needs backend summary";
+  if (p22GstMetric) p22GstMetric.textContent = hasSummary ? `INR ${money(netGst)}` : "API pending";
+  if (p22GstHint) p22GstHint.textContent = hasSummary ? `Output INR ${money(outputGst)} less input INR ${money(inputGst)}` : "Compliance engine not loaded yet";
+
+  if (p22OwnerActionList) {
+    p22OwnerActionList.innerHTML = [
+      readinessItem("Business profile", businessProfileReady ? "Profile is available for invoice and compliance context." : "Add a business profile before live invoicing.", businessProfileReady ? "ready" : "attention"),
+      readinessItem("Customer collections", receivables > 0 ? `Collect or follow up INR ${money(receivables)}.` : "No receivable follow-up from the current summary.", receivables > 0 ? "attention" : "ready"),
+      readinessItem("Vendor payments", payables > 0 ? `Plan vendor settlement of INR ${money(payables)}.` : "No payable follow-up from the current summary.", payables > 0 ? "attention" : "ready"),
+    ].join("");
+  }
+  if (p22AccountantControlList) {
+    p22AccountantControlList.innerHTML = [
+      readinessItem("Backend authority", hasSummary ? "Dashboard is reading API report totals." : "API report summary is not available.", hasSummary ? "ready" : "danger"),
+      readinessItem("Workspace role", `${businessWorkspaceOptionLabel(workspace)} ${writable ? "can post workflow records." : "has view-only posting controls."}`, writable ? "ready" : "locked"),
+      readinessItem("Bank evidence", bankEvidenceReady ? "Payments are available for banking/reconciliation review." : "No payments loaded for reconciliation review.", bankEvidenceReady ? "ready" : "attention"),
+    ].join("");
+  }
+  if (p22ComplianceReadinessList) {
+    const complianceEngine = dashboardBusinessCompliance?.complianceEngine || {};
+    const overdue = Number(complianceEngine.overdue || 0);
+    p22ComplianceReadinessList.innerHTML = [
+      readinessItem("GST profile", gstProfileReady ? "GST/PAN context exists for compliance views." : "Add GSTIN/PAN in Compliance Profile.", gstProfileReady ? "ready" : "attention"),
+      readinessItem("Obligations", overdue > 0 ? `${overdue} compliance item(s) overdue.` : "No overdue item reported by the compliance view.", overdue > 0 ? "danger" : "ready"),
+      readinessItem("Filing semantics", "Prepared records remain separate from actually filed obligations.", "ready"),
+    ].join("");
+  }
+}
+
+function renderFirstRunExperience() {
+  if (!firstRunSetupPanel || !firstRunChecklist || !dailyActionBand) return;
+  const createdInvoices = createdInvoicesOnly(dashboardInvoices);
+  const createdPurchaseOrders = dashboardPurchaseOrders.filter((po) => String(po.status || "created").toLowerCase() === "created");
+  const hasCompany = dashboardCompanies.length > 0;
+  const hasTaxProfile = dashboardCompanies.some((company) => company.gstNumber || company.gstin || company.gstRegistered || company.panNumber)
+    || Boolean(dashboardBusinessSettings.complianceProfile?.gstin || dashboardBusinessSettings.complianceProfile?.panNumber);
+  const hasCustomer = dashboardCustomers.some((customer) => String(customer.status || "active").toLowerCase() !== "deleted");
+  const hasInvoice = createdInvoices.length > 0;
+  const hasPo = createdPurchaseOrders.length > 0;
+  const hasPaidPlanChoice = String(activePlanSummary?.plan || currentSubscription?.plan || "free").toLowerCase() !== "free"
+    || isPaidSubscription(currentSubscription);
+  const checklist = [
+    { label: "Save business profile", complete: hasCompany, href: "/apps/web/onboarding.html" },
+    { label: "Add GST/PAN or tax details", complete: hasTaxProfile, href: "/apps/web/onboarding.html" },
+    { label: "Add first customer", complete: hasCustomer, href: "/apps/web/invoice.html#customerStep" },
+    { label: "Create first invoice", complete: hasInvoice, href: "/apps/web/invoice.html" },
+    { label: "Create first PO / WO", complete: hasPo, href: "/apps/web/invoice.html?type=po" },
+    { label: "Choose paid plan when needed", complete: hasPaidPlanChoice, href: "/apps/web/subscription.html" },
+  ];
+  const completeCount = checklist.filter((item) => item.complete).length;
+  firstRunSetupPanel.dataset.complete = completeCount === checklist.length ? "true" : "false";
+  firstRunChecklist.innerHTML = checklist.map((item) => `
+    <a class="setup-check-item" data-complete="${item.complete ? "true" : "false"}" href="${escapeHtml(item.href)}">
+      <strong>${item.complete ? "Done" : "Next"}</strong>
+      <span>${escapeHtml(item.label)}</span>
+    </a>
+  `).join("");
+
+  const unpaidInvoices = createdInvoices.filter((invoice) => Number(invoice.balanceDue ?? invoice.total ?? 0) > 0);
+  const pendingPurchaseOrders = createdPurchaseOrders.filter((po) => Number(po.balanceDue ?? po.total ?? po.amount ?? 0) > 0);
+  const receivableTotal = unpaidInvoices.reduce((sum, invoice) => sum + Number(invoice.balanceDue ?? invoice.total ?? 0), 0);
+  const payableTotal = pendingPurchaseOrders.reduce((sum, po) => sum + Number(po.balanceDue ?? po.total ?? po.amount ?? 0), 0);
+  const actions = [
+    { label: "Create invoice", meta: hasCustomer ? "Bill a saved or new customer" : "Add a customer while billing", href: "/apps/web/invoice.html", tone: "primary" },
+    { label: "Create PO / WO", meta: "Track vendor work and purchases", href: "/apps/web/invoice.html?type=po", tone: "neutral" },
+    { label: "Collect payment", meta: unpaidInvoices.length ? `${unpaidInvoices.length} invoice(s) need follow-up` : "No unpaid invoices yet", href: "/apps/web/dashboard.html#invoices", tone: unpaidInvoices.length ? "attention" : "neutral" },
+    { label: "View receivables", meta: `INR ${money(receivableTotal)}`, href: "/apps/web/dashboard.html#report-invoices", tone: unpaidInvoices.length ? "attention" : "ready" },
+    { label: "View payables", meta: `INR ${money(payableTotal)}`, href: "/apps/web/dashboard.html#report-expenses", tone: pendingPurchaseOrders.length ? "attention" : "ready" },
+    { label: "Open reports", meta: "Revenue, GST, P&L, and compliance", href: "/apps/web/dashboard.html#reports", tone: "neutral" },
+  ];
+  dailyActionBand.innerHTML = actions.map((action) => `
+    <a class="daily-action-button" data-tone="${escapeHtml(action.tone)}" href="${escapeHtml(action.href)}">
+      <strong>${escapeHtml(action.label)}</strong>
+      <span>${escapeHtml(action.meta)}</span>
+    </a>
+  `).join("");
+}
+
+function backendErrorMessage(error) {
+  const message = String(error?.message || error || "Action failed.");
+  if (/exceed/i.test(message) && /credit/i.test(message)) return "The backend rejected this because the credit amount exceeds the remaining eligible balance.";
+  if (/refund amount cannot exceed/i.test(message)) return "The backend rejected this because the refund/recovery exceeds the available credit balance.";
+  if (/already matched/i.test(message)) return "This bank line or internal transaction is already matched. Refreshing the latest status is recommended.";
+  if (/multiple|ambiguous/i.test(message)) return "Multiple possible matches exist. Choose the correct transaction explicitly.";
+  if (/closed period|period .* closed|soft-closed|soft_closed/i.test(message)) return "The selected accounting period is not open. Use the period controls or choose an open accounting date.";
+  if (/blocking readiness|blocker/i.test(message)) return "The backend found close blockers. Review readiness before closing.";
+  if (/not found in this business|does not match|forbidden|permission|access/i.test(message)) return "This action is not available in the active business or your current role.";
+  if (/idempot/i.test(message)) return "This looks like a duplicate submission. Refresh to see the latest authoritative record.";
+  return message;
+}
+
+function moneyLabel(value, currency = "INR") {
+  return `${currency || "INR"} ${money(value || 0)}`;
+}
+
+function optionRows(records, labelFn, emptyLabel = "No records available") {
+  return records.length
+    ? records.map((record) => `<option value="${escapeHtml(record.id)}">${escapeHtml(labelFn(record))}</option>`).join("")
+    : `<option value="">${escapeHtml(emptyLabel)}</option>`;
+}
+
+function postedInvoicesForCorrections() {
+  return createdInvoicesOnly(dashboardInvoices).filter((invoice) => String(invoice.status || "created").toLowerCase() !== "deleted");
+}
+
+function postedVendorBillsForCorrections() {
+  return activeCreatedPurchaseOrders();
+}
+
+function customerPaymentsForReversal() {
+  return dashboardPayments.filter((payment) => payment.invoiceId && Number(payment.amount || 0) > 0);
+}
+
+function vendorPaymentsForReversal() {
+  return dashboardPayments.filter((payment) => payment.vendorBillId && Number(payment.amount || 0) > 0);
+}
+
+function postedCreditNotesForRefund() {
+  return advancedData.creditNotes.filter((note) => String(note.status || "").toLowerCase() !== "draft");
+}
+
+function postedVendorCreditsForRecovery() {
+  return advancedData.vendorCredits.filter((credit) => String(credit.status || "").toLowerCase() !== "draft");
+}
+
+function advancedCanMutate() {
+  return workspaceCanWriteRecords();
+}
+
+function setAdvancedStatus(message, tone = "") {
+  setInlineStatus(advancedStatus, message, tone);
+}
+
+function advancedMetric(label, value) {
+  return metricCard(label, value);
+}
+
+function advancedTable(headers, rows, empty = "No records yet.") {
+  if (!rows.length) return `<div class="notice compact">${escapeHtml(empty)}</div>`;
+  return `
+    <table class="report-table advanced-table">
+      <thead><tr>${headers.map((header) => `<th scope="col">${escapeHtml(header)}</th>`).join("")}</tr></thead>
+      <tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}</tbody>
+    </table>
+  `;
+}
+
+function normalizeReportRows(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.rows)) return payload.rows;
+  if (Array.isArray(payload?.entries)) return payload.entries;
+  if (Array.isArray(payload?.register)) return payload.register;
+  if (Array.isArray(payload?.transactions)) return payload.transactions;
+  if (Array.isArray(payload?.obligations)) return payload.obligations;
+  return [];
+}
+
+async function loadAdvancedWorkflows(force = false) {
+  if (!advancedRegister) return;
+  const workspaceKey = selectedWorkspaceOptions().workspaceOwnerUserId;
+  if (!force && advancedLoadedForWorkspace === workspaceKey) {
+    renderAdvancedWorkflowTab();
+    return;
+  }
+  advancedLoadedForWorkspace = workspaceKey;
+  setAdvancedStatus("Loading advanced workflow registers...", "");
+  const workspaceOptions = selectedWorkspaceOptions();
+  const reportOptions = selectedWorkspaceOptions(currentReportSummaryFilters());
+  try {
+    const [
+      creditNotes,
+      vendorCredits,
+      paymentReversals,
+      vendorPaymentReversals,
+      customerRefunds,
+      vendorRefunds,
+      bankAccounts,
+      bankStatementLines,
+      bankSummary,
+      accountingPeriods,
+      openingBalances,
+      financialYears,
+      yearEndCloses,
+      gstSales,
+      gstPurchases,
+      gstReconciliation,
+      tdsRegister,
+      tdsReconciliation,
+      complianceObligations,
+    ] = await Promise.all([
+      apiClient.listCreditNotes(token, workspaceOptions).catch(() => []),
+      apiClient.listVendorCredits(token, workspaceOptions).catch(() => []),
+      apiClient.listPaymentReversals(token, workspaceOptions).catch(() => []),
+      apiClient.listVendorPaymentReversals(token, workspaceOptions).catch(() => []),
+      apiClient.listCustomerRefunds(token, workspaceOptions).catch(() => []),
+      apiClient.listVendorRefunds(token, workspaceOptions).catch(() => []),
+      apiClient.listBankAccounts(token, workspaceOptions).catch(() => []),
+      apiClient.listBankStatementLines(token, workspaceOptions).catch(() => []),
+      apiClient.getBankReconciliationSummary(token, workspaceOptions).catch(() => null),
+      apiClient.listAccountingPeriods(token, workspaceOptions).catch(() => []),
+      apiClient.listOpeningBalances(token, workspaceOptions).catch(() => []),
+      apiClient.listFinancialYears(token, workspaceOptions).catch(() => []),
+      apiClient.listYearEndCloses(token, workspaceOptions).catch(() => []),
+      apiClient.getFinancialReport(token, "gst-sales-register", reportOptions).catch(() => null),
+      apiClient.getFinancialReport(token, "gst-purchase-register", reportOptions).catch(() => null),
+      apiClient.getFinancialReport(token, "gst-reconciliation", reportOptions).catch(() => null),
+      apiClient.getFinancialReport(token, "tds-register", reportOptions).catch(() => null),
+      apiClient.getFinancialReport(token, "tds-reconciliation", reportOptions).catch(() => null),
+      apiClient.getFinancialReport(token, "compliance-obligations", reportOptions).catch(() => null),
+    ]);
+    advancedData = {
+      creditNotes,
+      vendorCredits,
+      paymentReversals,
+      vendorPaymentReversals,
+      customerRefunds,
+      vendorRefunds,
+      bankAccounts,
+      bankStatementLines,
+      bankSummary,
+      accountingPeriods,
+      openingBalances,
+      financialYears,
+      yearEndCloses,
+      gstSales,
+      gstPurchases,
+      gstReconciliation,
+      tdsRegister,
+      tdsReconciliation,
+      complianceObligations,
+    };
+    setAdvancedStatus("Advanced workflow registers loaded from backend.", "success");
+    renderAdvancedWorkflowTab();
+  } catch (error) {
+    setAdvancedStatus(backendErrorMessage(error), "error");
+  }
+}
+
+function renderAdvancedWorkflowTab(tab = advancedActiveTab) {
+  advancedActiveTab = tab;
+  advancedTabs.forEach((button) => {
+    const active = button.getAttribute("data-advanced-tab") === tab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  if (advancedRoleBadge) advancedRoleBadge.textContent = advancedCanMutate() ? `${selectedWorkspaceRoleLabel()} actions` : `${selectedWorkspaceRoleLabel()} read-only`;
+  const renderers = {
+    corrections: renderAdvancedCorrections,
+    settlements: renderAdvancedSettlements,
+    banking: renderAdvancedBanking,
+    periods: renderAdvancedPeriods,
+    "year-end": renderAdvancedYearEnd,
+    gst: renderAdvancedGst,
+    tds: renderAdvancedTds,
+  };
+  (renderers[tab] || renderAdvancedCorrections)();
+}
+
+function setAdvancedAction({ title, hint, button, fields, preview }) {
+  if (advancedActionTitle) advancedActionTitle.textContent = title;
+  if (advancedActionHint) advancedActionHint.textContent = hint;
+  if (advancedActionSubmit) {
+    advancedActionSubmit.textContent = button;
+    advancedActionSubmit.disabled = !advancedCanMutate();
+  }
+  if (advancedActionFields) advancedActionFields.innerHTML = fields;
+  if (advancedActionPreview) advancedActionPreview.textContent = preview;
+}
+
+function renderAdvancedCorrections() {
+  setAdvancedAction({
+    title: "Post Credit Note / Vendor Credit",
+    hint: "Select a posted source document. The backend recalculates tax, A/R, A/P and journal impact.",
+    button: "Post Correction",
+    fields: `
+      <label>Correction Type
+        <select name="actionType">
+          <option value="credit-note">Customer Credit Note</option>
+          <option value="vendor-credit">Vendor Credit</option>
+        </select>
+      </label>
+      <label>Source Invoice
+        <select name="sourceInvoiceId">${optionRows(postedInvoicesForCorrections(), (invoice) => `${invoice.invoiceNumber || invoice.id} - ${invoice.billToName || "Customer"} - ${moneyLabel(invoice.total, invoice.currency)}`, "No posted invoices")}</select>
+      </label>
+      <label>Source Vendor Bill
+        <select name="sourceVendorBillId">${optionRows(postedVendorBillsForCorrections(), (bill) => `${bill.poNumber || bill.billNumber || bill.id} - ${bill.billToName || "Vendor"} - ${moneyLabel(bill.total, bill.currency)}`, "No posted vendor bills")}</select>
+      </label>
+      <label>Correction Date <input name="actionDate" type="date" value="${new Date().toISOString().slice(0, 10)}" required /></label>
+      <label>Taxable Adjustment <input name="taxableAmount" type="number" min="0" step="0.01" required /></label>
+      <label>GST Rate % <input name="taxRate" type="number" min="0" step="0.01" value="18" /></label>
+      <label>Reason <input name="reason" placeholder="pricing correction, return, discount" required /></label>
+    `,
+    preview: "This will append a correction document. The original invoice or vendor bill remains unchanged.",
+  });
+  if (advancedRegisterTitle) advancedRegisterTitle.textContent = "Corrections Register";
+  if (advancedRegisterHint) advancedRegisterHint.textContent = "Sales credit notes and vendor credits posted by the backend.";
+  if (advancedSummary) advancedSummary.innerHTML = [
+    advancedMetric("Credit Notes", String(advancedData.creditNotes.length)),
+    advancedMetric("Vendor Credits", String(advancedData.vendorCredits.length)),
+    advancedMetric("Customer Credit", moneyLabel(advancedData.creditNotes.reduce((sum, note) => sum + Number(note.unappliedCredit || 0), 0))),
+    advancedMetric("Supplier Credit", moneyLabel(advancedData.vendorCredits.reduce((sum, credit) => sum + Number(credit.unappliedCredit || 0), 0))),
+  ].join("");
+  if (advancedRegister) {
+    advancedRegister.innerHTML = advancedTable(
+      ["Type", "Number", "Source", "Party", "Date", "Reason", "Tax", "Gross", "Journal"],
+      [
+        ...advancedData.creditNotes.map((note) => ["Credit Note", note.creditNoteNumber || note.id, note.sourceInvoiceId || "-", note.customerId || "-", note.creditNoteDate || "-", note.reason || "-", moneyLabel(note.taxAmount, note.currency), moneyLabel(note.total, note.currency), note.journalId || "-"]),
+        ...advancedData.vendorCredits.map((credit) => ["Vendor Credit", credit.vendorCreditNumber || credit.id, credit.sourceVendorBillId || "-", credit.vendorId || "-", credit.vendorCreditDate || "-", credit.reason || "-", moneyLabel(credit.taxAmount, credit.currency), moneyLabel(credit.total, credit.currency), credit.journalId || "-"]),
+      ],
+      "No correction documents posted yet.",
+    );
+  }
+}
+
+function renderAdvancedSettlements() {
+  setAdvancedAction({
+    title: "Reverse Payment / Refund Credit",
+    hint: "Keep reversals separate from refunds. The backend validates available credit and posting period.",
+    button: "Post Settlement",
+    fields: `
+      <label>Settlement Type
+        <select name="actionType">
+          <option value="customer-payment-reversal">Customer Payment Reversal</option>
+          <option value="vendor-payment-reversal">Vendor Payment Reversal</option>
+          <option value="customer-refund">Customer Refund</option>
+          <option value="vendor-recovery">Vendor Recovery</option>
+        </select>
+      </label>
+      <label>Customer Payment
+        <select name="customerPaymentId">${optionRows(customerPaymentsForReversal(), (payment) => `${payment.id} - ${moneyLabel(payment.amount, payment.currency)} - ${payment.reference || payment.mode || "payment"}`, "No customer payments")}</select>
+      </label>
+      <label>Vendor Payment
+        <select name="vendorPaymentId">${optionRows(vendorPaymentsForReversal(), (payment) => `${payment.id} - ${moneyLabel(payment.amount, payment.currency)} - ${payment.reference || payment.mode || "payment"}`, "No vendor payments")}</select>
+      </label>
+      <label>Credit Note
+        <select name="sourceCreditNoteId">${optionRows(postedCreditNotesForRefund(), (note) => `${note.creditNoteNumber || note.id} - available ${moneyLabel(note.unappliedCredit || note.total, note.currency)}`, "No posted credit notes")}</select>
+      </label>
+      <label>Vendor Credit
+        <select name="sourceVendorCreditId">${optionRows(postedVendorCreditsForRecovery(), (credit) => `${credit.vendorCreditNumber || credit.id} - available ${moneyLabel(credit.unappliedCredit || credit.total, credit.currency)}`, "No posted vendor credits")}</select>
+      </label>
+      <label>Amount <input name="amount" type="number" min="0" step="0.01" required /></label>
+      <label>Date <input name="actionDate" type="date" value="${new Date().toISOString().slice(0, 10)}" required /></label>
+      <label>Reference <input name="reference" placeholder="Bank/UPI/reference" /></label>
+      <label>Reason <input name="reason" placeholder="failed payment, customer refund, vendor recovery" required /></label>
+    `,
+    preview: "Refunds settle credit balances. Reversals invalidate the original payment. Neither silently rewrites revenue, GST or the source payment.",
+  });
+  if (advancedRegisterTitle) advancedRegisterTitle.textContent = "Settlement Register";
+  if (advancedRegisterHint) advancedRegisterHint.textContent = "Customer/vendor refunds and payment reversals with journal lineage.";
+  if (advancedSummary) advancedSummary.innerHTML = [
+    advancedMetric("Customer Reversals", String(advancedData.paymentReversals.length)),
+    advancedMetric("Vendor Reversals", String(advancedData.vendorPaymentReversals.length)),
+    advancedMetric("Customer Refunds", String(advancedData.customerRefunds.length)),
+    advancedMetric("Vendor Recoveries", String(advancedData.vendorRefunds.length)),
+  ].join("");
+  if (advancedRegister) {
+    advancedRegister.innerHTML = advancedTable(
+      ["Type", "Source", "Date", "Amount", "Reason", "Status", "Journal"],
+      [
+        ...advancedData.paymentReversals.map((item) => ["Customer reversal", item.originalPaymentId || "-", item.reversalDate || "-", moneyLabel(item.amount, item.currency), item.reason || "-", item.status || "-", item.journalId || "-"]),
+        ...advancedData.vendorPaymentReversals.map((item) => ["Vendor reversal", item.originalPaymentId || "-", item.reversalDate || "-", moneyLabel(item.amount, item.currency), item.reason || "-", item.status || "-", item.journalId || "-"]),
+        ...advancedData.customerRefunds.map((item) => ["Customer refund", item.sourceCreditNoteId || "-", item.refundDate || "-", moneyLabel(item.amount, item.currency), item.reason || "-", item.status || "-", item.journalId || "-"]),
+        ...advancedData.vendorRefunds.map((item) => ["Vendor recovery", item.sourceVendorCreditId || "-", item.receivedDate || item.refundDate || "-", moneyLabel(item.amount, item.currency), item.reason || "-", item.status || "-", item.journalId || "-"]),
+      ],
+      "No settlement records posted yet.",
+    );
+  }
+}
+
+function renderAdvancedBanking() {
+  setAdvancedAction({
+    title: "Bank Account / Statement / Match",
+    hint: "Import statement evidence or match/unmatch against internal transactions. Statement import does not create accounting journals.",
+    button: "Submit Banking Action",
+    fields: `
+      <label>Banking Action
+        <select name="actionType">
+          <option value="bank-account">Create Bank/Cash Account</option>
+          <option value="statement-import">Import Statement Line</option>
+          <option value="bank-match">Match Selected Line</option>
+          <option value="bank-unmatch">Unmatch Reconciliation</option>
+        </select>
+      </label>
+      <label>Account
+        <select name="bankAccountId">${optionRows(advancedData.bankAccounts, (account) => `${account.displayName || account.id} - ${account.accountType || "bank"}`, "Create account first")}</select>
+      </label>
+      <label>Account Name <input name="displayName" placeholder="HDFC Current Account" /></label>
+      <label>Account Type
+        <select name="accountType"><option value="bank">Bank</option><option value="cash">Cash</option><option value="clearing">Clearing</option></select>
+      </label>
+      <label>Reference / Narration <input name="reference" placeholder="masked account, statement ref, match reason" /></label>
+      <label>Statement Date <input name="actionDate" type="date" value="${new Date().toISOString().slice(0, 10)}" /></label>
+      <label>Money In <input name="credit" type="number" min="0" step="0.01" /></label>
+      <label>Money Out <input name="debit" type="number" min="0" step="0.01" /></label>
+      <label>Statement Line
+        <select name="statementLineId">${optionRows(advancedData.bankStatementLines, (line) => `${line.statementDate || line.date} - ${line.narration || line.reference || line.id} - ${moneyLabel(Number(line.credit || line.debit || 0), line.currency)}`, "No statement lines")}</select>
+      </label>
+      <label>Internal Source Type <input name="sourceType" placeholder="payment, vendor_payment, customer_refund" /></label>
+      <label>Internal Source ID <input name="sourceId" placeholder="Backend transaction id" /></label>
+      <label>Match ID <input name="matchId" placeholder="Existing match id for unmatch" /></label>
+    `,
+    preview: "Matching links bank evidence to accounting. Unmatching removes only the reconciliation link, not the accounting transaction.",
+  });
+  if (advancedRegisterTitle) advancedRegisterTitle.textContent = "Bank Reconciliation Workspace";
+  if (advancedRegisterHint) advancedRegisterHint.textContent = "Accounts, statement evidence, unresolved items and reconciliation status.";
+  const summary = advancedData.bankSummary || {};
+  if (advancedSummary) advancedSummary.innerHTML = [
+    advancedMetric("Accounts", String(advancedData.bankAccounts.length)),
+    advancedMetric("Statement Lines", String(advancedData.bankStatementLines.length)),
+    advancedMetric("Matched", moneyLabel(summary.matchedAmount || summary.matched || 0)),
+    advancedMetric("Difference", moneyLabel(summary.difference || 0)),
+  ].join("");
+  if (advancedRegister) {
+    advancedRegister.innerHTML = `
+      ${advancedTable(["Account", "Type", "Masked Ref", "Ledger", "Status"], advancedData.bankAccounts.map((account) => [
+        account.displayName || account.id,
+        account.accountType || "bank",
+        account.maskedAccountReference || "masked",
+        account.ledgerAccountCode || account.ledgerAccountId || "-",
+        account.status || "active",
+      ]), "No bank/cash accounts yet.")}
+      ${advancedTable(["Date", "Narration", "Reference", "Money In", "Money Out", "Status", "Matched"], advancedData.bankStatementLines.map((line) => [
+        line.statementDate || line.date || "-",
+        line.narration || "-",
+        line.reference || "-",
+        moneyLabel(line.credit || 0, line.currency),
+        moneyLabel(line.debit || 0, line.currency),
+        String(line.reconciliationStatus || "unmatched").replace(/_/g, " "),
+        moneyLabel(line.matchedAmount || 0, line.currency),
+      ]), "No statement lines imported yet.")}
+    `;
+  }
+}
+
+function renderAdvancedPeriods() {
+  setAdvancedAction({
+    title: "Accounting Periods / Opening Balances",
+    hint: "Check readiness, soft close, close, reopen or post balanced opening balances through backend controls.",
+    button: "Submit Period Action",
+    fields: `
+      <label>Governance Action
+        <select name="actionType">
+          <option value="period-readiness">Check Period Readiness</option>
+          <option value="period-soft-close">Soft Close Period</option>
+          <option value="period-close">Close Period</option>
+          <option value="period-reopen">Reopen Period</option>
+          <option value="opening-balance">Post Opening Balance</option>
+        </select>
+      </label>
+      <label>Accounting Date <input name="actionDate" type="date" value="${new Date().toISOString().slice(0, 10)}" required /></label>
+      <label>Reason <input name="reason" placeholder="period review, close approved, reopen reason" /></label>
+      <label>Debit Account Code <input name="debitAccountCode" placeholder="1100" /></label>
+      <label>Credit Account Code <input name="creditAccountCode" placeholder="3100" /></label>
+      <label>Opening Amount <input name="amount" type="number" min="0" step="0.01" /></label>
+    `,
+    preview: "Closing freezes ordinary posting into that period. Opening balances establish starting books and do not create sales or expense history.",
+  });
+  if (advancedRegisterTitle) advancedRegisterTitle.textContent = "Accounting Governance";
+  if (advancedRegisterHint) advancedRegisterHint.textContent = "Periods, close history and posted opening balance sets.";
+  if (advancedSummary) advancedSummary.innerHTML = [
+    advancedMetric("Periods", String(advancedData.accountingPeriods.length)),
+    advancedMetric("Closed", String(advancedData.accountingPeriods.filter((period) => String(period.status) === "closed").length)),
+    advancedMetric("Soft Closed", String(advancedData.accountingPeriods.filter((period) => String(period.status) === "soft_closed").length)),
+    advancedMetric("Opening Sets", String(advancedData.openingBalances.length)),
+  ].join("");
+  if (advancedRegister) {
+    advancedRegister.innerHTML = `
+      ${advancedTable(["Period", "Status", "Readiness", "Closed At", "Reason"], advancedData.accountingPeriods.map((period) => [
+        period.periodKey || `${period.startDate || ""} to ${period.endDate || ""}`,
+        String(period.status || "open").replace(/_/g, " "),
+        period.readinessStatus || "-",
+        period.closedAt || "-",
+        period.closeReason || "-",
+      ]), "No accounting periods created yet.")}
+      ${advancedTable(["Cutover", "Status", "Journal", "Notes"], advancedData.openingBalances.map((set) => [
+        set.cutoverDate || "-",
+        set.status || "-",
+        set.journalId || "-",
+        set.notes || "-",
+      ]), "No opening balances posted yet.")}
+    `;
+  }
+}
+
+function renderAdvancedYearEnd() {
+  setAdvancedAction({
+    title: "Year-End Readiness / Preview / Close",
+    hint: "Preview is non-mutating. Execute close only after backend readiness is acceptable.",
+    button: "Submit Year-End Action",
+    fields: `
+      <label>Year-End Action
+        <select name="actionType">
+          <option value="year-end-readiness">Check Readiness</option>
+          <option value="year-end-preview">Preview Close</option>
+          <option value="year-end-close">Execute Close</option>
+          <option value="year-end-reopen">Reopen Close</option>
+        </select>
+      </label>
+      <label>Financial Year <input name="financialYear" placeholder="2026-27" /></label>
+      <label>Close Date <input name="actionDate" type="date" value="${new Date().toISOString().slice(0, 10)}" required /></label>
+      <label>Year-End Close ID <input name="yearEndCloseId" placeholder="Required for reopen" /></label>
+      <label>Reason <input name="reason" placeholder="approved by owner/accountant" /></label>
+    `,
+    preview: "Preview makes no accounting changes. Execute close posts controlled year-end journals and preserves historical P&L.",
+  });
+  if (advancedRegisterTitle) advancedRegisterTitle.textContent = "Year-End Close Register";
+  if (advancedRegisterHint) advancedRegisterHint.textContent = "Financial years, close events, retained earnings lineage and reopen history.";
+  if (advancedSummary) advancedSummary.innerHTML = [
+    advancedMetric("Financial Years", String(advancedData.financialYears.length)),
+    advancedMetric("Close Events", String(advancedData.yearEndCloses.length)),
+    advancedMetric("Closed", String(advancedData.yearEndCloses.filter((close) => close.status === "closed").length)),
+    advancedMetric("Reopened", String(advancedData.yearEndCloses.filter((close) => close.status === "reopened").length)),
+  ].join("");
+  if (advancedRegister) {
+    advancedRegister.innerHTML = advancedTable(
+      ["FY", "Status", "Close Date", "Net Result", "Retained Earnings", "Journal", "Reason"],
+      advancedData.yearEndCloses.map((close) => [
+        close.financialYear || "-",
+        close.status || "-",
+        close.closeDate || "-",
+        moneyLabel(close.calculationSnapshot?.netProfit ?? close.netProfit ?? 0),
+        close.retainedEarningsAccountId || "-",
+        close.closingJournalId || close.reversalJournalId || "-",
+        close.closeReason || close.reopenReason || "-",
+      ]),
+      "No year-end close events yet.",
+    );
+  }
+}
+
+function renderAdvancedGst() {
+  setAdvancedAction({
+    title: "GST Drill-Down",
+    hint: "Review sales, purchase, adjustment and reconciliation data from compliance/reporting endpoints.",
+    button: "Refresh GST Registers",
+    fields: `
+      <label>GST Action
+        <select name="actionType"><option value="gst-refresh">Refresh GST Registers</option></select>
+      </label>
+      <label>From <input name="from" type="date" /></label>
+      <label>To <input name="to" type="date" /></label>
+    `,
+    preview: "GST readiness is an internal compliance interpretation. It is not government filing verification.",
+  });
+  if (advancedRegisterTitle) advancedRegisterTitle.textContent = "GST Compliance Center";
+  if (advancedRegisterHint) advancedRegisterHint.textContent = "Sales register, purchase register, adjustments, ITC review and ledger reconciliation.";
+  const sales = normalizeReportRows(advancedData.gstSales);
+  const purchases = normalizeReportRows(advancedData.gstPurchases);
+  const reconciliation = advancedData.gstReconciliation || {};
+  if (advancedSummary) advancedSummary.innerHTML = [
+    advancedMetric("Sales Rows", String(sales.length)),
+    advancedMetric("Purchase Rows", String(purchases.length)),
+    advancedMetric("Output GST", moneyLabel(reconciliation.outputGst || reconciliation.outputTax || 0)),
+    advancedMetric("Input GST", moneyLabel(reconciliation.inputGst || reconciliation.inputTax || 0)),
+  ].join("");
+  if (advancedRegister) {
+    advancedRegister.innerHTML = `
+      ${advancedTable(["Invoice", "Date", "Customer", "Taxable", "CGST", "SGST", "IGST", "Status"], sales.map((row) => [
+        row.invoiceNumber || row.sourceNumber || row.invoice || "-",
+        row.invoiceDate || row.date || "-",
+        row.customerName || row.customer || "-",
+        moneyLabel(row.taxableAmount || row.taxable || 0),
+        moneyLabel(row.cgst || row.cgstAmount || 0),
+        moneyLabel(row.sgst || row.sgstAmount || 0),
+        moneyLabel(row.igst || row.igstAmount || 0),
+        row.status || row.complianceStatus || "-",
+      ]), "No GST sales register rows yet.")}
+      ${advancedTable(["Vendor", "Bill", "Date", "Taxable", "Input CGST", "Input SGST", "Input IGST", "ITC"], purchases.map((row) => [
+        row.vendorName || row.vendor || "-",
+        row.vendorBillNumber || row.billNumber || row.sourceNumber || "-",
+        row.billDate || row.date || "-",
+        moneyLabel(row.taxableAmount || row.taxable || 0),
+        moneyLabel(row.inputCgst || row.cgst || 0),
+        moneyLabel(row.inputSgst || row.sgst || 0),
+        moneyLabel(row.inputIgst || row.igst || 0),
+        row.itcStatus || row.status || "needs review",
+      ]), "No GST purchase register rows yet.")}
+      ${advancedTable(["Component", "Register", "Ledger", "Difference", "Status"], normalizeReportRows(reconciliation).map((row) => [
+        row.component || row.account || "-",
+        moneyLabel(row.registerAmount || row.transactionAmount || 0),
+        moneyLabel(row.ledgerAmount || 0),
+        moneyLabel(row.difference || 0),
+        row.status || "-",
+      ]), "No GST reconciliation issue rows reported.")}
+    `;
+  }
+}
+
+function renderAdvancedTds() {
+  setAdvancedAction({
+    title: "TDS Review",
+    hint: "Review configured TDS interpretations, needs-review items, liabilities and obligations.",
+    button: "Refresh TDS Registers",
+    fields: `
+      <label>TDS Action
+        <select name="actionType"><option value="tds-refresh">Refresh TDS Registers</option></select>
+      </label>
+      <label>From <input name="from" type="date" /></label>
+      <label>To <input name="to" type="date" /></label>
+    `,
+    preview: "Configured/test rule metadata is shown as internal readiness, not official statutory advice.",
+  });
+  if (advancedRegisterTitle) advancedRegisterTitle.textContent = "TDS Compliance Center";
+  if (advancedRegisterHint) advancedRegisterHint.textContent = "TDS register, needs-review queue, liability reconciliation and obligations.";
+  const rows = normalizeReportRows(advancedData.tdsRegister);
+  const reconciliationRows = normalizeReportRows(advancedData.tdsReconciliation);
+  const obligations = normalizeReportRows(advancedData.complianceObligations);
+  if (advancedSummary) advancedSummary.innerHTML = [
+    advancedMetric("TDS Transactions", String(rows.length)),
+    advancedMetric("Needs Review", String(rows.filter((row) => String(row.status || "").includes("review")).length)),
+    advancedMetric("Obligations", String(obligations.length)),
+    advancedMetric("Rule Source", rows.some((row) => /configured|test/i.test(row.sourceMetadata || row.ruleReference || "")) ? "Configured" : "Backend"),
+  ].join("");
+  if (advancedRegister) {
+    advancedRegister.innerHTML = `
+      ${advancedTable(["Vendor/Payee", "Nature", "Rule", "Gross", "Subject", "TDS", "Net Payable", "Status"], rows.map((row) => [
+        row.vendorName || row.payee || row.vendor || "-",
+        row.natureOfPayment || row.category || "-",
+        row.ruleVersion || row.ruleReference || "configured",
+        moneyLabel(row.grossAmount || 0),
+        moneyLabel(row.amountSubjectToTds || row.subjectAmount || 0),
+        moneyLabel(row.tdsAmount || 0),
+        moneyLabel(row.netVendorPayable || row.netPayable || 0),
+        row.status || "needs review",
+      ]), "No TDS register rows yet.")}
+      ${advancedTable(["Component", "Register", "Ledger", "Difference", "Status"], reconciliationRows.map((row) => [
+        row.component || row.id || "-",
+        moneyLabel(row.registerAmount || row.transactionAmount || 0),
+        moneyLabel(row.ledgerAmount || 0),
+        moneyLabel(row.difference || 0),
+        row.status || "-",
+      ]), "No TDS reconciliation differences reported.")}
+      ${advancedTable(["Obligation", "Period", "Due", "Status", "Filing State"], obligations.map((row) => [
+        row.complianceName || row.name || row.id || "-",
+        row.period || row.financialYear || "-",
+        row.dueDate || "-",
+        row.status || "-",
+        row.filedExternally ? "Filed externally - manually confirmed" : "Prepared / pending external filing",
+      ]), "No compliance obligations reported.")}
+    `;
+  }
+}
+
+function selectedAdvancedActionType(formData) {
+  return String(formData.get("actionType") || advancedActiveTab || "").trim();
+}
+
+function advancedIdempotencyKey(actionType) {
+  return `${actionType}:${selectedWorkspaceOptions().workspaceOwnerUserId}:${Date.now()}`;
+}
+
+async function submitAdvancedAction(event) {
+  event.preventDefault();
+  if (!advancedCanMutate()) {
+    setAdvancedStatus(workspaceWriteLockMessage("post advanced financial actions"), "error");
+    return;
+  }
+  const formData = new FormData(advancedActionForm);
+  const actionType = selectedAdvancedActionType(formData);
+  const workspaceOptions = selectedWorkspaceOptions();
+  const amount = Number(formData.get("amount") || formData.get("taxableAmount") || 0);
+  const actionDate = String(formData.get("actionDate") || new Date().toISOString().slice(0, 10));
+  const reason = String(formData.get("reason") || "").trim();
+  const reference = String(formData.get("reference") || "").trim();
+  const confirmMessages = {
+    "credit-note": "This will create a posted Credit Note. The original invoice remains unchanged.",
+    "vendor-credit": "This will create a posted Vendor Credit. The original vendor bill remains unchanged.",
+    "customer-payment-reversal": "This reverses a customer payment and restores receivable; it is not a customer refund.",
+    "vendor-payment-reversal": "This reverses a vendor payment and restores payable; it is not a vendor recovery.",
+    "customer-refund": "This records money returned to a customer against an existing customer credit.",
+    "vendor-recovery": "This records money recovered from a vendor against an existing supplier credit.",
+    "bank-unmatch": "Unmatching removes only the reconciliation link. It does not change accounting.",
+    "period-close": "This closes the accounting period and blocks ordinary posting into it.",
+    "year-end-close": "This closes the financial year, posts closing journals and rolls result into retained earnings.",
+    "year-end-reopen": "This reopens the year-end close through the backend reversal workflow and preserves history.",
+    "opening-balance": "This posts starting book balances and does not create sales or expense history.",
+  };
+  if (confirmMessages[actionType] && !window.confirm(confirmMessages[actionType])) return;
+  if (advancedActionSubmit) advancedActionSubmit.disabled = true;
+  setAdvancedStatus("Submitting to backend...", "");
+  try {
+    let result = null;
+    if (actionType === "credit-note") {
+      const invoiceId = String(formData.get("sourceInvoiceId") || "");
+      result = await apiClient.createCreditNote(token, {
+        ...workspaceOptions,
+        sourceInvoiceId: invoiceId,
+        creditNoteDate: actionDate,
+        reason,
+        status: "posted",
+        taxRate: Number(formData.get("taxRate") || 0),
+        idempotencyKey: advancedIdempotencyKey(actionType),
+        items: [{ description: reason || "Credit adjustment", quantity: 1, rate: Number(formData.get("taxableAmount") || 0) }],
+      });
+      setAdvancedStatus(`Credit note posted: ${result.creditNoteNumber || result.id}`, "success");
+    } else if (actionType === "vendor-credit") {
+      result = await apiClient.createVendorCredit(token, {
+        ...workspaceOptions,
+        sourceVendorBillId: String(formData.get("sourceVendorBillId") || ""),
+        vendorCreditDate: actionDate,
+        reason,
+        status: "posted",
+        taxRate: Number(formData.get("taxRate") || 0),
+        idempotencyKey: advancedIdempotencyKey(actionType),
+        items: [{ description: reason || "Vendor credit adjustment", quantity: 1, rate: Number(formData.get("taxableAmount") || 0) }],
+      });
+      setAdvancedStatus(`Vendor credit posted: ${result.vendorCreditNumber || result.id}`, "success");
+    } else if (actionType === "customer-payment-reversal") {
+      result = await apiClient.reverseCustomerPayment(token, { ...workspaceOptions, originalPaymentId: String(formData.get("customerPaymentId") || ""), amount, reversalDate: actionDate, reason, reference, idempotencyKey: advancedIdempotencyKey(actionType) });
+      setAdvancedStatus(`Customer payment reversal posted: ${result.id}`, "success");
+    } else if (actionType === "vendor-payment-reversal") {
+      result = await apiClient.reverseVendorPayment(token, { ...workspaceOptions, originalPaymentId: String(formData.get("vendorPaymentId") || ""), amount, reversalDate: actionDate, reason, reference, idempotencyKey: advancedIdempotencyKey(actionType) });
+      setAdvancedStatus(`Vendor payment reversal posted: ${result.id}`, "success");
+    } else if (actionType === "customer-refund") {
+      result = await apiClient.createCustomerRefund(token, { ...workspaceOptions, sourceCreditNoteId: String(formData.get("sourceCreditNoteId") || ""), amount, refundDate: actionDate, reason, reference, idempotencyKey: advancedIdempotencyKey(actionType) });
+      setAdvancedStatus(`Customer refund recorded: ${result.id}`, "success");
+    } else if (actionType === "vendor-recovery") {
+      result = await apiClient.createVendorRefund(token, { ...workspaceOptions, sourceVendorCreditId: String(formData.get("sourceVendorCreditId") || ""), amount, receivedDate: actionDate, reason, reference, idempotencyKey: advancedIdempotencyKey(actionType) });
+      setAdvancedStatus(`Vendor recovery recorded: ${result.id}`, "success");
+    } else if (actionType === "bank-account") {
+      result = await apiClient.createBankAccount(token, { ...workspaceOptions, displayName: String(formData.get("displayName") || "Bank Account"), accountType: String(formData.get("accountType") || "bank"), accountReference: reference });
+      setAdvancedStatus(`Bank/cash account created: ${result.displayName || result.id}`, "success");
+    } else if (actionType === "statement-import") {
+      result = await apiClient.importBankStatement(token, {
+        ...workspaceOptions,
+        bankAccountId: String(formData.get("bankAccountId") || ""),
+        sourceType: "manual_web",
+        lines: [{ statementDate: actionDate, narration: reference || "Manual statement line", reference, debit: Number(formData.get("debit") || 0), credit: Number(formData.get("credit") || 0) }],
+      });
+      setAdvancedStatus(`Statement import completed: ${result.imported?.length || 0} imported, ${result.duplicates?.length || 0} duplicate, ${result.errors?.length || 0} error.`, result.errors?.length ? "error" : "success");
+    } else if (actionType === "bank-match") {
+      result = await apiClient.confirmBankMatch(token, { ...workspaceOptions, bankAccountId: String(formData.get("bankAccountId") || ""), statementLineId: String(formData.get("statementLineId") || ""), sourceType: String(formData.get("sourceType") || ""), sourceId: String(formData.get("sourceId") || ""), reason: reason || reference || "manual_match" });
+      setAdvancedStatus(`Bank transaction matched: ${result.id}`, "success");
+    } else if (actionType === "bank-unmatch") {
+      result = await apiClient.unmatchBankReconciliation(token, String(formData.get("matchId") || ""), workspaceOptions);
+      setAdvancedStatus(`Bank transaction unmatched: ${result.id}`, "success");
+    } else if (actionType === "period-readiness") {
+      result = await apiClient.getAccountingPeriodReadiness(token, { ...workspaceOptions, accountingDate: actionDate });
+      setAdvancedStatus(`Readiness ${result.status || "loaded"}: ${(result.blockers || []).length} blocker(s), ${(result.warnings || []).length} warning(s).`, (result.blockers || []).length ? "error" : "success");
+    } else if (["period-soft-close", "period-close", "period-reopen"].includes(actionType)) {
+      const action = actionType === "period-soft-close" ? "soft_close" : actionType === "period-close" ? "close" : "reopen";
+      result = await apiClient.changeAccountingPeriodStatus(token, { ...workspaceOptions, accountingDate: actionDate, action, reason });
+      setAdvancedStatus(`Period ${String(result.status || action).replace(/_/g, " ")}.`, "success");
+    } else if (actionType === "opening-balance") {
+      result = await apiClient.createOpeningBalance(token, {
+        ...workspaceOptions,
+        cutoverDate: actionDate,
+        notes: reason,
+        idempotencyKey: advancedIdempotencyKey(actionType),
+        lines: [
+          { accountCode: String(formData.get("debitAccountCode") || ""), debit: amount, credit: 0, description: reason || "Opening debit" },
+          { accountCode: String(formData.get("creditAccountCode") || ""), debit: 0, credit: amount, description: reason || "Opening credit" },
+        ],
+      });
+      setAdvancedStatus(`Opening balance posted: ${result.journalId || result.id}`, "success");
+    } else if (actionType === "year-end-readiness") {
+      result = await apiClient.getYearEndCloseReadiness(token, { ...workspaceOptions, financialYear: String(formData.get("financialYear") || ""), closeDate: actionDate });
+      setAdvancedStatus(`Year-end readiness ${result.status || "loaded"}: ${(result.blockers || []).length} blocker(s), ${(result.warnings || []).length} warning(s).`, (result.blockers || []).length ? "error" : "success");
+    } else if (actionType === "year-end-preview") {
+      result = await apiClient.previewYearEndClose(token, { ...workspaceOptions, financialYear: String(formData.get("financialYear") || ""), closeDate: actionDate });
+      if (advancedActionPreview) advancedActionPreview.textContent = `Preview - No accounting changes have been made. Net result: ${moneyLabel(result.preview?.totals?.netProfit ?? result.profitLoss?.summary?.profit ?? 0)}.`;
+      setAdvancedStatus("Year-end preview loaded without mutation.", "success");
+    } else if (actionType === "year-end-close") {
+      result = await apiClient.executeYearEndClose(token, { ...workspaceOptions, financialYear: String(formData.get("financialYear") || ""), closeDate: actionDate, reason, idempotencyKey: advancedIdempotencyKey(actionType) });
+      setAdvancedStatus(`Year-end close executed: ${result.id}`, "success");
+    } else if (actionType === "year-end-reopen") {
+      result = await apiClient.reopenYearEndClose(token, String(formData.get("yearEndCloseId") || ""), { ...workspaceOptions, reopenDate: actionDate, reason });
+      setAdvancedStatus(`Year-end close reopened: ${result.id}`, "success");
+    } else if (actionType === "gst-refresh" || actionType === "tds-refresh") {
+      await loadAdvancedWorkflows(true);
+      setAdvancedStatus(`${actionType === "gst-refresh" ? "GST" : "TDS"} registers refreshed.`, "success");
+      return;
+    }
+    await loadAdvancedWorkflows(true);
+  } catch (error) {
+    setAdvancedStatus(backendErrorMessage(error), "error");
+  } finally {
+    if (advancedActionSubmit) advancedActionSubmit.disabled = !advancedCanMutate();
+  }
 }
 
 function groupRecordsByName(records, nameSelector, valueSelector) {
@@ -2817,6 +3821,7 @@ function renderDashboardMetrics(invoices) {
     if (reportIncomeTotal) reportIncomeTotal.textContent = `INR ${money(totals.revenue || 0)}`;
     if (reportExpenseTotal) reportExpenseTotal.textContent = `INR ${money(totals.expenses || 0)}`;
     if (reportProfitTotal) reportProfitTotal.textContent = `INR ${money(totals.profit || 0)}`;
+    renderFinanceCockpit();
     renderMainReportCharts();
     return;
   }
@@ -2846,6 +3851,7 @@ function renderDashboardMetrics(invoices) {
   if (reportIncomeTotal) reportIncomeTotal.textContent = `INR ${money(total)}`;
   if (reportExpenseTotal) reportExpenseTotal.textContent = `INR ${money(expenses)}`;
   if (reportProfitTotal) reportProfitTotal.textContent = `INR ${money(total - expenses)}`;
+  renderFinanceCockpit();
   renderMainReportCharts();
 }
 
@@ -3345,6 +4351,7 @@ function rerenderDashboardData() {
   populateReportFilters(dashboardInvoices, dashboardPurchaseOrders);
   syncDetailFilterVisibility();
   renderDashboardMetrics(dashboardInvoices);
+  renderFirstRunExperience();
   renderInvoiceWorkspace(dashboardInvoices);
   renderPoWorkspace(dashboardPurchaseOrders);
   renderRecentActivity(dashboardInvoices, dashboardCompanies);
@@ -3725,15 +4732,7 @@ function renderBusinessWorkspaceContext(enabled) {
   const workspace = activeBusinessWorkspace();
   const role = workspace?.role || "owner";
   const roleLabel = `${role.charAt(0).toUpperCase()}${role.slice(1)}`;
-  if (businessWorkspaceSwitcher) {
-    businessWorkspaceSwitcher.innerHTML = dashboardBusinessWorkspaces.length
-      ? dashboardBusinessWorkspaces.map((item) => `
-        <option value="${escapeHtml(item.ownerUserId)}">${escapeHtml(item.label || item.email || "Business workspace")} (${escapeHtml(item.role || "owner")})</option>
-      `).join("")
-      : `<option value="${escapeHtml(currentUser?.id || "")}">${escapeHtml(currentUser?.name || "My workspace")} (owner)</option>`;
-    businessWorkspaceSwitcher.value = workspace?.ownerUserId || currentUser?.id || "";
-    businessWorkspaceSwitcher.disabled = dashboardBusinessWorkspaces.length <= 1;
-  }
+  renderBusinessSwitcher(businessWorkspaceSwitcher);
   if (businessWorkspaceRoleBadge) {
     businessWorkspaceRoleBadge.textContent = roleLabel;
     businessWorkspaceRoleBadge.className = `pill ${workspace?.source === "team" ? "blue" : "gold"}`;
@@ -3771,6 +4770,7 @@ function renderBusinessWorkspace() {
   renderWorkspacePermissionPanel(enabled);
   renderBusinessWorkspaceFlowChecklist(enabled);
   renderBusinessWorkspaceStatusBoard(enabled);
+  renderBusinessGovernancePanel(enabled);
   renderBusinessWorkspaceSectionControls(enabled);
   if (businessWorkspaceNotice) {
     if (!enabled) {
@@ -4729,10 +5729,21 @@ reportExportCsv?.addEventListener("click", downloadCurrentReportCsv);
 reportExportPrint?.addEventListener("click", printCurrentReport);
 
 businessWorkspaceSwitcher?.addEventListener("change", async () => {
-  selectedBusinessWorkspaceOwnerId = businessWorkspaceSwitcher.value || currentUser?.id || "";
-  window.localStorage?.setItem("eazinvoice_business_workspace_owner", selectedBusinessWorkspaceOwnerId);
-  window.location.reload();
+  selectBusinessWorkspace(businessWorkspaceSwitcher.value);
 });
+
+globalBusinessSwitcher?.addEventListener("change", async () => {
+  selectBusinessWorkspace(globalBusinessSwitcher.value);
+});
+
+advancedTabs.forEach((button) => {
+  button.addEventListener("click", () => {
+    renderAdvancedWorkflowTab(button.getAttribute("data-advanced-tab") || "corrections");
+  });
+});
+
+advancedRefreshBtn?.addEventListener("click", () => loadAdvancedWorkflows(true));
+advancedActionForm?.addEventListener("submit", submitAdvancedAction);
 
 workspaceTargetLinks.forEach((link) => {
   link.addEventListener("click", (event) => {
@@ -4934,6 +5945,7 @@ async function initializeDashboard() {
   await refreshAccountingSummary();
   const activeOrg = companies[0] || null;
   renderDashboardMetrics(dashboardInvoices);
+  renderFirstRunExperience();
   renderInvoiceWorkspace(dashboardInvoices);
   renderPoWorkspace(dashboardPurchaseOrders);
   renderRecentActivity(dashboardInvoices, dashboardCompanies);

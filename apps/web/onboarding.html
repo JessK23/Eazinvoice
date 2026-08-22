@@ -4,7 +4,6 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Eazinvoice Onboarding</title>
-  <meta http-equiv="refresh" content="0; url=/apps/web/access.html" />
   <link rel="stylesheet" href="./styles.css" />
   <script src="./nav.js?v=20260614-responsive-menu" defer></script>
 </head>
@@ -21,7 +20,7 @@
   <main id="onboardingApp" class="onboarding-shell" hidden>
     <section class="onboarding-hero">
       <div>
-        <span class="pill blue">Step <span id="stepNumber">1</span> of 3</span>
+        <span class="pill blue">Step <span id="stepNumber">1</span> of 4</span>
         <h1 id="stepTitle">Welcome to Eazinvoice</h1>
         <p id="stepIntro">Set up your business once so invoices, GST details, and payment instructions are ready when you start billing.</p>
       </div>
@@ -40,11 +39,13 @@
     <section class="panel onboarding-step" data-step="1">
       <div class="panel-head">
         <h2>Start With Your Business</h2>
-        <span class="pill gold">Mobile first</span>
+        <span class="pill gold">First run</span>
       </div>
-      <p class="hero-text">Eazinvoice is being shaped for freelancers, small shops, creators, consultants, agencies, and service businesses who need billing to feel fast, calm, and professional.</p>
+      <p class="hero-text">Eazinvoice works best after you save the basic business details that appear on invoices, GST/TDS readiness views, and payment follow-ups.</p>
+      <div id="onboardingChecklist" class="setup-checklist compact" aria-live="polite"></div>
       <div class="actions">
         <button id="startSetup" class="primary" type="button">Create Business Profile</button>
+        <a class="ghost" href="/apps/web/dashboard.html">Open Dashboard</a>
       </div>
     </section>
 
@@ -86,6 +87,42 @@
     </section>
 
     <section class="panel onboarding-step" data-step="3" hidden>
+      <div class="panel-head">
+        <h2>Choose The First Daily Action</h2>
+        <span class="pill blue">Guided start</span>
+      </div>
+      <div class="daily-action-grid onboarding-actions">
+        <article>
+          <strong>1</strong>
+          <h3>Create invoice</h3>
+          <p>Open the invoice workflow with your business profile ready for bill-from details.</p>
+          <a class="ghost small" href="/apps/web/invoice.html">Start invoice</a>
+        </article>
+        <article>
+          <strong>2</strong>
+          <h3>Add customer</h3>
+          <p>Use the invoice flow to save a customer before sending the first bill.</p>
+          <a class="ghost small" href="/apps/web/invoice.html#customerStep">Add customer</a>
+        </article>
+        <article>
+          <strong>3</strong>
+          <h3>Create PO / WO</h3>
+          <p>Track vendor-side work or purchases from the same financial workspace.</p>
+          <a class="ghost small" href="/apps/web/invoice.html?type=po">Create PO / WO</a>
+        </article>
+        <article>
+          <strong>4</strong>
+          <h3>Review plans</h3>
+          <p>Check Standard, Pro, and Business gates before relying on paid features.</p>
+          <a class="ghost small" href="/apps/web/subscription.html">View plans</a>
+        </article>
+      </div>
+      <div class="actions">
+        <button id="finishIntro" class="primary" type="button">Finish Setup</button>
+      </div>
+    </section>
+
+    <section class="panel onboarding-step" data-step="4" hidden>
       <div class="panel-head">
         <h2>Your Dashboard Is Ready</h2>
         <span class="pill gold">Intro</span>
