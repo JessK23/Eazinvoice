@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Eazinvoice | Home</title>
   <link rel="stylesheet" href="./styles.css?v=20260723-ui-banner-refresh-5" />
+  <link rel="stylesheet" href="./landing-phase1.css?v=20260822-sales-entry" />
   <script src="./nav.js?v=20260614-responsive-menu" defer></script>
 </head>
 <body class="landing-page">
@@ -14,7 +15,7 @@
     </div>
     <nav class="landing-nav">
       <a href="#home">Home</a>
-      <a href="#about">About Us</a>
+      <a href="#about">Who It Helps</a>
       <a href="#workflow">Workflow</a>
       <a href="#features">Features</a>
       <a href="#pricing">Pricing</a>
@@ -50,24 +51,29 @@
   <main class="landing-shell" id="home">
     <section class="landing-hero">
       <div class="landing-copy">
-        <div class="eyebrow">GST-ready invoicing for Indian MSMEs</div>
-        <h1>EazInvoice MSME invoicing SaaS</h1>
+        <div class="eyebrow">GST/TDS-ready billing workspace for Indian MSMEs</div>
+        <h1>Create invoices, manage PO/WO work, and track payments without spreadsheet chaos</h1>
         <p>
-          The easiest modern billing workspace for freelancers, agencies, creators, consultants,
-          small businesses, shops, coaching centers, nonprofits, and service providers.
+          EazInvoice gives freelancers, agencies, consultants, shops, coaching centers, and service businesses
+          one workspace for billing, purchase orders, customers, vendors, reports, and paid-plan AI drafting.
         </p>
         <div class="actions">
           <a id="homePrimaryAction" href="/apps/web/auth.html" class="primary">Start Free</a>
-          <a id="homeSecondaryAction" href="/apps/web/auth.html?tab=login" class="ghost">Login</a>
+          <a id="homeSecondaryAction" href="#pricing" class="ghost">See Plans</a>
+        </div>
+        <div class="sales-trust-row" aria-label="Launch readiness notes">
+          <span>Free web access available</span>
+          <span>Paid plans bill yearly</span>
+          <span>Android and WordPress status shown clearly</span>
         </div>
         <div class="mini-launch-row">
           <a class="mini-launch-card" href="/apps/web/mobile-app.html">
-            <strong>Android app</strong>
-            <span>See Play Store status, APK access, and release notes.</span>
+            <strong>Android release status</strong>
+            <span>See release status, internal testing notes, and mobile guidance.</span>
           </a>
           <a class="mini-launch-card light" href="/apps/web/user-manual-web.html">
-            <strong>User manuals</strong>
-            <span>Open the web, Android, and plugin SOP guides.</span>
+            <strong>Manuals and setup</strong>
+            <span>Open web, Android, release, and WordPress operating guides.</span>
           </a>
         </div>
         <div id="loggedInHomePanel" class="logged-home-panel" hidden>
@@ -92,17 +98,26 @@
         </div>
         <div class="landing-tags">
           <span>GST invoices</span>
-          <span>WhatsApp sharing</span>
-          <span>Purchase orders</span>
-          <span>Business profiles</span>
-          <span>AI assistant</span>
+          <span>PO / WO</span>
+          <span>Payments</span>
+          <span>Receivables</span>
+          <span>Payables</span>
+          <span>AI drafting</span>
+        </div>
+        <div class="launch-note" role="note">
+          EazInvoice supports business billing and GST/TDS readiness workflows. It does not provide legal or tax advice, government filing, banking, lending, or autonomous accounting.
         </div>
       </div>
       <div class="landing-showcase">
         <article class="showcase-card dashboard-preview-card">
           <div class="showcase-head">
-            <strong>Live Workspace Preview</strong>
-            <span class="pill blue">Dashboard</span>
+            <strong>Workspace Preview</strong>
+            <span class="pill blue">Web app</span>
+          </div>
+          <div class="sales-metric-grid" aria-label="Example workspace metrics">
+            <div><span>Invoices</span><strong>25</strong></div>
+            <div><span>Receivables</span><strong>INR 1.28L</strong></div>
+            <div><span>Overdue</span><strong>4</strong></div>
           </div>
           <div class="dashboard-preview">
             <div class="preview-side">
@@ -111,7 +126,7 @@
             <div class="preview-main">
               <div class="preview-toolbar"></div>
               <div class="preview-metrics">
-                <strong>25</strong><strong>INR 1.28L</strong><strong>4</strong>
+                <strong>Sales</strong><strong>Purchases</strong><strong>Reports</strong>
               </div>
               <div class="preview-table">
                 <span></span><span></span><span></span>
@@ -121,7 +136,7 @@
         </article>
         <article class="showcase-card showcase-report">
           <div class="showcase-head">
-            <strong>Quick Invoice</strong>
+            <strong>Example Invoice</strong>
             <span class="pill gold">GST-ready</span>
           </div>
           <div class="sample-doc">
@@ -134,23 +149,78 @@
       </div>
     </section>
 
-    <section class="landing-section" id="about">
+    <section class="landing-section audience-section" id="about">
       <div class="section-title">
-        <h2>Built For Daily Billing</h2>
-        <p>A clean path from signup to business setup to invoice creation, without sending new users into a blank form.</p>
+        <h2>Built For Selling Services, Billing Faster, And Staying Organized</h2>
+        <p>Start with a free workspace, then upgrade when you need sharing, collection links, AI drafting, team controls, or API access.</p>
       </div>
-      <div class="about-grid">
-        <article class="feature-card accent-gold">
-          <h3>Business onboarding</h3>
-          <p>Create business profile details once, then reuse them across invoices and future documents.</p>
+      <div class="audience-grid">
+        <article>
+          <span>Freelancers and creators</span>
+          <strong>Create GST-ready invoices and track unpaid work.</strong>
         </article>
-        <article class="feature-card accent-purple">
-          <h3>Mobile-first flow</h3>
-          <p>Designed around fast customer selection, GST totals, print, and WhatsApp sharing.</p>
+        <article>
+          <span>Agencies and consultants</span>
+          <strong>Manage clients, projects, PO/WO records, and reports.</strong>
         </article>
-        <article class="feature-card accent-blue">
-          <h3>AI for paid plans</h3>
-          <p>Pro and Business users can use command-based drafting for invoices, PO/WO, and report summaries.</p>
+        <article>
+          <span>Shops and service MSMEs</span>
+          <strong>Track customers, vendors, payments, receivables, and payables.</strong>
+        </article>
+        <article>
+          <span>Growing teams</span>
+          <strong>Add Business controls for roles, approvals, API keys, SMTP, and audit history.</strong>
+        </article>
+      </div>
+      <div class="launch-status-grid" aria-label="Current release status">
+        <article>
+          <span class="pill blue">Ready to test</span>
+          <h3>Web workspace</h3>
+          <p>Core billing, PO/WO, customers, vendors, reports, subscriptions, and AI-assisted drafting surfaces are in place.</p>
+        </article>
+        <article>
+          <span class="pill gold">Verification pending</span>
+          <h3>Paid checkout</h3>
+          <p>Plan logic passes locally. Live Razorpay checkout and webhook activation must be verified before broad ads.</p>
+        </article>
+        <article>
+          <span class="pill gold">Signing pending</span>
+          <h3>Android</h3>
+          <p>The mobile app is ready for internal testing, but Play Store availability waits for signed release upload.</p>
+        </article>
+        <article>
+          <span class="pill blue">Package ready</span>
+          <h3>WordPress plugin</h3>
+          <p>Version 1.0.7 is packaged under the canonical slug. WordPress.org listing still needs external validation/upload.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="landing-section" id="daily-work">
+      <div class="section-title">
+        <h2>Daily Workflows</h2>
+        <p>The first customer path stays practical: set up business details, create documents, collect and track payments, then review reports.</p>
+      </div>
+      <div class="daily-action-grid">
+        <article>
+          <strong>1</strong>
+          <h3>Set Up Business</h3>
+          <p>Add GST/tax details, address, UPI, and bank information once.</p>
+        </article>
+        <article>
+          <strong>2</strong>
+          <h3>Create Documents</h3>
+          <p>Create invoices, purchase orders, work orders, and drafts from the workspace.</p>
+        </article>
+        <article>
+          <strong>3</strong>
+          <h3>Track Money</h3>
+          <p>Review customers, vendors, payments, receivables, payables, and overdue work.</p>
+        </article>
+        <article>
+          <strong>4</strong>
+          <h3>Upgrade When Needed</h3>
+          <p>Add sharing, payment links, AI drafting, reports, team controls, API access, and Business tools.</p>
         </article>
       </div>
     </section>
@@ -212,8 +282,8 @@
       </div>
       <div class="feature-grid landing-feature-grid">
         <article class="feature-card accent-blue">
-          <h3>AI command workspace</h3>
-          <p>Pro unlocks AI invoice, PO/WO, and report drafting. Business keeps those AI tools and adds team and API workflows.</p>
+          <h3>AI-assisted drafting</h3>
+          <p>Pro and Business unlock AI invoice, PO/WO, and report drafting. Review every output before using it.</p>
         </article>
         <article class="feature-card">
           <h3>Guided invoices</h3>
@@ -224,15 +294,15 @@
           <p>Total invoices, unpaid amount, overdue, monthly revenue, and recent activity.</p>
         </article>
         <article class="feature-card">
-          <h3>Indian GST logic</h3>
-          <p>GST-ready fields with intra-state CGST/SGST and inter-state IGST mode display.</p>
+          <h3>Indian GST/TDS readiness</h3>
+          <p>GST-ready fields and report views for review. EazInvoice does not file taxes or provide legal advice.</p>
         </article>
         <article class="feature-card">
           <h3>PO / WO and expenses</h3>
           <p>Create purchase or work orders and link them to expense and profit reporting.</p>
         </article>
         <article class="feature-card accent-gold">
-          <h3>Business integrations</h3>
+          <h3>Business controls</h3>
           <p>Business tier adds team access, approvals, API keys, SMTP settings, compliance, and gateway setup.</p>
         </article>
       </div>
@@ -240,39 +310,80 @@
 
     <section class="landing-section" id="pricing">
       <div class="section-title">
-        <h2>Pricing</h2>
-          <p>Choose a simple plan now and upgrade when your billing, collections, or reporting needs grow.</p>
+        <h2>Simple Plans, Billed Yearly</h2>
+        <p>Start free, then upgrade when sharing, payment collection, AI drafting, or team controls become worth paying for.</p>
       </div>
-      <div class="sample-grid">
-        <article class="sample-preview">
-          <strong>Free</strong>
-          <p>INR 0/year. Limited GST-ready invoices, PDF-ready print, one profile, manual payments, basic reports, no AI.</p>
+      <div class="pricing-grid">
+        <article class="pricing-card">
+          <div class="pricing-head">
+            <span>Free</span>
+            <strong>INR 0</strong>
+            <small>For trying the workspace</small>
+          </div>
+          <ul>
+            <li>Limited GST-ready invoices</li>
+            <li>PDF-ready print</li>
+            <li>One profile</li>
+            <li>Manual payments and basic reports</li>
+          </ul>
+          <a class="ghost small" href="/apps/web/auth.html">Start Free</a>
         </article>
-        <article class="sample-preview">
-          <strong>Standard</strong>
-          <p>INR 199/month, INR 2,388 collected yearly. WhatsApp sharing, Razorpay collection links, higher limits, recurring drafts, and WordPress paid access. AI is not included.</p>
+        <article class="pricing-card">
+          <div class="pricing-head">
+            <span>Standard</span>
+            <strong>INR 199/mo</strong>
+            <small>INR 2,388 collected yearly</small>
+          </div>
+          <ul>
+            <li>WhatsApp sharing</li>
+            <li>Razorpay collection link readiness</li>
+            <li>Higher limits and recurring drafts</li>
+            <li>One WordPress paid-access site</li>
+          </ul>
+          <a class="ghost small" href="/apps/web/subscription.html">View Standard</a>
         </article>
-        <article class="sample-preview">
-          <strong>Pro</strong>
-          <p>INR 499/month, INR 5,988 collected yearly. AI invoice assistant, AI PO/WO assistant, advanced reports, payment tracking, and multiple-business support.</p>
+        <article class="pricing-card featured">
+          <div class="pricing-head">
+            <span>Pro</span>
+            <strong>INR 499/mo</strong>
+            <small>INR 5,988 collected yearly</small>
+          </div>
+          <ul>
+            <li>AI invoice drafting</li>
+            <li>AI PO/WO drafting</li>
+            <li>Advanced reports</li>
+            <li>Payment tracking and multiple-business support</li>
+          </ul>
+          <a class="primary small" href="/apps/web/subscription.html">Choose Pro</a>
         </article>
-        <article class="sample-preview">
-          <strong>Business</strong>
-          <p>INR 999/month, INR 11,988 collected yearly. Includes Pro features plus team access, approvals, API access, SMTP, business gateway settings, and analytics.</p>
+        <article class="pricing-card">
+          <div class="pricing-head">
+            <span>Business</span>
+            <strong>INR 999/mo</strong>
+            <small>INR 11,988 collected yearly</small>
+          </div>
+          <ul>
+            <li>Team access and approvals</li>
+            <li>API access and audit trail</li>
+            <li>SMTP and gateway settings</li>
+            <li>Priority business workflows</li>
+          </ul>
+          <a class="ghost small" href="/apps/web/subscription.html">View Business</a>
         </article>
       </div>
+      <p class="pricing-disclaimer">Paid checkout must be live-verified before broad paid advertising. Plan features remain entitlement-controlled by the EazInvoice API.</p>
     </section>
 
     <section class="landing-section app-center-section" id="android-app">
       <div class="section-title">
-        <h2>Android App Center</h2>
-        <p>Use this area for the Play Store release, APK testing build, and mobile release notes without changing the main website flow.</p>
+        <h2>Release Status</h2>
+        <p>Use these cards for Android, WordPress, and manual guidance while external store/listing steps are completed.</p>
       </div>
       <div class="app-center-grid">
         <article class="app-center-card app-center-featured">
           <span class="pill blue">Mobile release</span>
           <h3>EazInvoice Android</h3>
-          <p>Mobile-first invoicing, PO/WO, reports, and tier access in a compact app shell.</p>
+          <p>Mobile-first invoicing, PO/WO, reports, and tier access in a compact app shell for internal testing.</p>
           <div class="app-center-actions">
             <a class="primary" href="/apps/web/mobile-app.html">Open app center</a>
             <a class="ghost" href="/apps/web/mobile-app.html#release-notes">Release notes</a>
@@ -280,13 +391,13 @@
         </article>
         <article class="app-center-card">
           <span class="pill gold">Play Store</span>
-          <h3>Public download</h3>
-          <p>When the store listing is live, this card can point to the public Play Store URL.</p>
+          <h3>Pending signed release</h3>
+          <p>Public download waits for upload-key/versionCode confirmation, signed AAB, and Play testing.</p>
         </article>
         <article class="app-center-card">
-          <span class="pill blue">APK testing</span>
-          <h3>Internal test build</h3>
-          <p>Use this slot for team APK distribution or internal testing while the store review is pending.</p>
+          <span class="pill blue">WordPress</span>
+          <h3>Plugin package ready</h3>
+          <p>Version 1.0.7 is packaged for the canonical slug. WordPress.org approval/upload remains external.</p>
         </article>
       </div>
     </section>
