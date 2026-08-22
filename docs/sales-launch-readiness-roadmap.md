@@ -180,7 +180,7 @@ Must verify:
 
 ## Step 8: UI/UX Redesign Audit
 
-Status: audit complete; Phase 1 public-entry first pass complete; Phase 2 first-run/dashboard action pass implemented locally and awaiting review/commit.
+Status: audit complete; Phase 1 public-entry first pass complete; Phase 2 first-run/dashboard action pass implemented and committed.
 
 Audit artifact:
 
@@ -188,9 +188,8 @@ Audit artifact:
 
 Implementation requirement:
 
-- Sales-safe public entry first pass completed in `apps/web/index.html`, `apps/web/home.js`, and `apps/web/styles.css`.
-- First-run onboarding and dashboard daily-action improvements are implemented locally in `apps/web/onboarding.html`, `apps/web/onboarding.js`, `apps/web/dashboard.html`, `apps/web/dashboard.js`, and `apps/web/styles.css`.
-- Review and commit the Phase 2 UI changes after verification.
+- Sales-safe public entry first pass completed in `apps/web/index.html`, `apps/web/home.js`, `apps/web/styles.css`, and `apps/web/landing-phase1.css`.
+- First-run onboarding and dashboard daily-action improvements are implemented in `apps/web/onboarding.html`, `apps/web/onboarding.js`, `apps/web/dashboard.html`, `apps/web/dashboard.js`, and `apps/web/styles.css`.
 - Preserve backend financial authority.
 - Do not change accounting, GST, reports, auth, entitlements, or database behavior for visual convenience.
 - Keep Android, WordPress, payment, tax, and AI claims aligned to verified release status.
