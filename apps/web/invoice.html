@@ -290,7 +290,7 @@
         <div class="actions sticky-actions" data-invoice-entry hidden>
           <button id="saveDraftBtn" class="primary" type="submit">Save Draft</button>
           <button id="createInvoiceBtn" class="primary alt" type="button">Create Invoice</button>
-          <button id="printInvoice" class="ghost" type="button">Generate Tax Invoice PDF</button>
+          <button id="printInvoice" class="ghost" type="button">Print / Save as PDF</button>
           <button id="emailDocumentBtn" class="ghost" type="button">Email</button>
           <a id="whatsappShare" class="ghost" href="#" target="_blank" rel="noreferrer">WhatsApp Share</a>
         </div>
@@ -507,6 +507,8 @@
       let activePlanKey = "free";
       let fallbackSavedInvoice = null;
       let saveRedirectUrl = "/apps/web/dashboard.html";
+      let formDirty = false;
+      let suppressUnsavedPrompt = false;
 
       function documentTypeLabel() {
         if (!isPoFlow) return "Invoice";
@@ -559,8 +561,8 @@
         if (documentNumberLabel) documentNumberLabel.textContent = `${label} Number`;
         if (documentDateLabel) documentDateLabel.textContent = `${label} Date`;
         if (saveDraftButton) saveDraftButton.textContent = `Save ${documentTypeShort()} Draft`;
-        if (createInvoiceButton) createInvoiceButton.textContent = isPoFlow ? `Create ${documentTypeShort()}` : "Create Invoice";
-        if (printButton) printButton.textContent = isPoFlow ? `Generate ${documentTypeShort()} PDF` : "Generate Tax Invoice PDF";
+        if (createInvoiceButton) createInvoiceButton.textContent = isPoFlow ? `Issue ${documentTypeShort()}` : "Finalize Invoice";
+        if (printButton) printButton.textContent = "Print / Save as PDF";
         if (invoicePaymentPanel) invoicePaymentPanel.hidden = true;
         if (documentPreview) {
           documentPreview.classList.toggle("po-document-preview", isPoFlow);
@@ -577,9 +579,31 @@
         return isPoFlow ? "/apps/web/dashboard.html#purchase-orders" : "/apps/web/dashboard.html#invoices";
       }
 
+      function confirmDiscardIfDirty() {
+        if (!formDirty || suppressUnsavedPrompt || recordIsLocked()) return true;
+        return window.confirm("Discard unsaved changes?\n\nYou have unsaved changes. Going back will discard them.");
+      }
+
+      function goBackToDocumentList() {
+        if (!confirmDiscardIfDirty()) return;
+        suppressUnsavedPrompt = true;
+        const sameOriginReferrer = document.referrer && (() => {
+          try {
+            return new URL(document.referrer).origin === window.location.origin;
+          } catch {
+            return false;
+          }
+        })();
+        if (sameOriginReferrer && history.length > 1) {
+          history.back();
+          return;
+        }
+        window.location.href = dashboardSectionUrl();
+      }
+
       function showSaveSuccess(documentRecord, targetStatus) {
         const docLabel = documentTypeLabel();
-        const statusWord = targetStatus === "draft" ? "saved as draft" : "created";
+        const statusWord = targetStatus === "draft" ? "saved as draft" : (isPoFlow ? "issued" : "finalized");
         saveRedirectUrl = dashboardSectionUrl();
         if (saveSuccessTitle) saveSuccessTitle.textContent = `${docLabel} ${statusWord} successfully`;
         if (saveSuccessMessage) {
@@ -591,6 +615,25 @@
         }, 1500);
       }
 
+      function recordIsLocked(record = fallbackSavedInvoice) {
+        const recordStatus = String(record?.status || "draft").toLowerCase();
+        return record?.id && !["draft", "deleted", "cancelled", "void"].includes(recordStatus);
+      }
+
+      function applyDocumentLock(record = fallbackSavedInvoice) {
+        const locked = recordIsLocked(record);
+        form?.querySelectorAll("input, select, textarea").forEach((field) => {
+          if (field.closest("#invoicePaymentModal") || field.closest("#documentEmailModal")) return;
+          field.disabled = locked;
+        });
+        if (itemButton) itemButton.disabled = locked;
+        if (addButton) addButton.disabled = locked;
+        if (saveDraftButton) saveDraftButton.hidden = locked;
+        if (createInvoiceButton) createInvoiceButton.hidden = locked;
+        if (emailDocumentBtn) emailDocumentBtn.hidden = !locked && String(record?.status || "draft").toLowerCase() === "draft";
+        if (printButton) printButton.hidden = false;
+      }
+
       function issuerCode(company = activeIssuer()) {
         const raw = company?.companyCode || company?.name || currentUser?.name || "INV";
         const cleaned = String(raw).trim().toUpperCase().replace(/[^A-Z0-9]+/g, "");
@@ -599,10 +642,8 @@
 
       function ensureDraftInvoiceNumber() {
         const input = form?.querySelector('input[name="invoiceNumber"]');
-        const company = activeIssuer();
-        if (!input || !company || input.value) return;
-        const invoiceDate = form?.querySelector('input[name="invoiceDate"]')?.value || new Date().toISOString().slice(0, 10);
-        input.value = `${issuerCode(company)}/${String(invoiceDate).slice(0, 4)}/${documentTypeShort()}-${String(fallbackCompanies.length + fallbackCustomers.length + fallbackVendors.length + 1).padStart(4, "0")}`;
+        if (!input || input.value || fallbackSavedInvoice?.id) return;
+        input.placeholder = `${documentTypeShort()} number assigned on finalize`;
       }
 
       function simpleNumber(value) {
@@ -821,7 +862,7 @@
         if (previewCompanyMeta) previewCompanyMeta.textContent = [issuer?.gstNumber, issuer?.state, issuer?.pincode].filter(Boolean).join(" | ") || "Business details";
         if (previewSignatureCompany) previewSignatureCompany.textContent = issuer?.legalName || issuer?.name || "Your Business";
         if (previewCustomer) previewCustomer.textContent = data.get("customerName") || (isPoFlow ? "Vendor" : "Customer");
-        if (previewInvoiceNo) previewInvoiceNo.textContent = data.get("invoiceNumber") || "Auto";
+        if (previewInvoiceNo) previewInvoiceNo.textContent = fallbackSavedInvoice?.invoiceNumber || fallbackSavedInvoice?.poNumber || fallbackSavedInvoice?.draftNumber || "Auto on finalize";
         if (previewInvoiceDate) previewInvoiceDate.textContent = data.get("invoiceDate") || "-";
         if (previewDueDate) previewDueDate.textContent = data.get("dueDate") || "-";
         if (previewRows) {
@@ -858,17 +899,15 @@
           return null;
         }
         const selectedCustomer = activeRecipients().find((entry) => entry.id === customerSelect?.value) || null;
-        const invoiceNumberInput = form?.querySelector('input[name="invoiceNumber"]');
         ensureDraftInvoiceNumber();
         const billToName = data.get("customerName") || selectedCustomer?.businessName || selectedCustomer?.name || (isPoFlow ? "Vendor" : "Customer");
         const billToAddress = data.get("customerBillingAddress") || recipientAddress(selectedCustomer);
         const payload = {
           companyId: issuer.isUserIssuer ? null : issuer.id,
           customerId: selectedCustomer?.id || null,
-          invoiceNumber: data.get("invoiceNumber"),
-          poNumber: data.get("invoiceNumber"),
+          draftNumber: data.get("invoiceNumber"),
           documentType: documentTypeSelect?.value || "po",
-          status: targetStatus,
+          status: "draft",
           invoiceDate: data.get("invoiceDate"),
           poDate: data.get("invoiceDate"),
           dueDate: data.get("dueDate"),
@@ -893,25 +932,32 @@
           items,
         };
         try {
-          const isCreated = targetStatus === "created";
+          const isCreated = targetStatus !== "draft";
           const docLabel = documentTypeLabel();
-          if (status) status.textContent = isCreated ? `Creating ${docLabel.toLowerCase()} record...` : `Saving ${docLabel.toLowerCase()} draft...`;
-          const invoice = isPoFlow
+          if (status) status.textContent = isCreated ? `${isPoFlow ? "Issuing" : "Finalizing"} ${docLabel.toLowerCase()}...` : `Saving ${docLabel.toLowerCase()} draft...`;
+          let invoice = isPoFlow
             ? fallbackSavedInvoice?.id
               ? await api(`/purchase-orders/${fallbackSavedInvoice.id}`, { method: "PATCH", body: JSON.stringify(payload) })
               : await api("/purchase-orders", { method: "POST", body: JSON.stringify(payload) })
             : fallbackSavedInvoice
             ? await api(`/invoices/${fallbackSavedInvoice.id}`, { method: "PATCH", body: JSON.stringify(payload) })
             : await api("/invoices", { method: "POST", body: JSON.stringify(payload) });
+          if (isCreated) {
+            invoice = isPoFlow
+              ? await api(`/purchase-orders/${encodeURIComponent(invoice.id)}/issue`, { method: "POST", body: JSON.stringify({ idempotencyKey: `issue-${invoice.id}` }) })
+              : await api(`/invoices/${encodeURIComponent(invoice.id)}/finalize`, { method: "POST", body: JSON.stringify({ idempotencyKey: `finalize-${invoice.id}` }) });
+          }
+          const invoiceNumberInput = form?.querySelector('input[name="invoiceNumber"]');
           if (invoiceNumberInput) invoiceNumberInput.value = invoice.invoiceNumber || invoice.poNumber || invoiceNumberInput.value;
           if (status) {
             const summaryHref = isPoFlow ? "/apps/web/dashboard.html#purchase-orders" : "/apps/web/dashboard.html#invoices";
             const summaryLabel = isPoFlow ? "PO Summary" : "Invoice Summary";
             status.innerHTML = isCreated
-              ? `Created ${escapeHtml(docLabel)} ${escapeHtml(invoice.invoiceNumber || invoice.poNumber)}. <a href="${summaryHref}">View it in ${escapeHtml(summaryLabel)}</a>`
-              : `Saved ${escapeHtml(docLabel)} draft ${escapeHtml(invoice.invoiceNumber || invoice.poNumber)}. <a href="${summaryHref}">View it in ${escapeHtml(summaryLabel)}</a>`;
+              ? `${escapeHtml(isPoFlow ? "Issued" : "Finalized")} ${escapeHtml(docLabel)} ${escapeHtml(invoice.invoiceNumber || invoice.poNumber)}. <a href="${summaryHref}">View it in ${escapeHtml(summaryLabel)}</a>`
+              : `Saved ${escapeHtml(docLabel)} draft ${escapeHtml(invoice.draftNumber || invoice.invoiceNumber || invoice.poNumber)}. <a href="${summaryHref}">View it in ${escapeHtml(summaryLabel)}</a>`;
           }
           fallbackSavedInvoice = invoice;
+          formDirty = false;
           if (!isPoFlow) renderInvoicePaymentPanel(invoice);
           if (notify) showSaveSuccess(invoice, targetStatus);
           return invoice;
@@ -930,14 +976,20 @@
       async function createInvoiceFallback(event) {
         event.preventDefault();
         event.stopImmediatePropagation();
-        await persistInvoiceFallback("created");
+        await persistInvoiceFallback("issued");
       }
 
       async function generateTaxInvoicePdf(event) {
         event.preventDefault();
         event.stopImmediatePropagation();
-        const invoice = await persistInvoiceFallback("created", { notify: false });
-        if (!invoice) return;
+        if (!fallbackSavedInvoice?.id) {
+          setWorkflowStatus(`Save this ${documentTypeLabel().toLowerCase()} before previewing the PDF. PDF preview does not create or finalize records.`, "error");
+          return;
+        }
+        const invoice = await api(isPoFlow
+          ? `/purchase-orders/${encodeURIComponent(fallbackSavedInvoice.id)}`
+          : `/invoices/${encodeURIComponent(fallbackSavedInvoice.id)}`);
+        fallbackSavedInvoice = invoice;
         updateFallbackPreview();
         window.print();
       }
@@ -1216,7 +1268,10 @@
         showEntry(true);
         updateFallbackPreview();
         renderInvoicePaymentPanel(invoice);
-        if (status) status.textContent = `${String(invoice.status || "created").toUpperCase()} ${invoice.invoiceNumber || "invoice"} loaded for editing.`;
+        applyDocumentLock(invoice);
+        if (status) status.textContent = recordIsLocked(invoice)
+          ? `${String(invoice.status || "issued").toUpperCase()} ${invoice.invoiceNumber || "invoice"} loaded read-only.`
+          : `${String(invoice.status || "draft").toUpperCase()} ${invoice.draftNumber || invoice.invoiceNumber || "invoice"} loaded for editing.`;
       }
 
       function openPurchaseOrderForEdit(po) {
@@ -1253,7 +1308,10 @@
         if (!itemsEl?.querySelector(".workflow-item-row")) addFallbackItemRow();
         showEntry(true);
         updateFallbackPreview();
-        if (status) status.textContent = `${String(po.status || "created").toUpperCase()} ${po.poNumber || documentTypeLabel()} loaded for editing.`;
+        applyDocumentLock(po);
+        if (status) status.textContent = recordIsLocked(po)
+          ? `${String(po.status || "issued").toUpperCase()} ${po.poNumber || documentTypeLabel()} loaded read-only.`
+          : `${String(po.status || "draft").toUpperCase()} ${po.draftNumber || po.poNumber || documentTypeLabel()} loaded for editing.`;
       }
 
       async function loadInvoiceFromUrl() {
@@ -1527,11 +1585,42 @@
         }
       });
       form?.addEventListener("submit", saveDraftFallback, true);
+      form?.addEventListener("input", (event) => {
+        if (event.target?.closest("#invoicePaymentModal") || event.target?.closest("#documentEmailModal")) return;
+        if (recordIsLocked()) return;
+        formDirty = true;
+      });
+      form?.addEventListener("change", (event) => {
+        if (event.target?.closest("#invoicePaymentModal") || event.target?.closest("#documentEmailModal")) return;
+        if (recordIsLocked()) return;
+        formDirty = true;
+      });
       createInvoiceButton?.addEventListener("click", createInvoiceFallback, true);
       printButton?.addEventListener("click", generateTaxInvoicePdf, true);
       saveSuccessContinue?.addEventListener("click", () => {
+        suppressUnsavedPrompt = true;
         window.location.href = saveRedirectUrl;
       });
+      document.querySelectorAll('a[href^="/apps/web/dashboard.html"]').forEach((link) => {
+        link.addEventListener("click", (event) => {
+          if (confirmDiscardIfDirty()) {
+            suppressUnsavedPrompt = true;
+            return;
+          }
+          event.preventDefault();
+        });
+      });
+      window.addEventListener("beforeunload", (event) => {
+        if (!formDirty || suppressUnsavedPrompt || recordIsLocked()) return;
+        event.preventDefault();
+        event.returnValue = "";
+      });
+      window.addEventListener("popstate", () => {
+        if (!confirmDiscardIfDirty()) {
+          history.pushState({ eazinvoiceDocumentForm: true }, "", window.location.href);
+        }
+      });
+      history.replaceState({ eazinvoiceDocumentForm: true }, "", window.location.href);
       cancelButton?.addEventListener("click", () => {
         if (modeSelect) modeSelect.value = "";
         applyMode();

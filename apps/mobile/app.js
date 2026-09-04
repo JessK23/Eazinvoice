@@ -1,7 +1,10 @@
 const SESSION_KEY = "eazinvoice_mobile_session_v3";
 const SETTINGS_KEY = "eazinvoice_mobile_settings_v3";
-const DEFAULT_LOCAL_API = "http://10.0.2.2:3001";
 const DEFAULT_PRODUCTION_API = "https://www.eazinvoice.com";
+const OTP_IDLE_LABEL = "Request OTP";
+const OTP_SENT_LABEL = "Sent Successfully";
+const OTP_CODE_LENGTH = 6;
+const DEFAULT_OTP_EXPIRES_SECONDS = 90;
 const MONEY_FORMATTER = new Intl.NumberFormat("en-IN", {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
@@ -19,10 +22,13 @@ const state = {
   booted: false,
   lastError: "",
   requestEpoch: 0,
+  unsavedForm: false,
   data: emptyData(),
 };
 
 const dom = {};
+let otpExpiryTimer = null;
+let otpExpiresAt = 0;
 
 function emptyData() {
   return {
@@ -68,13 +74,12 @@ function loadSettings() {
 function inferDefaultApiBase() {
   const isNativeRuntime =
     Boolean(window.Capacitor) ||
-    location.protocol === "capacitor:" ||
-    location.origin === "https://localhost";
+    location.protocol === "capacitor:";
   if (isNativeRuntime) return DEFAULT_PRODUCTION_API;
-  if (location.protocol === "http:" && location.hostname && location.hostname !== "localhost") {
+  if (location.protocol === "http:" && location.hostname) {
     return `${location.protocol}//${location.hostname}:3001`;
   }
-  return location.origin && location.origin !== "null" ? location.origin : DEFAULT_LOCAL_API;
+  return location.origin && location.origin !== "null" ? location.origin : DEFAULT_PRODUCTION_API;
 }
 
 function saveSettings() {
@@ -83,12 +88,16 @@ function saveSettings() {
 
 function normalizeApiBase(value) {
   const text = String(value || "").trim().replace(/\/+$/, "");
-  return text || DEFAULT_LOCAL_API;
+  return text || DEFAULT_PRODUCTION_API;
 }
 
 function isReleaseUnsafeApiBase(value) {
   const base = normalizeApiBase(value);
-  return base.startsWith("http://") && !/localhost|127\.0\.0\.1|10\.0\.2\.2|192\.168\.|10\./.test(base);
+  try {
+    return new URL(base).protocol === "http:";
+  } catch {
+    return false;
+  }
 }
 
 const mobileStore = {
@@ -137,6 +146,65 @@ function titleCase(value) {
   return text(value).replace(/[_-]+/g, " ").replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
+function normalizedOtpExpirySeconds(expiresInSeconds) {
+  const parsed = Number(expiresInSeconds);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_OTP_EXPIRES_SECONDS;
+}
+
+function formatRemaining(ms) {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function stopOtpTimer() {
+  if (otpExpiryTimer) window.clearInterval(otpExpiryTimer);
+  otpExpiryTimer = null;
+}
+
+function updateOtpExpiry() {
+  const otpExpiry = document.getElementById("otpExpiry");
+  const otpMeta = document.getElementById("otpMeta");
+  if (!otpExpiry || !otpExpiresAt) return;
+  const remaining = otpExpiresAt - Date.now();
+  otpExpiry.textContent = remaining > 0
+    ? `OTP expires in ${formatRemaining(remaining)}`
+    : "OTP expired. Request a fresh code.";
+  if (otpMeta) otpMeta.hidden = false;
+  const requestButton = document.getElementById("otpRequestButton");
+  if (!requestButton) return;
+  if (remaining > 0) {
+    requestButton.disabled = true;
+    requestButton.textContent = OTP_SENT_LABEL;
+    requestButton.classList.add("success");
+  } else {
+    requestButton.disabled = false;
+    requestButton.textContent = OTP_IDLE_LABEL;
+    requestButton.classList.remove("success");
+  }
+}
+
+function startOtpTimer(expiresInSeconds = DEFAULT_OTP_EXPIRES_SECONDS) {
+  stopOtpTimer();
+  otpExpiresAt = Date.now() + normalizedOtpExpirySeconds(expiresInSeconds) * 1000;
+  updateOtpExpiry();
+  otpExpiryTimer = window.setInterval(updateOtpExpiry, 1000);
+}
+
+function resetOtpTimer() {
+  stopOtpTimer();
+  otpExpiresAt = 0;
+  const otpMeta = document.getElementById("otpMeta");
+  const requestButton = document.getElementById("otpRequestButton");
+  if (otpMeta) otpMeta.hidden = true;
+  if (requestButton) {
+    requestButton.disabled = false;
+    requestButton.textContent = OTP_IDLE_LABEL;
+    requestButton.classList.remove("success");
+  }
+}
+
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -165,11 +233,12 @@ function query(params = {}) {
 }
 
 class MobileApiError extends Error {
-  constructor(message, status, payload) {
+  constructor(message, status, payload, path = "") {
     super(message);
     this.name = "MobileApiError";
     this.status = status;
     this.payload = payload;
+    this.path = path;
   }
 }
 
@@ -201,11 +270,11 @@ const api = {
         }
       }
       if (!response.ok) {
-        throw new MobileApiError(payload.error || payload.message || statusMessage(response.status), response.status, payload);
+        throw new MobileApiError(payload.error || payload.message || statusMessage(response.status), response.status, payload, path);
       }
       return payload;
     } catch (error) {
-      if (error.name === "AbortError") throw new MobileApiError("The request timed out. Check connectivity and retry.", 408, {});
+      if (error.name === "AbortError") throw new MobileApiError("The request timed out. Check connectivity and retry.", 408, {}, path);
       throw error;
     } finally {
       clearTimeout(timeout);
@@ -214,8 +283,8 @@ const api = {
   requestOtp(email, mode = "login") {
     return this.request("/auth/email-otp/request", { method: "POST", body: { email, mode } });
   },
-  login(email, otp) {
-    return this.request("/auth/login", { method: "POST", body: { email, otp } });
+  login(email, password, otp) {
+    return this.request("/auth/login", { method: "POST", body: { email, password, otp } });
   },
   me() {
     return this.request("/me");
@@ -240,6 +309,18 @@ const api = {
   },
   createInvoice(body) {
     return this.request("/invoices", { method: "POST", body });
+  },
+  finalizeInvoice(invoiceId, body) {
+    return this.request(`/invoices/${encodeURIComponent(invoiceId)}/finalize`, { method: "POST", body });
+  },
+  archiveInvoice(invoiceId, body) {
+    return this.request(`/invoices/${encodeURIComponent(invoiceId)}/archive`, { method: "POST", body });
+  },
+  restoreInvoice(invoiceId, body) {
+    return this.request(`/invoices/${encodeURIComponent(invoiceId)}/restore`, { method: "POST", body });
+  },
+  whatsappInvoice(invoiceId, body) {
+    return this.request(`/invoices/${encodeURIComponent(invoiceId)}/whatsapp`, { method: "POST", body });
   },
   recordInvoicePayment(invoiceId, body) {
     return this.request(`/invoices/${encodeURIComponent(invoiceId)}/payments`, { method: "POST", body });
@@ -267,6 +348,9 @@ const api = {
   },
   createPurchaseOrder(body) {
     return this.request("/purchase-orders", { method: "POST", body });
+  },
+  issuePurchaseOrder(poId, body) {
+    return this.request(`/purchase-orders/${encodeURIComponent(poId)}/issue`, { method: "POST", body });
   },
   vendorBills(params) {
     return this.request(`/vendor-bills${query(params)}`);
@@ -351,12 +435,17 @@ function statusMessage(status) {
 function mapError(error) {
   if (error instanceof MobileApiError) {
     if (error.status === 401) {
+      if (["/auth/login", "/auth/signup"].includes(error.path)) return error.message;
       void logout(false);
       return "Your session expired. Please sign in again.";
     }
     return error.message;
   }
   return error?.message || "Something went wrong.";
+}
+
+function isUnauthorizedError(error) {
+  return error instanceof MobileApiError && error.status === 401;
 }
 
 function extractArray(payload, keys = []) {
@@ -444,15 +533,50 @@ async function boot() {
   await restoreSession();
   state.booted = true;
   if (state.token) {
-    await refreshSessionAndData();
+    const refreshed = await refreshSessionAndData({ quietUnauthorized: true });
+    if (!refreshed) {
+      setStatus("");
+      render();
+    }
   } else {
     render();
   }
 }
 
-async function refreshSessionAndData() {
+async function refreshSessionAndData({ quietUnauthorized = false } = {}) {
+  if (quietUnauthorized) {
+    setStatus("Syncing workspace...");
+    renderChrome();
+    try {
+      state.user = await api.me();
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        await logout(false);
+        return false;
+      }
+      state.user = state.user || null;
+    }
+    try {
+      await hydrateWorkspaceData();
+      return true;
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        await logout(false);
+        return false;
+      }
+      state.lastError = mapError(error);
+      setStatus(state.lastError, "error");
+      return false;
+    }
+  }
   await withBusy(async () => {
     state.user = await api.me().catch(() => state.user);
+    await hydrateWorkspaceData();
+  }, "Syncing workspace...");
+  return true;
+}
+
+async function hydrateWorkspaceData() {
     const workspaces = await api.workspaces().catch(() => []);
     state.workspaces = extractArray(workspaces, ["workspaces", "businesses"]);
     if (!state.workspaces.length && state.user) {
@@ -469,7 +593,6 @@ async function refreshSessionAndData() {
     )) || state.workspaces[0] || null;
     await saveSession();
     await refreshBusinessData();
-  }, "Syncing workspace...");
 }
 
 async function refreshBusinessData() {
@@ -596,12 +719,18 @@ function bindEvents() {
   dom.logoutButton?.addEventListener("click", () => void logout());
   dom.workspaceSelect?.addEventListener("change", () => void switchWorkspace(dom.workspaceSelect.value));
   dom.refreshButton?.addEventListener("click", () => void refreshBusinessData());
+  document.body.addEventListener("input", (event) => {
+    if (event.target?.id === "otp") {
+      event.target.value = event.target.value.replace(/\D/g, "").slice(0, OTP_CODE_LENGTH);
+    }
+    if (event.target?.id === "email") resetOtpTimer();
+  });
   dom.bottomNav?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-route]");
     if (!button) return;
-    state.route = button.dataset.route;
-    history.replaceState(null, "", `#${state.route}`);
-    render();
+    event.preventDefault();
+    event.stopPropagation();
+    routeTo(button.dataset.route);
   });
   document.body.addEventListener("click", (event) => {
     if (event.target.closest("#otpRequestButton")) {
@@ -617,9 +746,7 @@ function bindEvents() {
     const routeButton = event.target.closest("[data-route]");
     const action = event.target.closest("[data-action]");
     if (routeButton) {
-      state.route = routeButton.dataset.route;
-      history.replaceState(null, "", `#${state.route}`);
-      render();
+      routeTo(routeButton.dataset.route);
     }
     if (action) void handleAction(action.dataset.action, action.dataset);
   });
@@ -634,6 +761,12 @@ function bindEvents() {
     event.preventDefault();
     void handleForm(form.dataset.form, form);
   });
+  document.body.addEventListener("input", (event) => {
+    if (event.target?.closest("[data-form]")) state.unsavedForm = true;
+  });
+  document.body.addEventListener("change", (event) => {
+    if (event.target?.closest("[data-form]")) state.unsavedForm = true;
+  });
   window.addEventListener("online", () => {
     state.online = true;
     renderChrome();
@@ -644,6 +777,11 @@ function bindEvents() {
     renderChrome();
   });
   window.addEventListener("hashchange", () => {
+    if (!confirmDiscardMobileChanges()) {
+      history.pushState({ route: state.route }, "", `#${state.route}`);
+      return;
+    }
+    state.unsavedForm = false;
     state.route = location.hash.replace("#", "") || "home";
     render();
   });
@@ -653,6 +791,8 @@ function bindEvents() {
 }
 
 async function requestOtp() {
+  state.lastError = "";
+  setStatus("");
   const emailInput = document.getElementById("email");
   const email = emailInput?.value.trim() || "";
   if (!email) {
@@ -660,26 +800,36 @@ async function requestOtp() {
     return;
   }
   await withBusy(async () => {
-    await api.requestOtp(email, "login");
-    setStatus("OTP requested. Check your email and enter the code.");
+    const response = await api.requestOtp(email, "login");
+    const otpInput = document.getElementById("otp");
+    if (otpInput && response.devOtp) otpInput.value = response.devOtp;
+    startOtpTimer(response.expiresInSeconds);
+    setStatus(response.devOtp
+      ? `OTP sent to ${response.email}. Local test OTP: ${response.devOtp}`
+      : `OTP sent to ${response.email}. Enter the code you receive.`);
   }, "Requesting OTP...");
 }
 
 async function login() {
+  state.lastError = "";
+  setStatus("");
   const emailInput = document.getElementById("email");
+  const passwordInput = document.getElementById("password");
   const otpInput = document.getElementById("otp");
   const email = emailInput?.value.trim() || "";
+  const password = passwordInput?.value || "";
   const otp = otpInput?.value.trim() || "";
-  if (!email || !otp) {
-    setStatus("Enter email and OTP.", "error");
+  if (!email || !password || !otp) {
+    setStatus("Enter email, password, and OTP.", "error");
     return;
   }
   await withBusy(async () => {
-    const payload = await api.login(email, otp);
+    const payload = await api.login(email, password, otp);
     state.token = payload.token || payload.session?.token || "";
     state.user = payload.user || null;
     if (!state.token) throw new MobileApiError("Login succeeded but no session token was returned.", 500, payload);
     await saveSession();
+    resetOtpTimer();
     await refreshSessionAndData();
     setStatus("Signed in.");
   }, "Signing in...");
@@ -700,6 +850,28 @@ function workspaceKey(workspace) {
   return `${workspace.businessId || ""}:${workspace.ownerUserId || workspace.userId || ""}`;
 }
 
+function confirmDiscardMobileChanges() {
+  if (!state.unsavedForm) return true;
+  return window.confirm("Discard unsaved changes?\n\nYou have unsaved changes. Going back will discard them.");
+}
+
+function routeTo(route, { replace = false } = {}) {
+  if (!route || route === state.route) return;
+  if (!confirmDiscardMobileChanges()) return;
+  state.unsavedForm = false;
+  state.route = route;
+  if (replace) history.replaceState({ route }, "", `#${route}`);
+  else history.pushState({ route }, "", `#${route}`);
+  render();
+}
+
+function replaceRecord(records, updated) {
+  if (!Array.isArray(records) || !updated?.id) return;
+  const index = records.findIndex((entry) => entry.id === updated.id);
+  if (index >= 0) records[index] = updated;
+  else records.unshift(updated);
+}
+
 async function handleAction(action, dataset = {}) {
   if (action === "refresh") {
     await refreshSessionAndData();
@@ -707,6 +879,51 @@ async function handleAction(action, dataset = {}) {
   }
   if (action === "share-document") {
     shareDocument(dataset.kind, dataset.id);
+    return;
+  }
+  if (action === "finalize-invoice") {
+    await withBusy(async () => {
+      const invoice = await api.finalizeInvoice(dataset.id, { ...workspaceParams(), idempotencyKey: `mobile-finalize-${dataset.id}` });
+      replaceRecord(state.data.invoices, invoice);
+      render();
+      setStatus(`Invoice ${invoice.invoiceNumber || invoice.id} created successfully.`);
+    }, "Finalizing invoice...");
+    return;
+  }
+  if (action === "archive-invoice") {
+    if (!window.confirm("Move invoice to Inactive?\n\nThis invoice will be removed from your active invoice list but will remain retained for accounting, audit and reporting purposes.")) return;
+    await withBusy(async () => {
+      const invoice = await api.archiveInvoice(dataset.id, workspaceParams());
+      replaceRecord(state.data.invoices, invoice);
+      render();
+      setStatus("Invoice moved to Inactive.");
+    }, "Archiving invoice...");
+    return;
+  }
+  if (action === "restore-invoice") {
+    await withBusy(async () => {
+      const invoice = await api.restoreInvoice(dataset.id, workspaceParams());
+      replaceRecord(state.data.invoices, invoice);
+      render();
+      setStatus("Invoice restored to Active.");
+    }, "Restoring invoice...");
+    return;
+  }
+  if (action === "whatsapp-invoice") {
+    await withBusy(async () => {
+      const result = await api.whatsappInvoice(dataset.id, workspaceParams());
+      if (navigator.clipboard && result.shareText) await navigator.clipboard.writeText(result.shareText).catch(() => {});
+      setStatus(result.message || "WhatsApp sharing is ready for this saved invoice.");
+    }, "Checking WhatsApp access...");
+    return;
+  }
+  if (action === "issue-po") {
+    await withBusy(async () => {
+      const record = await api.issuePurchaseOrder(dataset.id, { ...workspaceParams(), idempotencyKey: `mobile-issue-${dataset.id}` });
+      replaceRecord(state.data.purchaseOrders, record);
+      render();
+      setStatus(`${String(record.documentType || "po").toLowerCase() === "wo" ? "Work Order" : "Purchase Order"} ${record.poNumber || record.id} issued successfully.`);
+    }, "Issuing PO/WO...");
     return;
   }
   if (action === "preview-year-end") {
@@ -738,6 +955,7 @@ async function handleForm(name, form) {
   const run = (fn, label) => withBusy(async () => {
     const result = await fn();
     form.reset();
+    state.unsavedForm = false;
     await refreshBusinessData();
     setStatus(label || "Saved.");
     return result;
@@ -807,7 +1025,7 @@ async function handleForm(name, form) {
       vendorName: value("vendorName"),
       billToName: value("vendorName"),
       poDate: value("poDate") || today(),
-      status: "created",
+      status: "draft",
       currency: "INR",
       items: [{
         description: value("description"),
@@ -816,7 +1034,7 @@ async function handleForm(name, form) {
         taxRate: amount("taxRate"),
       }],
       idempotencyKey: idempotencyKey("purchase-order"),
-    }), "PO created. It has no accounting impact until a vendor bill is posted.");
+    }), "PO draft saved. Issue it when ready; it has no accounting impact.");
   } else if (name === "vendor-bill") {
     await run(() => api.createVendorBill({
       ...workspaceParams(),
@@ -909,6 +1127,7 @@ function renderChrome() {
   dom.logoutButton.hidden = !state.token;
   dom.refreshButton.hidden = !state.token;
   dom.workspaceSelect.hidden = !state.token || state.workspaces.length <= 1;
+  dom.bottomNav.hidden = !state.token;
   if (state.token) {
     dom.workspaceSelect.innerHTML = state.workspaces.map((workspace) => (
       `<option value="${escapeAttr(workspaceKey(workspace))}" ${workspace === state.activeWorkspace ? "selected" : ""}>${escapeHtml(workspaceName(workspace))} - ${escapeHtml(titleCase(workspace.role || "owner"))}</option>`
@@ -942,7 +1161,11 @@ function renderLogin() {
       <p>Use the same email OTP identity and business access as the Web app. The backend stays authoritative for totals, tax, postings, compliance, and close controls.</p>
       <form id="authForm" class="form-stack">
         <label>Email<input id="email" type="email" autocomplete="email" placeholder="owner@example.com" required /></label>
+        <label>Password<input id="password" type="password" autocomplete="current-password" placeholder="Enter password" required /></label>
         <label>OTP<input id="otp" inputmode="numeric" autocomplete="one-time-code" placeholder="Enter OTP" /></label>
+        <div id="otpMeta" class="otp-meta" hidden>
+          <span id="otpExpiry">OTP expires in 1:30</span>
+        </div>
         <div class="button-row">
           <button id="otpRequestButton" class="secondary" type="button">Request OTP</button>
           <button id="loginButton" class="primary" type="submit">Sign in</button>
@@ -1201,10 +1424,30 @@ function recordList(records, empty) {
     const title = record.invoiceNumber || record.billNumber || record.creditNoteNumber || record.vendorCreditNumber || record.poNumber || record.accountName || record.name || record.id || "Record";
     const amount = record.total || record.amount || record.balanceAmount || record.outstandingAmount || record.bookBalance || 0;
     const status = record.status || record.paymentStatus || record.reconciliationStatus || "";
+    const normalizedStatus = String(status || "").toLowerCase();
+    const documentType = String(record.documentType || "").toLowerCase();
+    const isPurchaseOrder = Boolean(record.poNumber !== undefined || record.poDate || documentType === "po" || documentType === "wo");
+    const isInvoice = !isPurchaseOrder && Boolean(record.invoiceNumber !== undefined || record.draftNumber !== undefined || record.invoiceDate);
+    const invoiceActions = isInvoice
+      ? `
+        ${normalizedStatus === "draft" ? `<button class="tiny" type="button" data-action="finalize-invoice" data-id="${escapeAttr(record.id)}">Finalize</button>` : ""}
+        ${normalizedStatus !== "draft" ? `<button class="tiny" type="button" data-action="share-document" data-kind="invoice" data-id="${escapeAttr(record.id)}">Print / Save as PDF</button>` : ""}
+        ${normalizedStatus !== "draft" ? `<button class="tiny" type="button" data-action="whatsapp-invoice" data-id="${escapeAttr(record.id)}">WhatsApp</button>` : ""}
+        ${normalizedStatus !== "draft" && !record.archivedAt ? `<button class="tiny" type="button" data-action="archive-invoice" data-id="${escapeAttr(record.id)}">Archive</button>` : ""}
+        ${record.archivedAt ? `<button class="tiny" type="button" data-action="restore-invoice" data-id="${escapeAttr(record.id)}">Restore</button>` : ""}
+      `
+      : "";
+    const poActions = isPurchaseOrder
+      ? `
+        ${normalizedStatus === "draft" ? `<button class="tiny" type="button" data-action="issue-po" data-id="${escapeAttr(record.id)}">Issue</button>` : ""}
+        ${normalizedStatus !== "draft" ? `<button class="tiny" type="button" data-action="share-document" data-kind="po" data-id="${escapeAttr(record.id)}">Print / Save as PDF</button>` : ""}
+      `
+      : "";
     return `
       <article class="record-row">
         <div><strong>${escapeHtml(title)}</strong><span>${escapeHtml(record.customerName || record.vendorName || record.billToName || record.description || record.reason || "")}</span></div>
         <div class="row-end"><strong>${escapeHtml(money(amount, record.currency || "INR"))}</strong><small>${escapeHtml(titleCase(status))}</small></div>
+        ${invoiceActions || poActions ? `<div class="inline-actions">${invoiceActions}${poActions}</div>` : ""}
       </article>
     `;
   }).join("")}</div>`;

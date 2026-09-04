@@ -311,6 +311,7 @@ test("isolates invoices per user and generates owner-specific codes", () => {
     ownerUserId: alice.id,
     companyId: aliceCompany.id,
     customerId: null,
+    status: "created",
     invoiceDate: "2026-05-24",
     dueDate: "2026-05-31",
     taxRate: 18,
@@ -343,6 +344,7 @@ test("purchase orders follow the same ownership rules", () => {
   const po = api.createPurchaseOrder({
     ownerUserId: user.id,
     companyId: company.id,
+    status: "created",
     taxRate: 18,
     items: [{ description: "Materials", quantity: 2, rate: 50 }],
   });
@@ -375,16 +377,200 @@ test("purchase/work order drafts edit safely and deleted records are preserved h
   assert.equal(edited.total, 1062);
 
   const created = api.updatePurchaseOrder(draft.id, { status: "created" });
-  assert.equal(created.status, "created");
+  assert.equal(created.status, "issued");
   assert.equal(created.total, 1062);
-
-  const deleted = api.deletePurchaseOrder(draft.id, user);
-  assert.equal(deleted.status, "deleted");
-  assert.equal(api.listPurchaseOrders(user).some((entry) => entry.id === draft.id && entry.status === "deleted"), true);
+  assert.throws(
+    () => api.deletePurchaseOrder(draft.id, user),
+    /Only draft purchase\/work orders can be deleted/,
+  );
   assert.throws(
     () => api.updatePurchaseOrder(draft.id, { discount: 0 }),
-    /Deleted purchase\/work orders cannot be edited/,
+    /Issued purchase\/work orders cannot be materially edited/,
   );
+});
+
+test("P2-3F invoice draft finalization is server-authoritative and idempotent", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const user = api.createUser({ name: "Lifecycle User", email: "lifecycle@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+
+  const draft = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    invoiceNumber: "BROWSER/2026/9999",
+    status: "draft",
+    invoiceDate: "2026-08-10",
+    taxRate: 18,
+    items: [{ description: "Lifecycle work", quantity: 1, rate: 1000, gstRate: 18 }],
+  }, { user, businessId });
+  assert.equal(draft.status, "draft");
+  assert.equal(draft.invoiceNumber, "");
+  assert.equal(draft.draftNumber, "BROWSER/2026/9999");
+
+  const updatedDraft = api.updateInvoice(draft.id, {
+    businessId,
+    discount: 100,
+    items: [{ description: "Lifecycle work", quantity: 1, rate: 1000, gstRate: 18 }],
+  }, { user, businessId });
+  assert.equal(updatedDraft.id, draft.id);
+  assert.equal(api.listInvoices(user, { businessId }).filter((invoice) => invoice.id === draft.id).length, 1);
+
+  const finalized = api.finalizeInvoice(draft.id, { businessId, idempotencyKey: "p23f-finalize" }, { user, businessId });
+  const replay = api.finalizeInvoice(draft.id, { businessId, idempotencyKey: "p23f-finalize" }, { user, businessId });
+  assert.equal(finalized.id, draft.id);
+  assert.equal(replay.id, draft.id);
+  assert.equal(finalized.status, "issued");
+  assert.notEqual(finalized.invoiceNumber, "BROWSER/2026/9999");
+  assert.match(finalized.invoiceNumber, /^[A-Z0-9]+\/2026\/\d{4}$/);
+  const ledger = api.listAccountingEventLedger(user, { businessId });
+  assert.equal(ledger.financialEvents.filter((event) => event.sourceId === draft.id && event.eventType === "invoice_issued").length, 1);
+  assert.equal(ledger.journals.filter((journal) => journal.sourceId === draft.id).length, 1);
+  assert.throws(
+    () => api.updateInvoice(draft.id, { businessId, discount: 0 }, { user, businessId }),
+    /Posted invoices cannot be financially edited/,
+  );
+  assert.throws(
+    () => api.deleteInvoice(draft.id, user, { businessId }),
+    /Only draft invoices can be deleted/,
+  );
+});
+
+test("P2-3G invoice archive and restore preserve accounting, payments, and final number", () => {
+  const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
+  const ownerA = api.createUser({ name: "Archive A", email: "archive-a@example.com" });
+  const ownerB = api.createUser({ name: "Archive B", email: "archive-b@example.com" });
+  const businessA = api.listBusinessWorkspaces(ownerA)[0].businessId;
+  const businessB = api.listBusinessWorkspaces(ownerB)[0].businessId;
+  const invoice = api.createInvoice({
+    ownerUserId: ownerA.id,
+    businessId: businessA,
+    status: "created",
+    invoiceDate: "2026-08-15",
+    taxRate: 18,
+    items: [{ description: "Archive-ready work", quantity: 1, rate: 1000, gstRate: 18 }],
+  }, { user: ownerA, businessId: businessA });
+  const paymentResult = api.recordInvoicePayment(invoice.id, {
+    businessId: businessA,
+    amount: 500,
+    paymentDate: "2026-08-16",
+    idempotencyKey: "p23g-archive-payment",
+  }, { user: ownerA, businessId: businessA });
+  const beforeLedger = api.listAccountingEventLedger(ownerA, { businessId: businessA });
+
+  const archived = api.archiveInvoice(invoice.id, { businessId: businessA, archiveReason: "Operationally complete" }, { user: ownerA, businessId: businessA });
+  assert.equal(archived.id, invoice.id);
+  assert.equal(Boolean(archived.archivedAt), true);
+  assert.equal(archived.invoiceNumber, invoice.invoiceNumber);
+  assert.equal(api.listInvoices(ownerA, { businessId: businessA }).some((entry) => entry.id === invoice.id), false);
+  assert.equal(api.listInvoices(ownerA, { businessId: businessA, archived: "only" }).some((entry) => entry.id === invoice.id), true);
+  assert.equal(api.listInvoices(ownerA, { businessId: businessA, archived: "all" }).some((entry) => entry.id === invoice.id), true);
+  assert.deepEqual(api.listInvoicePayments(invoice.id).map((payment) => payment.id), [paymentResult.payment.id]);
+  const archivedLedger = api.listAccountingEventLedger(ownerA, { businessId: businessA });
+  assert.equal(archivedLedger.financialEvents.length, beforeLedger.financialEvents.length);
+  assert.equal(archivedLedger.journals.length, beforeLedger.journals.length);
+
+  assert.throws(
+    () => api.archiveInvoice(invoice.id, { businessId: businessB }, { user: ownerB, businessId: businessB }),
+    /access|business|not found/i,
+  );
+  assert.throws(
+    () => api.restoreInvoice(invoice.id, { businessId: businessB }, { user: ownerB, businessId: businessB }),
+    /access|business|not found/i,
+  );
+
+  const restored = api.restoreInvoice(invoice.id, { businessId: businessA }, { user: ownerA, businessId: businessA });
+  assert.equal(restored.id, invoice.id);
+  assert.equal(restored.archivedAt, "");
+  assert.equal(restored.invoiceNumber, invoice.invoiceNumber);
+  assert.equal(api.listInvoices(ownerA, { businessId: businessA }).some((entry) => entry.id === invoice.id), true);
+  const restoredLedger = api.listAccountingEventLedger(ownerA, { businessId: businessA });
+  assert.equal(restoredLedger.financialEvents.length, beforeLedger.financialEvents.length);
+  assert.equal(restoredLedger.journals.length, beforeLedger.journals.length);
+});
+
+test("P2-3G print preview and sharing gates are presentation-only", async () => {
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const { port } = server.address();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  async function request(path, { method = "GET", token, body, previewPlan = "" } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(previewPlan ? { "X-Eazinvoice-Plan-Preview": previewPlan } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await response.text();
+    let payload = {};
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = { text };
+      }
+    }
+    return { response, payload };
+  }
+  try {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { email: "p23g-share@example.com", mode: "signup" },
+    });
+    const signup = await request("/auth/signup", {
+      method: "POST",
+      body: { name: "P23G Share", email: "p23g-share@example.com", password: "Passw0rd!", otp: otp.payload.devOtp },
+    });
+    const token = signup.payload.token;
+    const workspaces = await request("/business/workspaces", { token });
+    const businessId = workspaces.payload[0].businessId;
+    const draft = await request("/invoices", {
+      method: "POST",
+      token,
+      previewPlan: "business",
+      body: {
+        businessId,
+        status: "draft",
+        invoiceDate: "2026-08-20",
+        billToName: "Presentation Customer",
+        items: [{ description: "Presentation-only test", quantity: 1, rate: 1000, gstRate: 18 }],
+      },
+    });
+    const finalized = await request(`/invoices/${draft.payload.id}/finalize`, {
+      method: "POST",
+      token,
+      previewPlan: "business",
+      body: { businessId, idempotencyKey: "p23g-http-finalize" },
+    });
+    const beforeLedger = await request(`/accounting/event-ledger?businessId=${encodeURIComponent(businessId)}`, { token });
+    const preview = await request(`/invoices/${finalized.payload.id}/pdf?businessId=${encodeURIComponent(businessId)}`, { token });
+    assert.equal(preview.response.status, 200);
+    assert.match(preview.payload.text, /Print \/ Save as PDF/);
+    const afterLedger = await request(`/accounting/event-ledger?businessId=${encodeURIComponent(businessId)}`, { token });
+    assert.equal(afterLedger.payload.financialEvents.length, beforeLedger.payload.financialEvents.length);
+    assert.equal(afterLedger.payload.journals.length, beforeLedger.payload.journals.length);
+
+    const whatsapp = await request(`/invoices/${finalized.payload.id}/whatsapp`, {
+      method: "POST",
+      token,
+      body: { businessId },
+    });
+    assert.equal(whatsapp.response.status, 402);
+    assert.match(whatsapp.payload.error, /WhatsApp sharing is available/i);
+    const email = await request(`/invoices/${finalized.payload.id}/email`, {
+      method: "POST",
+      token,
+      body: { businessId, toEmail: "customer@example.com" },
+    });
+    assert.equal(email.response.status, 402);
+    assert.match(email.payload.error, /Standard|paid/i);
+    const finalList = await request(`/invoices?businessId=${encodeURIComponent(businessId)}`, { token });
+    assert.equal(finalList.payload.filter((entry) => entry.id === finalized.payload.id).length, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("invoice totals default invalid numbers to zero and support item GST rates", () => {
@@ -499,7 +685,7 @@ test("P1-1 financial core supports inter-state GST and rejects invalid financial
   );
 });
 
-test("P1-1 financial numbering is business-specific and duplicate numbers are blocked", () => {
+test("P1-1 financial numbering is business-specific and duplicate final numbers are server-allocated", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const ownerA = api.createUser({ name: "Number A", email: "number-a@example.com" });
   const ownerB = api.createUser({ name: "Number B", email: "number-b@example.com" });
@@ -509,6 +695,7 @@ test("P1-1 financial numbering is business-specific and duplicate numbers are bl
   const invoiceA = api.createInvoice({
     ownerUserId: ownerA.id,
     businessId: businessA,
+    status: "created",
     invoiceCode: "INV",
     invoiceDate: "2026-04-01",
     items: [{ description: "A", quantity: 1, rate: 100, gstRate: 0 }],
@@ -516,6 +703,7 @@ test("P1-1 financial numbering is business-specific and duplicate numbers are bl
   const invoiceB = api.createInvoice({
     ownerUserId: ownerB.id,
     businessId: businessB,
+    status: "created",
     invoiceCode: "INV",
     invoiceDate: "2026-04-01",
     items: [{ description: "B", quantity: 1, rate: 100, gstRate: 0 }],
@@ -523,15 +711,16 @@ test("P1-1 financial numbering is business-specific and duplicate numbers are bl
 
   assert.equal(invoiceA.invoiceNumber, "INV/2026/0001");
   assert.equal(invoiceB.invoiceNumber, "INV/2026/0001");
-  assert.throws(
-    () => api.createInvoice({
-      ownerUserId: ownerA.id,
+  const nextInvoiceA = api.createInvoice({
+    ownerUserId: ownerA.id,
       businessId: businessA,
+      status: "created",
+      invoiceCode: "INV",
       invoiceNumber: invoiceA.invoiceNumber,
-      items: [{ description: "Duplicate", quantity: 1, rate: 100, gstRate: 0 }],
-    }),
-    /Invoice number already exists/i,
-  );
+    items: [{ description: "Duplicate", quantity: 1, rate: 100, gstRate: 0 }],
+  });
+  assert.equal(nextInvoiceA.invoiceNumber, "INV/2026/0002");
+  assert.notEqual(nextInvoiceA.invoiceNumber, invoiceA.invoiceNumber);
 });
 
 test("P1-1 financial payments are authoritative and idempotent", () => {
@@ -2859,9 +3048,10 @@ test("manual payments update invoice payment status", () => {
   assert.equal(paid.invoice.balanceAmount, 0);
 });
 
-test("purchase/work order payments update payable status", () => {
+test("P2-3F purchase/work order issue is idempotent and non-accounting", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const user = api.createUser({ name: "Vendor Pay User", email: "vendor-pay@example.com" });
+  const businessId = api.listBusinessWorkspaces(user)[0].businessId;
   api.createSubscription({
     userId: user.id,
     subscriberName: user.name,
@@ -2873,46 +3063,54 @@ test("purchase/work order payments update payable status", () => {
   });
   const vendor = api.createVendor({
     ownerUserId: user.id,
+    businessId,
     name: "Supply Partner",
     email: "vendor@example.com",
   });
-  const purchaseOrder = api.createPurchaseOrder({
+  const draft = api.createPurchaseOrder({
     ownerUserId: user.id,
+    businessId,
     vendorId: vendor.id,
     customerId: vendor.id,
     billToName: vendor.name,
-    status: "created",
+    poNumber: "BROWSER-PO-9999",
+    documentType: "wo",
+    status: "draft",
     taxRate: 18,
     items: [{ description: "Materials", quantity: 1, rate: 1000, gstRate: 18 }],
-  });
+  }, { user, businessId });
 
-  assert.equal(purchaseOrder.vendorId, vendor.id);
-  assert.equal(purchaseOrder.paymentStatus, "unpaid");
-  assert.equal(purchaseOrder.balanceAmount, 1180);
-  assert.equal(api.getBusinessComplianceDashboard(user).financials.payables, 1180);
+  assert.equal(draft.vendorId, vendor.id);
+  assert.equal(draft.status, "draft");
+  assert.equal(draft.poNumber, "");
+  assert.equal(draft.draftNumber, "BROWSER-PO-9999");
 
-  const partial = api.recordPurchaseOrderPayment(purchaseOrder.id, {
-    amount: 500,
-    mode: "Bank Transfer",
-    reference: "PO-PAY-1",
-  });
-  assert.equal(partial.purchaseOrder.paymentStatus, "part_paid");
-  assert.equal(partial.purchaseOrder.paidAmount, 500);
-  assert.equal(partial.purchaseOrder.balanceAmount, 680);
-  assert.equal(api.getBusinessComplianceDashboard(user).financials.payables, 680);
-
-  const paid = api.recordPurchaseOrderPayment(purchaseOrder.id, {
-    amount: 680,
-    mode: "UPI",
-    reference: "PO-PAY-2",
-  });
-  assert.equal(paid.purchaseOrder.paymentStatus, "paid");
-  assert.equal(paid.purchaseOrder.balanceAmount, 0);
-  assert.equal(api.listPayments(user).filter((payment) => payment.purchaseOrderId === purchaseOrder.id).length, 2);
+  const issued = api.issuePurchaseOrder(draft.id, { businessId, idempotencyKey: "p23f-issue" }, { user, businessId });
+  const replay = api.issuePurchaseOrder(draft.id, { businessId, idempotencyKey: "p23f-issue" }, { user, businessId });
+  assert.equal(issued.id, draft.id);
+  assert.equal(replay.id, draft.id);
+  assert.equal(issued.status, "issued");
+  assert.equal(issued.documentType, "wo");
+  assert.notEqual(issued.poNumber, "BROWSER-PO-9999");
+  assert.match(issued.poNumber, /^[A-Z0-9]+-\d{4}$/);
+  assert.equal(issued.paymentStatus, "not_applicable");
+  assert.equal(issued.balanceAmount, 0);
+  assert.equal(api.listPayments(user).filter((payment) => payment.purchaseOrderId === issued.id).length, 0);
+  const ledger = api.listAccountingEventLedger(user, { businessId });
+  assert.equal(ledger.financialEvents.length, 0);
+  assert.equal(ledger.journals.length, 0);
   assert.equal(api.getBusinessComplianceDashboard(user).financials.payables, 0);
+  assert.throws(
+    () => api.recordPurchaseOrderPayment(issued.id, { businessId, amount: 500 }),
+    /PO\/WO payment recording is disabled/,
+  );
+  assert.throws(
+    () => api.updatePurchaseOrder(issued.id, { businessId, discount: 0 }, { user, businessId }),
+    /Issued purchase\/work orders cannot be materially edited/,
+  );
 });
 
-test("draft and deleted purchase/work orders cannot receive payments", () => {
+test("draft purchase/work orders can be deleted before issue only", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const user = api.createUser({ name: "Guarded PO User", email: "guarded-po@example.com" });
   const draft = api.createPurchaseOrder({
@@ -2924,8 +3122,10 @@ test("draft and deleted purchase/work orders cannot receive payments", () => {
 
   assert.throws(
     () => api.recordPurchaseOrderPayment(draft.id, { amount: 100 }),
-    /Create this PO\/WO before recording payment/,
+    /PO\/WO payment recording is disabled/,
   );
+  const deletedDraft = api.deletePurchaseOrder(draft.id, user);
+  assert.equal(deletedDraft.status, "deleted");
 
   const purchaseOrder = api.createPurchaseOrder({
     ownerUserId: user.id,
@@ -2933,12 +3133,13 @@ test("draft and deleted purchase/work orders cannot receive payments", () => {
     taxRate: 0,
     items: [{ description: "Created purchase", quantity: 1, rate: 500 }],
   });
-  const deleted = api.deletePurchaseOrder(purchaseOrder.id, user);
-  assert.equal(deleted.status, "deleted");
-  assert.equal(deleted.paymentStatus, "deleted");
+  assert.throws(
+    () => api.deletePurchaseOrder(purchaseOrder.id, user),
+    /Only draft purchase\/work orders can be deleted/,
+  );
   assert.throws(
     () => api.recordPurchaseOrderPayment(purchaseOrder.id, { amount: 100 }),
-    /Deleted PO\/WO records cannot receive payment updates/,
+    /PO\/WO payment recording is disabled/,
   );
 });
 
@@ -2967,18 +3168,16 @@ test("draft and deleted invoices cannot receive payments", () => {
     taxRate: 0,
     items: [{ description: "Created work", quantity: 1, rate: 500 }],
   });
-  const deleted = api.deleteInvoice(invoice.id, user);
-  assert.equal(deleted.status, "deleted");
   assert.throws(
-    () => api.recordInvoicePayment(invoice.id, { amount: 100 }),
-    /Deleted invoices cannot receive payments/,
+    () => api.deleteInvoice(invoice.id, user),
+    /Only draft invoices can be deleted/,
   );
 });
 
 test("invoice amount edits recalculate totals and payment balance", () => {
   const api = createApi({ store: createStore({}, { persist: false, useSupabaseEmailOtp: false }) });
   const invoice = api.createInvoice({
-    status: "created",
+    status: "draft",
     taxRate: 18,
     items: [{ description: "Design", quantity: 1, rate: 1000, gstRate: 18 }],
   });
@@ -4110,6 +4309,59 @@ test("razorpay webhooks require configured signature verification", async () => 
       body: rawBody,
     });
     assert.equal(signed.status, 404);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (previousWebhookSecret === undefined) delete process.env.RAZORPAY_WEBHOOK_SECRET;
+    else process.env.RAZORPAY_WEBHOOK_SECRET = previousWebhookSecret;
+  }
+});
+
+test("razorpay webhook verification is bound to the exact raw request body", async () => {
+  const previousWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  process.env.RAZORPAY_WEBHOOK_SECRET = "webhook_secret_for_raw_body";
+
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const signedRawBody = JSON.stringify({
+    event: "payment.captured",
+    payload: {
+      payment: {
+        entity: {
+          id: "pay_raw_body",
+          order_id: "order_raw_body",
+          amount: 10000,
+          currency: "INR",
+        },
+      },
+    },
+  });
+  const sameJsonDifferentBytes = JSON.stringify(JSON.parse(signedRawBody), null, 2);
+  const signature = crypto
+    .createHmac("sha256", process.env.RAZORPAY_WEBHOOK_SECRET)
+    .update(signedRawBody)
+    .digest("hex");
+
+  try {
+    const altered = await fetch(`${baseUrl}/webhooks/razorpay`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Razorpay-Signature": signature,
+      },
+      body: sameJsonDifferentBytes,
+    });
+    assert.equal(altered.status, 401);
+
+    const exact = await fetch(`${baseUrl}/webhooks/razorpay`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Razorpay-Signature": signature,
+      },
+      body: signedRawBody,
+    });
+    assert.equal(exact.status, 404);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     if (previousWebhookSecret === undefined) delete process.env.RAZORPAY_WEBHOOK_SECRET;
@@ -5334,11 +5586,11 @@ test("business tier unlocks team approvals and API keys", () => {
   assert.match(gstTask.nextReminderDate, /^\d{4}-\d{2}-\d{2}$/);
   assert.ok(gstTask.requiredDocuments.includes("GSTIN"));
   assert.equal(complianceDashboard.gst.outputGst, 1800);
-  assert.equal(complianceDashboard.gst.inputGst, 360);
-  assert.equal(complianceDashboard.gst.netGstPayable, 1440);
+  assert.equal(complianceDashboard.gst.inputGst, 0);
+  assert.equal(complianceDashboard.gst.netGstPayable, 1800);
   assert.equal(complianceDashboard.financials.revenue, 11800);
-  assert.equal(complianceDashboard.financials.expenses, 2360);
-  assert.equal(complianceDashboard.financials.profit, 9440);
+  assert.equal(complianceDashboard.financials.expenses, 0);
+  assert.equal(complianceDashboard.financials.profit, 11800);
   assert.equal(complianceDashboard.financials.receivables, 11800);
 
   const filedTask = api.updateComplianceTask(user, "gst_return_reconciliation", {

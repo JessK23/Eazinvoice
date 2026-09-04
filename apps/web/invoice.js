@@ -379,10 +379,7 @@ function issuerCode(company = selectedCompany()) {
 }
 
 function generateDraftInvoiceNumber(company = selectedCompany()) {
-  const nextNumber = String(invoices.length + 1).padStart(4, "0");
-  const invoiceDate = form?.querySelector('input[name="invoiceDate"]')?.value || new Date().toISOString().slice(0, 10);
-  const year = String(invoiceDate).slice(0, 4);
-  return `${issuerCode(company)}/${year}/${nextNumber}`;
+  return "";
 }
 
 function ensureDraftInvoiceNumber() {
@@ -390,7 +387,7 @@ function ensureDraftInvoiceNumber() {
   const input = form?.querySelector('input[name="invoiceNumber"]');
   const company = selectedCompany();
   if (!input || !company) return;
-  input.value = generateDraftInvoiceNumber(company);
+  input.placeholder = "Invoice number assigned on finalize";
 }
 
 function customerChoiceLocked() {
@@ -1001,11 +998,11 @@ form?.addEventListener("submit", async (event) => {
     const issuerCompanyId = company.isUserIssuer ? null : company.id;
     const invoiceCustomer = customer || await ensureInvoiceCustomer(data, issuerCompanyId);
     const gstMode = resolveGstMode(company, data.get("placeOfSupply"));
-    lastSavedInvoice = await apiClient.createInvoice(token, {
+    const payload = {
       ...workspaceOptions(),
       companyId: issuerCompanyId,
       customerId: invoiceCustomer?.id || null,
-      invoiceNumber: data.get("invoiceNumber"),
+      draftNumber: data.get("invoiceNumber"),
       status: "draft",
       invoiceDate: data.get("invoiceDate"),
       dueDate: data.get("dueDate"),
@@ -1029,12 +1026,15 @@ form?.addEventListener("submit", async (event) => {
       billToName: customerNameFromForm(data, originalCustomerMode, invoiceCustomer),
       billToAddress: customerAddressFromForm(data, originalCustomerMode, invoiceCustomer),
       items: readItems(),
-    });
+    };
+    lastSavedInvoice = lastSavedInvoice?.id
+      ? await apiClient.updateInvoice(token, lastSavedInvoice.id, payload, workspaceOptions())
+      : await apiClient.createInvoice(token, payload);
     const invoiceNumberInput = form?.querySelector('input[name="invoiceNumber"]');
-    if (invoiceNumberInput) invoiceNumberInput.value = lastSavedInvoice.invoiceNumber || "";
+    if (invoiceNumberInput) invoiceNumberInput.value = lastSavedInvoice.invoiceNumber || lastSavedInvoice.draftNumber || "";
     lockCustomerChoice();
     if (status) {
-      status.innerHTML = `Saved draft ${lastSavedInvoice.invoiceNumber}. <a href="/apps/web/dashboard.html#invoices">View it in Invoice Summary</a>`;
+      status.innerHTML = `Saved draft ${lastSavedInvoice.draftNumber || lastSavedInvoice.id}. <a href="/apps/web/dashboard.html#invoices">View it in Invoice Summary</a>`;
     }
     renderPreview();
   } catch (error) {

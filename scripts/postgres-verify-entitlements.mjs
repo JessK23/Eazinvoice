@@ -34,6 +34,7 @@ try {
   const users = api.listUsers();
   const jsonSubscriptions = api.listSubscriptions();
   const dbSubscriptionCount = await withPostgresClient(async (client) => {
+    await client.query("select set_config('app.rls_bypass', 'true', true)");
     const result = await client.query("select count(*)::int as count from eazinvoice_subscriptions");
     return Number(result.rows[0]?.count || 0);
   });
@@ -46,7 +47,7 @@ try {
 
   for (const user of users) {
     const jsonSummary = api.getFreePlanSummary(user);
-    const postgresSummary = await summarizePostgresEntitlements(user);
+    const postgresSummary = await summarizePostgresEntitlements(user, { rlsBypass: true });
     assert.equal(postgresSummary.available, true);
     assert.equal(
       normalizePlan(postgresSummary.plan),
@@ -59,7 +60,7 @@ try {
       `Active subscription mismatch for ${user.email || user.id}`,
     );
 
-    const postgresSubscriptions = await listPostgresSubscriptionsForUser(user.id);
+    const postgresSubscriptions = await listPostgresSubscriptionsForUser(user.id, { rlsBypass: true });
     const jsonUserSubscriptions = api.listSubscriptionsForUser(user);
     assert.equal(postgresSubscriptions.available, true);
     assert.equal(

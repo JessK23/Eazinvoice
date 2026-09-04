@@ -48,9 +48,11 @@ const pendingPayments = document.getElementById("pendingPayments");
 const recentActivity = document.getElementById("recentActivity");
 const draftInvoiceCount = document.getElementById("draftInvoiceCount");
 const createdInvoiceCount = document.getElementById("createdInvoiceCount");
+const archivedInvoiceCount = document.getElementById("archivedInvoiceCount");
 const invoiceRevenueTotal = document.getElementById("invoiceRevenueTotal");
 const draftInvoicesList = document.getElementById("draftInvoicesList");
 const createdInvoicesList = document.getElementById("createdInvoicesList");
+const archivedInvoicesList = document.getElementById("archivedInvoicesList");
 const runRecurringDraftsBtn = document.getElementById("runRecurringDraftsBtn");
 const recurringDraftStatus = document.getElementById("recurringDraftStatus");
 const draftPoCount = document.getElementById("draftPoCount");
@@ -261,6 +263,7 @@ let planCatalog = [
 let currentSubscription = { plan: "free", amount: 0, status: "active" };
 let activePlanSummary = { plan: "free", label: "Free", amount: 0, features: {}, subscription: currentSubscription };
 let dashboardInvoices = [];
+let dashboardArchivedInvoices = [];
 let dashboardCompanies = [];
 let dashboardPurchaseOrders = [];
 let dashboardCustomers = [];
@@ -2801,26 +2804,17 @@ function groupRecordsByName(records, nameSelector, valueSelector) {
 }
 
 function purchaseOrderPaidAmount(po) {
-  return Math.max(0, Number(po?.paidAmount || 0));
+  return 0;
 }
 
 function purchaseOrderPayableAmount(po) {
-  const total = Math.max(0, Number(po?.total || 0));
-  const paid = purchaseOrderPaidAmount(po);
-  if (Number.isFinite(Number(po?.balanceAmount))) {
-    return Math.max(0, Number(po.balanceAmount || 0));
-  }
-  return Math.max(0, total - paid);
+  return 0;
 }
 
 function purchaseOrderPaymentStatus(po) {
   const explicit = String(po?.paymentStatus || "").toLowerCase().replace(/\s+/g, "_");
-  if (explicit && explicit !== "created") return explicit;
-  const payable = purchaseOrderPayableAmount(po);
-  const paid = purchaseOrderPaidAmount(po);
-  if (payable <= 0 && paid > 0) return "paid";
-  if (paid > 0) return "part_paid";
-  return "unpaid";
+  if (explicit && explicit !== "created" && explicit !== "unpaid" && explicit !== "paid") return explicit;
+  return "not_applicable";
 }
 
 function purchaseOrderPaymentLabel(po) {
@@ -3007,9 +3001,6 @@ function buildMonthlyBuckets(invoices = [], purchaseOrders = [], minimumKeys = [
   purchaseOrders.forEach((po) => {
     const bucket = bucketMap.get(monthKeyForRecord(po, "po"));
     if (!bucket) return;
-    bucket.expenses += Number(po.total || 0);
-    bucket.expensesPaid += purchaseOrderPaidAmount(po);
-    bucket.payables += purchaseOrderPayableAmount(po);
     bucket.poCount += 1;
   });
   buckets.forEach((bucket) => {
@@ -4335,8 +4326,9 @@ function closePaymentModal() {
 
 function replaceInvoice(invoice) {
   if (!invoice?.id) return;
-  const index = dashboardInvoices.findIndex((entry) => entry.id === invoice.id);
-  if (index >= 0) dashboardInvoices[index] = invoice;
+  dashboardInvoices = dashboardInvoices.filter((entry) => entry.id !== invoice.id);
+  dashboardArchivedInvoices = dashboardArchivedInvoices.filter((entry) => entry.id !== invoice.id);
+  if (invoice.archivedAt) dashboardArchivedInvoices.push(invoice);
   else dashboardInvoices.push(invoice);
 }
 
@@ -4385,7 +4377,7 @@ function renderInvoiceWorkspaceLegacy(invoices) {
   if (draftInvoicesList) {
     draftInvoicesList.innerHTML = drafts.length
       ? drafts.slice().reverse().map((invoice) => renderInvoiceRow(invoice, "gold")).join("")
-      : '<div class="notice">No invoice drafts yet. Use "Generate New Invoice" to create one.</div>';
+      : '<div class="notice">No invoice drafts yet. Use "New Invoice" to create one.</div>';
   }
 
   if (createdInvoicesList) {
@@ -4398,15 +4390,17 @@ function renderInvoiceWorkspaceLegacy(invoices) {
 function renderInvoiceWorkspace(invoices) {
   const drafts = invoices.filter((invoice) => String(invoice.status || "").toLowerCase() === "draft");
   const createdInvoices = selectedPeriodInvoices(createdInvoicesOnly(invoices));
+  const archivedInvoices = selectedPeriodInvoices(createdInvoicesOnly(dashboardArchivedInvoices));
   const total = createdInvoices.reduce((sum, invoice) => sum + Number(invoice.total || 0), 0);
   const canWriteRecords = workspaceCanWriteRecords();
   if (draftInvoiceCount) draftInvoiceCount.textContent = String(drafts.length);
   if (createdInvoiceCount) createdInvoiceCount.textContent = String(createdInvoices.length);
+  if (archivedInvoiceCount) archivedInvoiceCount.textContent = String(archivedInvoices.length);
   if (invoiceRevenueTotal) invoiceRevenueTotal.textContent = `INR ${money(total)}`;
   if (runRecurringDraftsBtn) {
     const canRunRecurring = activePlanAllows("recurringInvoices") && canWriteRecords;
     runRecurringDraftsBtn.disabled = !canRunRecurring;
-    runRecurringDraftsBtn.textContent = activePlanAllows("recurringInvoices") ? "Generate Recurring Drafts" : "Recurring Drafts in Standard";
+    runRecurringDraftsBtn.textContent = activePlanAllows("recurringInvoices") ? "Create Recurring Drafts" : "Recurring Drafts in Standard";
     runRecurringDraftsBtn.title = canRunRecurring
       ? "Create due draft invoices from recurring invoice templates"
       : activePlanAllows("recurringInvoices")
@@ -4424,16 +4418,22 @@ function renderInvoiceWorkspace(invoices) {
     return `
       <div class="invoice-card">
         <div>
-          <strong>${escapeHtml(invoice.invoiceNumber || "Draft invoice")}</strong>
+          <strong>${escapeHtml(invoice.invoiceNumber || invoice.draftNumber || "Draft invoice")}</strong>
           <div class="hint">${escapeHtml(invoice.billToName || "Customer")} - ${escapeHtml(invoice.invoiceDate || "No date")} - ${escapeHtml(currency)} ${money(invoice.total || 0)} - Paid ${escapeHtml(currency)} ${money(invoice.paidAmount || 0)} - Balance ${escapeHtml(currency)} ${money(balance)}</div>
           ${invoice.paymentLink?.url ? `<div class="hint">Payment link: ${escapeHtml(invoice.paymentLink.url)}</div>` : ""}
         </div>
         <div class="row-actions">
-          <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoiceId)}">${canWriteRecords ? (isDraft ? "Edit Draft" : "Open / Edit") : "Open"}</a>
+          <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoiceId)}">${isDraft && canWriteRecords ? "Edit Draft" : "View"}</a>
+          ${!isDraft ? `<button class="ghost small" type="button" data-print-invoice="${escapeHtml(invoiceId)}">Print / Save as PDF</button>` : ""}
+          ${canWriteRecords && isDraft ? `<button class="ghost small" type="button" data-finalize-invoice="${escapeHtml(invoiceId)}">Finalize</button>` : ""}
           ${canWriteRecords && !isDraft ? `<button class="ghost small" type="button" data-email-invoice="${escapeHtml(invoiceId)}">${activePlanAllows("documentEmailShare") ? "Email" : "Upgrade for Email"}</button>` : ""}
+          ${canWriteRecords && !isDraft ? `<button class="ghost small" type="button" data-whatsapp-invoice="${escapeHtml(invoiceId)}">${activePlanAllows("whatsappShare") ? "WhatsApp" : "Upgrade for WhatsApp"}</button>` : ""}
           ${canWriteRecords && !isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-invoice="${escapeHtml(invoiceId)}" data-balance="${balance}">Record Payment</button>` : ""}
           ${canWriteRecords && !isDraft && balance > 0 ? `<button class="ghost small" type="button" data-payment-link="${escapeHtml(invoiceId)}">${activePlanAllows("razorpayCollections") ? "Collect Online" : "Upgrade for Gateway"}</button>` : ""}
-          ${canWriteRecords ? `<button class="ghost small danger" type="button" data-delete-invoice="${escapeHtml(invoiceId)}">Delete</button>` : `<span class="pill gold">View only</span>`}
+          ${canWriteRecords && isDraft ? `<button class="ghost small danger" type="button" data-delete-invoice="${escapeHtml(invoiceId)}">Delete Draft</button>` : ""}
+          ${canWriteRecords && !isDraft && !invoice.archivedAt ? `<button class="ghost small" type="button" data-archive-invoice="${escapeHtml(invoiceId)}">Archive</button>` : ""}
+          ${canWriteRecords && invoice.archivedAt ? `<button class="ghost small" type="button" data-restore-invoice="${escapeHtml(invoiceId)}">Restore to Active</button>` : ""}
+          ${!isDraft ? `<span class="pill gold">${invoice.archivedAt ? "Inactive" : "View only"}</span>` : ""}
           <span class="pill ${paymentTone(rawPaymentStatus)}">${escapeHtml(paymentStatus.toUpperCase())}</span>
         </div>
       </div>
@@ -4443,13 +4443,19 @@ function renderInvoiceWorkspace(invoices) {
   if (draftInvoicesList) {
     draftInvoicesList.innerHTML = drafts.length
       ? drafts.slice().reverse().map((invoice) => renderInvoiceRow(invoice, "gold")).join("")
-      : '<div class="notice">No invoice drafts yet. Use "Generate New Invoice" to create one.</div>';
+      : '<div class="notice">No invoice drafts yet. Use "New Invoice" to create one.</div>';
   }
 
   if (createdInvoicesList) {
     createdInvoicesList.innerHTML = createdInvoices.length
       ? createdInvoices.slice().reverse().map((invoice) => renderInvoiceRow(invoice, "blue")).join("")
       : '<div class="notice">No invoices created yet.</div>';
+  }
+
+  if (archivedInvoicesList) {
+    archivedInvoicesList.innerHTML = archivedInvoices.length
+      ? archivedInvoices.slice().reverse().map((invoice) => renderInvoiceRow(invoice, "gold")).join("")
+      : '<div class="notice">No inactive invoices yet.</div>';
   }
 
   document.querySelectorAll("[data-payment-invoice]").forEach((button) => {
@@ -4464,6 +4470,24 @@ function renderInvoiceWorkspace(invoices) {
     });
   });
 
+  document.querySelectorAll("[data-finalize-invoice]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!workspaceCanWriteRecords()) {
+        setWorkspaceLockStatus("finalize invoices");
+        return;
+      }
+      const invoiceId = button.getAttribute("data-finalize-invoice");
+      try {
+        const finalized = await apiClient.finalizeInvoice(token, invoiceId, { ...selectedWorkspaceOptions(), idempotencyKey: `dashboard-finalize-${invoiceId}` });
+        replaceInvoice(finalized);
+        rerenderDashboardData();
+        setPaymentModalStatus(`Invoice ${finalized.invoiceNumber || finalized.id} finalized.`, "success");
+      } catch (error) {
+        setPaymentModalStatus(error.message || "Could not finalize invoice.", "error");
+      }
+    });
+  });
+
   document.querySelectorAll("[data-email-invoice]").forEach((button) => {
     button.addEventListener("click", () => {
       if (!workspaceCanWriteRecords()) {
@@ -4473,6 +4497,52 @@ function renderInvoiceWorkspace(invoices) {
       const invoiceId = button.getAttribute("data-email-invoice");
       const invoice = dashboardInvoices.find((entry) => entry.id === invoiceId);
       if (invoice) openDocumentEmailModal(invoice, "invoice");
+    });
+  });
+
+  document.querySelectorAll("[data-print-invoice]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const invoiceId = button.getAttribute("data-print-invoice");
+      if (!invoiceId) return;
+      try {
+        const response = await fetch(`/invoices/${encodeURIComponent(invoiceId)}/pdf?${new URLSearchParams(selectedWorkspaceOptions()).toString()}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        });
+        const html = await response.text();
+        if (!response.ok) {
+          let message = "Could not open printable invoice.";
+          try {
+            const parsed = JSON.parse(html);
+            if (parsed?.error) message = parsed.error;
+          } catch {}
+          throw new Error(message);
+        }
+        const preview = window.open("", "_blank", "noopener");
+        if (!preview) throw new Error("Popup blocked. Allow popups to print this invoice.");
+        preview.document.open();
+        preview.document.write(html);
+        preview.document.close();
+        setPaymentModalStatus("Printable invoice opened. Use your browser's print dialog to save as PDF.", "success");
+      } catch (error) {
+        setPaymentModalStatus(error.message || "Could not open printable invoice.", "error");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-whatsapp-invoice]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const invoiceId = button.getAttribute("data-whatsapp-invoice");
+      if (!activePlanAllows("whatsappShare")) {
+        setPaymentModalStatus("WhatsApp sharing is available on the Standard plan and above.", "error");
+        return;
+      }
+      try {
+        const result = await apiClient.whatsappInvoice(token, invoiceId, selectedWorkspaceOptions());
+        setPaymentModalStatus(result.message || "WhatsApp sharing is ready for this saved invoice.", "success");
+        if (navigator.clipboard && result.shareText) await navigator.clipboard.writeText(result.shareText).catch(() => {});
+      } catch (error) {
+        setPaymentModalStatus(error.message || "WhatsApp sharing is available on the Standard plan and above.", "error");
+      }
     });
   });
 
@@ -4515,13 +4585,52 @@ function renderInvoiceWorkspace(invoices) {
         return;
       }
       const invoiceId = button.getAttribute("data-delete-invoice");
-      if (!invoiceId || !window.confirm("Delete this invoice? The number will remain consumed and will not be reused.")) return;
+      if (!invoiceId || !window.confirm("Delete this draft invoice?")) return;
       try {
         const deleted = await apiClient.deleteInvoice(token, invoiceId, selectedWorkspaceOptions());
         replaceInvoice(deleted);
         rerenderDashboardData();
       } catch (error) {
         setPaymentModalStatus(error.message || "Could not delete invoice.", "error");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-archive-invoice]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!workspaceCanWriteRecords()) {
+        setWorkspaceLockStatus("archive invoices");
+        return;
+      }
+      const invoiceId = button.getAttribute("data-archive-invoice");
+      const message = "Move invoice to Inactive?\n\nThis invoice will be removed from your active invoice list but will remain retained for accounting, audit and reporting purposes. Its invoice number, accounting entries and payment history will not be deleted.";
+      if (!invoiceId || !window.confirm(message)) return;
+      try {
+        const archived = await apiClient.archiveInvoice(token, invoiceId, selectedWorkspaceOptions());
+        replaceInvoice(archived);
+        rerenderDashboardData();
+        setPaymentModalStatus("Invoice moved to Inactive.", "success");
+      } catch (error) {
+        setPaymentModalStatus(error.message || "Could not archive invoice.", "error");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-restore-invoice]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!workspaceCanWriteRecords()) {
+        setWorkspaceLockStatus("restore invoices");
+        return;
+      }
+      const invoiceId = button.getAttribute("data-restore-invoice");
+      if (!invoiceId) return;
+      try {
+        const restored = await apiClient.restoreInvoice(token, invoiceId, selectedWorkspaceOptions());
+        replaceInvoice(restored);
+        rerenderDashboardData();
+        setPaymentModalStatus("Invoice restored to Active.", "success");
+      } catch (error) {
+        setPaymentModalStatus(error.message || "Could not restore invoice.", "error");
       }
     });
   });
@@ -4558,14 +4667,15 @@ function renderPoWorkspace(purchaseOrders) {
     return `
       <div class="invoice-card">
         <div>
-          <strong>${escapeHtml(po.poNumber || `${docType} draft`)}</strong>
-          <div class="hint">${escapeHtml(po.billToName || "Vendor")} - ${escapeHtml(po.poDate || "No date")} - ${escapeHtml(currency)} ${money(po.total || 0)} - Balance ${escapeHtml(currency)} ${money(balance)}</div>
+          <strong>${escapeHtml(po.poNumber || po.draftNumber || `${docType} draft`)}</strong>
+          <div class="hint">${escapeHtml(po.billToName || "Vendor")} - ${escapeHtml(po.poDate || "No date")} - ${escapeHtml(currency)} ${money(po.total || 0)} - ${docType} intent document, no payable posted</div>
         </div>
         <div class="row-actions">
-          <a class="ghost small" href="/apps/web/invoice.html?type=po&po=${encodeURIComponent(poId)}">${canWriteRecords ? (isDraft ? "Edit Draft" : "Open / Edit") : "Open"}</a>
+          <a class="ghost small" href="/apps/web/invoice.html?type=po&po=${encodeURIComponent(poId)}">${isDraft && canWriteRecords ? "Edit Draft" : "View"}</a>
+          ${!isDraft ? `<button class="ghost small" type="button" data-print-po="${escapeHtml(poId)}">Print / Save as PDF</button>` : ""}
+          ${canWriteRecords && isDraft ? `<button class="ghost small" type="button" data-issue-po="${escapeHtml(poId)}">Issue ${docType}</button>` : ""}
           ${canWriteRecords && !isDraft ? `<button class="ghost small" type="button" data-email-po="${escapeHtml(poId)}">${activePlanAllows("documentEmailShare") ? "Email" : "Upgrade for Email"}</button>` : ""}
-          ${canWriteRecords && !isDraft && paymentStatus !== "paid" ? `<button class="ghost small" type="button" data-record-po-payment="${escapeHtml(poId)}">Record Payment</button>` : ""}
-          ${canWriteRecords ? `<button class="ghost small danger" type="button" data-delete-po="${escapeHtml(poId)}">Delete</button>` : `<span class="pill gold">View only</span>`}
+          ${canWriteRecords && isDraft ? `<button class="ghost small danger" type="button" data-delete-po="${escapeHtml(poId)}">Delete Draft</button>` : `<span class="pill gold">View only</span>`}
           <span class="pill ${tone}">${escapeHtml(String(po.status || "created").toUpperCase())}</span>
           <span class="pill ${paymentTone}">${escapeHtml(paymentStatus.replace("_", " ").toUpperCase())}</span>
         </div>
@@ -4591,7 +4701,7 @@ function renderPoWorkspace(purchaseOrders) {
         return;
       }
       const poId = button.getAttribute("data-delete-po");
-      if (!poId || !window.confirm("Delete this PO/WO? The number will remain consumed and will not be reused.")) return;
+      if (!poId || !window.confirm("Delete this draft PO/WO?")) return;
       try {
         const deleted = await apiClient.deletePurchaseOrder(token, poId, selectedWorkspaceOptions());
         replacePurchaseOrder(deleted);
@@ -4612,15 +4722,49 @@ function renderPoWorkspace(purchaseOrders) {
       if (purchaseOrder) openDocumentEmailModal(purchaseOrder, "purchaseOrder");
     });
   });
-  document.querySelectorAll("[data-record-po-payment]").forEach((button) => {
-    button.addEventListener("click", () => {
+  document.querySelectorAll("[data-print-po]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const poId = button.getAttribute("data-print-po");
+      if (!poId) return;
+      try {
+        const response = await fetch(`/purchase-orders/${encodeURIComponent(poId)}/pdf?${new URLSearchParams(selectedWorkspaceOptions()).toString()}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        });
+        const html = await response.text();
+        if (!response.ok) {
+          let message = "Could not open printable PO/WO.";
+          try {
+            const parsed = JSON.parse(html);
+            if (parsed?.error) message = parsed.error;
+          } catch {}
+          throw new Error(message);
+        }
+        const preview = window.open("", "_blank", "noopener");
+        if (!preview) throw new Error("Popup blocked. Allow popups to print this document.");
+        preview.document.open();
+        preview.document.write(html);
+        preview.document.close();
+        setPaymentModalStatus("Printable PO/WO opened. Use your browser's print dialog to save as PDF.", "success");
+      } catch (error) {
+        setPaymentModalStatus(error.message || "Could not open printable PO/WO.", "error");
+      }
+    });
+  });
+  document.querySelectorAll("[data-issue-po]").forEach((button) => {
+    button.addEventListener("click", async () => {
       if (!workspaceCanWriteRecords()) {
-        setWorkspaceLockStatus("record PO/WO payments");
+        setWorkspaceLockStatus("issue PO/WO records");
         return;
       }
-      const poId = button.getAttribute("data-record-po-payment");
-      const purchaseOrder = dashboardPurchaseOrders.find((entry) => entry.id === poId);
-      if (purchaseOrder) openPaymentModal(purchaseOrder, "purchaseOrder");
+      const poId = button.getAttribute("data-issue-po");
+      try {
+        const issued = await apiClient.issuePurchaseOrder(token, poId, { ...selectedWorkspaceOptions(), idempotencyKey: `dashboard-issue-${poId}` });
+        replacePurchaseOrder(issued);
+        rerenderDashboardData();
+        setPaymentModalStatus(`${String(issued.documentType || "po").toLowerCase() === "wo" ? "Work order" : "Purchase order"} ${issued.poNumber || issued.id} issued.`, "success");
+      } catch (error) {
+        setPaymentModalStatus(error.message || "Could not issue PO/WO.", "error");
+      }
     });
   });
 }
@@ -5621,6 +5765,10 @@ paymentForm?.addEventListener("submit", async (event) => {
   const currentRecord = paymentContext === "purchaseOrder"
     ? dashboardPurchaseOrders.find((purchaseOrder) => purchaseOrder.id === recordId)
     : dashboardInvoices.find((invoice) => invoice.id === recordId);
+  if (paymentContext === "purchaseOrder") {
+    setPaymentModalStatus("PO/WO payment recording is disabled. Use vendor bills for payables, or a controlled advance-payment workflow when it is formally implemented.", "error");
+    return;
+  }
   const balance = Number(currentRecord?.balanceAmount ?? currentRecord?.total ?? 0);
   if (!recordId || !Number.isFinite(amount) || amount <= 0) {
     setPaymentModalStatus("Enter a valid payment amount.", "error");
@@ -5910,12 +6058,13 @@ async function initializeDashboard() {
       }
     }
     const workspaceOptions = selectedWorkspaceOptions();
-    const [companies, customers, vendors, reports, invoices, purchaseOrders, payments] = await Promise.all([
+    const [companies, customers, vendors, reports, invoices, archivedInvoices, purchaseOrders, payments] = await Promise.all([
       apiClient.listCompanies(token, workspaceOptions).catch(() => []),
       apiClient.listCustomers(token, workspaceOptions).catch(() => []),
       apiClient.listVendors(token, workspaceOptions).catch(() => []),
       apiClient.listReports(token, workspaceOptions).catch(() => []),
       apiClient.listInvoices(token, workspaceOptions),
+      apiClient.listInvoices(token, { ...workspaceOptions, archived: "only" }).catch(() => []),
       apiClient.listPurchaseOrders(token, workspaceOptions).catch(() => []),
       apiClient.listPayments(token, workspaceOptions).catch(() => []),
     ]);
@@ -5935,6 +6084,7 @@ async function initializeDashboard() {
   renderPlanEntitlements(summary);
 
   dashboardInvoices = invoices;
+  dashboardArchivedInvoices = archivedInvoices;
   dashboardCompanies = companies;
   dashboardCustomers = customers;
   dashboardVendors = vendors;

@@ -67,7 +67,10 @@ if (!process.env.DATABASE_URL) {
 try {
   const state = await loadSafeState();
   const expected = expectedCounts(state);
-  const actual = await withPostgresClient((client) => tableCounts(client, Object.keys(expected)));
+  const actual = await withPostgresClient(async (client) => {
+    await client.query("select set_config('app.rls_bypass', 'true', true)");
+    return tableCounts(client, Object.keys(expected));
+  });
   console.log(`database: ${maskDatabaseUrl()}`);
   printCounts(expected, actual);
   assert.deepEqual(actual, expected);

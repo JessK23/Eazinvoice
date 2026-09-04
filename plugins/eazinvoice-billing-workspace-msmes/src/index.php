@@ -576,7 +576,7 @@ final class EazInvoice_Plugin {
 			</style>
 		</head>
 		<body>
-			<div class="toolbar"><button type="button" onclick="window.print()"><?php esc_html_e( 'Print / Save PDF', 'eazinvoice-billing-workspace-msmes' ); ?></button></div>
+			<div class="toolbar"><button type="button" onclick="window.print()"><?php esc_html_e( 'Print / Save as PDF', 'eazinvoice-billing-workspace-msmes' ); ?></button></div>
 			<main class="document">
 				<header><div><h1><?php echo esc_html( get_bloginfo( 'name' ) ); ?></h1><p><?php esc_html_e( 'Generated with EazInvoice', 'eazinvoice-billing-workspace-msmes' ); ?></p></div><div><strong><?php echo esc_html( $document_type ); ?></strong><br><?php echo esc_html( $record['number'] ?? '' ); ?></div></header>
 				<section class="meta"><div><span><?php esc_html_e( 'Bill To / Vendor', 'eazinvoice-billing-workspace-msmes' ); ?></span><strong><?php echo esc_html( $record['party_name'] ?? '' ); ?></strong><br><?php echo esc_html( $record['party_email'] ?? '' ); ?></div><div><span><?php esc_html_e( 'Date', 'eazinvoice-billing-workspace-msmes' ); ?></span><?php echo esc_html( mysql2date( get_option( 'date_format' ), $record['created_at'] ?? current_time( 'mysql' ) ) ); ?></div><div><span><?php esc_html_e( 'Status', 'eazinvoice-billing-workspace-msmes' ); ?></span><?php echo esc_html( strtoupper( $record['status'] ?? 'draft' ) ); ?></div></section>
@@ -1012,7 +1012,7 @@ final class EazInvoice_Plugin {
 							</div>
 							<div class="eazinvoice-record-actions">
 								<mark class="eazinvoice-status-<?php echo esc_attr( $record['status'] ?? 'draft' ); ?>"><?php echo esc_html( strtoupper( $record['status'] ?? 'draft' ) ); ?></mark>
-								<a class="button" target="_blank" rel="noopener" href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=eazinvoice_print_document&family=' . rawurlencode( $family ) . '&record_id=' . rawurlencode( $record['id'] ?? '' ) ), 'eazinvoice_print_document_' . ( $record['id'] ?? '' ) ) ); ?>"><?php esc_html_e( 'View / PDF', 'eazinvoice-billing-workspace-msmes' ); ?></a>
+								<a class="button" target="_blank" rel="noopener" href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=eazinvoice_print_document&family=' . rawurlencode( $family ) . '&record_id=' . rawurlencode( $record['id'] ?? '' ) ), 'eazinvoice_print_document_' . ( $record['id'] ?? '' ) ) ); ?>"><?php esc_html_e( 'Print / Save as PDF', 'eazinvoice-billing-workspace-msmes' ); ?></a>
 								<?php if ( $this->plan_at_least( 'standard' ) ) : ?>
 									<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 										<input type="hidden" name="action" value="eazinvoice_email_document" />
@@ -1030,6 +1030,42 @@ final class EazInvoice_Plugin {
 				</div>
 			<?php endif; ?>
 		</section>
+		<script>
+			(function () {
+				var form = document.querySelector('.eazinvoice-mini-form');
+				if (!form) {
+					return;
+				}
+				var dirty = false;
+				var submitted = false;
+				form.addEventListener('input', function () {
+					dirty = true;
+				});
+				form.addEventListener('change', function () {
+					dirty = true;
+				});
+				form.addEventListener('submit', function () {
+					submitted = true;
+				});
+				window.addEventListener('beforeunload', function (event) {
+					if (!dirty || submitted) {
+						return;
+					}
+					event.preventDefault();
+					event.returnValue = '';
+				});
+				document.querySelectorAll('.eazinvoice-admin-nav a').forEach(function (link) {
+					link.addEventListener('click', function (event) {
+						if (!dirty || submitted) {
+							return;
+						}
+						if (!window.confirm('Discard unsaved changes?\n\nYou have unsaved changes. Going back will discard them.')) {
+							event.preventDefault();
+						}
+					});
+				});
+			}());
+		</script>
 		<?php
 	}
 

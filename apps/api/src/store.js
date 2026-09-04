@@ -130,6 +130,14 @@ function normalizeRecordStatus(value, fallback = "draft") {
   return String(value || fallback).trim().toLowerCase() || fallback;
 }
 
+function isInvoiceFinalized(invoice) {
+  return !["draft", "deleted", "cancelled", "void"].includes(normalizeRecordStatus(invoice?.status));
+}
+
+function isPurchaseOrderIssued(purchaseOrder) {
+  return !["draft", "deleted", "cancelled", "void", "closed"].includes(normalizeRecordStatus(purchaseOrder?.status, "created"));
+}
+
 function assertInvoiceCanBeEdited(invoice) {
   if (normalizeRecordStatus(invoice?.status) === "deleted") {
     throw new Error("Deleted invoices cannot be edited.");
@@ -1069,6 +1077,73 @@ export function createStore(seed = {}, options = {}) {
     });
   }
 
+  function documentBelongsToBusiness(record, businessId, ownerUserId) {
+    return (businessId && record.businessId === businessId) || record.ownerUserId === ownerUserId;
+  }
+
+  function nextAvailableInvoiceNumber(invoice, business, preferredNumber = "") {
+    const owner = state.users.find((entry) => entry.id === invoice.ownerUserId) ?? null;
+    const company = state.companies.find((entry) => entry.id === invoice.companyId) ?? null;
+    const invoiceCode = invoice.invoiceCode || (company
+      ? makeCodeFromText(company.companyCode || company.name, `INV${state.counters.invoice + 1}`)
+      : makeInitialCode(invoice.ownerCode || owner?.name, "IND"));
+    const preferred = String(preferredNumber || "").trim();
+    const duplicatePreferred = preferred ? state.invoices.find((entry) => (
+      entry.id !== invoice.id
+      && entry.invoiceNumber === preferred
+      && String(entry.status || "").toLowerCase() !== "deleted"
+      && documentBelongsToBusiness(entry, business?.id || invoice.businessId, invoice.ownerUserId)
+    )) : null;
+    if (preferred && !duplicatePreferred) return { invoiceCode, invoiceNumber: preferred };
+    let sequence = state.invoices.filter((entry) => (
+      entry.id !== invoice.id
+      && isInvoiceFinalized(entry)
+      && documentBelongsToBusiness(entry, business?.id || invoice.businessId, invoice.ownerUserId)
+    )).length + 1;
+    let invoiceNumber = formatDocumentNumber(invoiceCode, invoice.invoiceDate, sequence);
+    while (state.invoices.some((entry) => (
+      entry.id !== invoice.id
+      && entry.invoiceNumber === invoiceNumber
+      && String(entry.status || "").toLowerCase() !== "deleted"
+      && documentBelongsToBusiness(entry, business?.id || invoice.businessId, invoice.ownerUserId)
+    ))) {
+      sequence += 1;
+      invoiceNumber = formatDocumentNumber(invoiceCode, invoice.invoiceDate, sequence);
+    }
+    return { invoiceCode, invoiceNumber };
+  }
+
+  function nextAvailablePurchaseOrderNumber(purchaseOrder, preferredNumber = "") {
+    const type = String(purchaseOrder.documentType || "po").toLowerCase() === "wo" ? "wo" : "po";
+    const prefix = type === "wo" ? "WO" : "PO";
+    const company = state.companies.find((entry) => entry.id === purchaseOrder.companyId) ?? null;
+    const poCode = purchaseOrder.poCode || makeCodeFromText(company?.companyCode || purchaseOrder.ownerCode || prefix, `${prefix}${state.counters.purchaseOrder + 1}`);
+    const preferred = String(preferredNumber || "").trim();
+    const duplicatePreferred = preferred ? state.purchaseOrders.find((entry) => (
+      entry.id !== purchaseOrder.id
+      && entry.poNumber === preferred
+      && String(entry.status || "").toLowerCase() !== "deleted"
+      && documentBelongsToBusiness(entry, purchaseOrder.businessId, purchaseOrder.ownerUserId)
+    )) : null;
+    if (preferred && !duplicatePreferred) return { poCode, poNumber: preferred };
+    let sequence = state.purchaseOrders.filter((entry) => (
+      entry.id !== purchaseOrder.id
+      && isPurchaseOrderIssued(entry)
+      && documentBelongsToBusiness(entry, purchaseOrder.businessId, purchaseOrder.ownerUserId)
+    )).length + 1;
+    let poNumber = `${poCode}-${String(sequence).padStart(4, "0")}`;
+    while (state.purchaseOrders.some((entry) => (
+      entry.id !== purchaseOrder.id
+      && entry.poNumber === poNumber
+      && String(entry.status || "").toLowerCase() !== "deleted"
+      && documentBelongsToBusiness(entry, purchaseOrder.businessId, purchaseOrder.ownerUserId)
+    ))) {
+      sequence += 1;
+      poNumber = `${poCode}-${String(sequence).padStart(4, "0")}`;
+    }
+    return { poCode, poNumber };
+  }
+
   function createInvoice(input, limits) {
     const items = normalizeFinancialItems(input.items, toNumber(input.taxRate)).filter((item) => item.description);
 
@@ -1084,27 +1159,24 @@ export function createStore(seed = {}, options = {}) {
     const company = state.companies.find((entry) => entry.id === input.companyId) ?? null;
     const owner = state.users.find((entry) => entry.id === ownerUserId) ?? null;
     const status = normalizeRecordStatus(input.status, "draft");
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    const existingIdempotentInvoice = idempotencyKey ? state.invoices.find((entry) => (
+      entry.idempotencyKey === idempotencyKey
+      && documentBelongsToBusiness(entry, business?.id || company?.businessId || null, ownerUserId)
+    )) : null;
+    if (existingIdempotentInvoice) return clone(existingIdempotentInvoice);
     const invoiceCode = input.invoiceCode || (company
       ? makeCodeFromText(company.companyCode || company.name, `INV${state.counters.invoice + 1}`)
       : makeInitialCode(input.ownerCode || owner?.name, "IND"));
-    const invoiceSequence = state.invoices.filter((entry) => (
-      (business?.id && entry.businessId === business.id)
-      || entry.ownerUserId === ownerUserId
-    )).length + 1;
-    const invoiceNumber = input.invoiceNumber?.trim() || formatDocumentNumber(invoiceCode, input.invoiceDate, invoiceSequence);
-    const duplicateInvoice = state.invoices.find((entry) => (
-      entry.invoiceNumber === invoiceNumber
-      && String(entry.status || "").toLowerCase() !== "deleted"
-      && ((business?.id && entry.businessId === business.id) || entry.ownerUserId === ownerUserId)
-    ));
-    if (duplicateInvoice) throw new Error("Invoice number already exists for this business.");
     const invoice = {
       id: nextId("inv", ++state.counters.invoice),
       ownerUserId,
       businessId: business?.id || company?.businessId || null,
       companyId: input.companyId ?? null,
       invoiceCode,
-      invoiceNumber,
+      invoiceNumber: "",
+      draftNumber: String(input.draftNumber || input.invoiceNumber || "").trim(),
+      idempotencyKey,
       status,
       paymentStatus: status === "draft" ? "draft" : input.paymentStatus?.trim() || "unpaid",
       paidAmount: toNumber(input.paidAmount),
@@ -1136,6 +1208,15 @@ export function createStore(seed = {}, options = {}) {
       ...totals,
       createdAt: new Date().toISOString(),
     };
+    if (status === "draft") {
+      invoice.draftNumber = invoice.draftNumber || `DRAFT-${invoice.id}`;
+    } else {
+      const allocated = nextAvailableInvoiceNumber(invoice, business, input.invoiceNumber);
+      invoice.invoiceCode = allocated.invoiceCode;
+      invoice.invoiceNumber = allocated.invoiceNumber;
+      invoice.finalizedAt = invoice.createdAt;
+      invoice.finalizationIdempotencyKey = idempotencyKey;
+    }
     invoice.balanceAmount = Math.max(0, invoice.total - invoice.paidAmount);
     refreshInvoicePaymentStatus(invoice);
     const postingBusiness = invoice.businessId ? (business || findBusinessByIdOrLegacyOwner(invoice.businessId)) : null;
@@ -1164,7 +1245,13 @@ export function createStore(seed = {}, options = {}) {
       ? findBusinessByIdOrLegacyOwner(input.businessId)
       : ensureBusinessForOwner(ownerUserId);
     const company = state.companies.find((entry) => entry.id === input.companyId) ?? null;
-    const status = normalizeRecordStatus(input.status, "created");
+    const status = normalizeRecordStatus(input.status, "draft");
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    const existingIdempotentPurchaseOrder = idempotencyKey ? state.purchaseOrders.find((entry) => (
+      entry.idempotencyKey === idempotencyKey
+      && documentBelongsToBusiness(entry, business?.id || company?.businessId || null, ownerUserId)
+    )) : null;
+    if (existingIdempotentPurchaseOrder) return clone(existingIdempotentPurchaseOrder);
     const poCode = input.poCode || makeCodeFromText(company?.companyCode || input.ownerCode || "PO", `PO${state.counters.purchaseOrder + 1}`);
     const poSequenceNumber = state.purchaseOrders.filter((entry) => (
       (business?.id && entry.businessId === business.id)
@@ -1172,13 +1259,6 @@ export function createStore(seed = {}, options = {}) {
     )).length + 1;
     const poSequence = String(poSequenceNumber).padStart(4, "0");
     const vendorCode = input.vendorCode?.trim() || `VEN-${poSequence}`;
-    const poNumber = input.poNumber?.trim() ?? `${poCode}-${poSequence}`;
-    const duplicatePurchaseOrder = state.purchaseOrders.find((entry) => (
-      entry.poNumber === poNumber
-      && String(entry.status || "").toLowerCase() !== "deleted"
-      && ((business?.id && entry.businessId === business.id) || entry.ownerUserId === ownerUserId)
-    ));
-    if (duplicatePurchaseOrder) throw new Error("Purchase/work order number already exists for this business.");
     const purchaseOrder = {
       id: nextId("po", ++state.counters.purchaseOrder),
       ownerUserId,
@@ -1187,7 +1267,9 @@ export function createStore(seed = {}, options = {}) {
       vendorCode,
       documentType: input.documentType?.trim() || "po",
       poCode,
-      poNumber,
+      poNumber: "",
+      draftNumber: String(input.draftNumber || input.poNumber || "").trim(),
+      idempotencyKey,
       status,
       vendorId: input.vendorId ?? input.customerId ?? null,
       customerId: input.customerId ?? null,
@@ -1209,6 +1291,15 @@ export function createStore(seed = {}, options = {}) {
       ...totals,
       createdAt: new Date().toISOString(),
     };
+    if (status === "draft") {
+      purchaseOrder.draftNumber = purchaseOrder.draftNumber || `DRAFT-${purchaseOrder.id}`;
+    } else {
+      const allocated = nextAvailablePurchaseOrderNumber(purchaseOrder, input.poNumber);
+      purchaseOrder.poCode = allocated.poCode;
+      purchaseOrder.poNumber = allocated.poNumber;
+      purchaseOrder.issuedAt = purchaseOrder.createdAt;
+      purchaseOrder.issueIdempotencyKey = idempotencyKey;
+    }
     refreshPurchaseOrderPaymentStatus(purchaseOrder);
     state.purchaseOrders.push(purchaseOrder);
     persist();
@@ -1990,23 +2081,28 @@ export function createStore(seed = {}, options = {}) {
       complianceReview: assessComplianceProfile({}, user),
     };
     const invoices = listInvoicesForUser(user).filter((invoice) => (
-      String(invoice.status || "").toLowerCase() === "created"
+      isInvoiceFinalized(invoice)
       && String(invoice.currency || "INR").toUpperCase() === "INR"
       && (!companyId || invoice.companyId === companyId)
     ));
     const purchaseOrders = listPurchaseOrdersForUser(user).filter((po) => (
-      String(po.status || "").toLowerCase() === "created"
+      isPurchaseOrderIssued(po)
       && String(po.currency || "INR").toUpperCase() === "INR"
       && (!companyId || po.companyId === companyId)
     ));
+    const vendorBills = listVendorBillsForUser(user).filter((bill) => (
+      vendorBillIsRecognized(bill)
+      && String(bill.currency || "INR").toUpperCase() === "INR"
+      && (!companyId || bill.companyId === companyId)
+    ));
     const outputGst = invoices.reduce((sum, invoice) => sum + toNumber(invoice.taxAmount, 0), 0);
-    const inputGst = purchaseOrders.reduce((sum, po) => sum + toNumber(po.taxAmount, 0), 0);
+    const inputGst = vendorBills.reduce((sum, bill) => sum + toNumber(bill.taxAmount, 0), 0);
     const revenue = invoices.reduce((sum, invoice) => sum + toNumber(invoice.total, 0), 0);
-    const expenses = purchaseOrders.reduce((sum, po) => sum + toNumber(po.total, 0), 0);
-    const expensesPaid = purchaseOrders.reduce((sum, po) => sum + toNumber(po.paidAmount, 0), 0);
+    const expenses = vendorBills.reduce((sum, bill) => sum + toNumber(bill.total, 0), 0);
+    const expensesPaid = vendorBills.reduce((sum, bill) => sum + toNumber(bill.paidAmount, 0), 0);
     const paid = invoices.reduce((sum, invoice) => sum + toNumber(invoice.paidAmount, 0), 0);
     const receivables = invoices.reduce((sum, invoice) => sum + toNumber(invoice.balanceAmount, Math.max(0, toNumber(invoice.total, 0) - toNumber(invoice.paidAmount, 0))), 0);
-    const payables = purchaseOrders.reduce((sum, po) => sum + toNumber(po.balanceAmount, Math.max(0, toNumber(po.total, 0) - toNumber(po.paidAmount, 0))), 0);
+    const payables = vendorBills.reduce((sum, bill) => sum + toNumber(bill.balanceAmount, Math.max(0, toNumber(bill.total, 0) - toNumber(bill.paidAmount, 0))), 0);
     const paymentSettings = settings.paymentSettings || {};
     const emailSettings = settings.emailSettings || {};
     const gatewayReady = Boolean(paymentSettings.keyId && paymentSettings.keySecretConfigured && paymentSettings.webhookSecretConfigured && paymentSettings.paymentLinkEnabled);
@@ -2699,6 +2795,10 @@ export function createStore(seed = {}, options = {}) {
     return clone(state.invoices);
   }
 
+  function listInvoicePayments(invoiceId) {
+    return clone(state.payments.filter((payment) => payment.invoiceId === invoiceId));
+  }
+
   function runRecurringInvoiceScheduler(input = {}) {
     const ownerUserId = input.ownerUserId ?? null;
     const target = parseDateOnly(input.targetDate) || parseDateOnly(new Date().toISOString().slice(0, 10));
@@ -2803,10 +2903,9 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function refreshPurchaseOrderPaymentStatus(purchaseOrder) {
-    Object.assign(purchaseOrder, calculatePaymentState(
-      purchaseOrder,
-      state.payments.filter((payment) => payment.purchaseOrderId === purchaseOrder.id),
-    ));
+    purchaseOrder.paidAmount = 0;
+    purchaseOrder.balanceAmount = 0;
+    purchaseOrder.paymentStatus = normalizeRecordStatus(purchaseOrder.status, "draft") === "draft" ? "draft" : "not_applicable";
     return purchaseOrder;
   }
 
@@ -2865,53 +2964,7 @@ export function createStore(seed = {}, options = {}) {
   function recordPurchaseOrderPayment(purchaseOrderId, input = {}) {
     const purchaseOrder = state.purchaseOrders.find((entry) => entry.id === purchaseOrderId);
     if (!purchaseOrder) return null;
-    const status = String(purchaseOrder.status || "").toLowerCase();
-    if (status === "draft") throw new Error("Create this PO/WO before recording payment.");
-    if (status === "deleted") throw new Error("Deleted PO/WO records cannot receive payment updates.");
-    if (input.businessId && purchaseOrder.businessId && input.businessId !== purchaseOrder.businessId) {
-      throw new Error("Payment business does not match purchase/work order business.");
-    }
-    const idempotencyKey = paymentIdempotencyKey(input);
-    const existingPayment = idempotencyKey ? state.payments.find((payment) => (
-      payment.purchaseOrderId === purchaseOrderId
-      && payment.idempotencyKey === idempotencyKey
-    )) : null;
-    if (existingPayment) {
-      refreshPurchaseOrderPaymentStatus(purchaseOrder);
-      return clone({ purchaseOrder, payment: existingPayment, idempotentReplay: true });
-    }
-    refreshPurchaseOrderPaymentStatus(purchaseOrder);
-    const amount = validatePaymentApplication(
-      purchaseOrder,
-      {
-        ...input,
-        invalidAmountMessage: "Enter a valid paid amount.",
-        overpaymentMessage: "Payment amount cannot be more than the pending PO/WO balance.",
-      },
-      state.payments.filter((payment) => payment.purchaseOrderId === purchaseOrder.id),
-    );
-    const payment = {
-      id: nextId("pay", ++state.counters.payment),
-      ownerUserId: purchaseOrder.ownerUserId,
-      businessId: purchaseOrder.businessId || ensureBusinessForOwner(purchaseOrder.ownerUserId)?.id || null,
-      purchaseOrderId,
-      idempotencyKey,
-      amount,
-      currency: input.currency?.trim() || purchaseOrder.currency || "INR",
-      mode: input.mode?.trim() || "manual",
-      reference: input.reference?.trim() || "",
-      notes: input.notes?.trim() || "",
-      status: input.status?.trim() || "captured",
-      gateway: input.gateway?.trim() || "",
-      gatewayPaymentId: input.gatewayPaymentId?.trim() || "",
-      gatewayOrderId: input.gatewayOrderId?.trim() || "",
-      paymentDate: input.paymentDate?.trim() || new Date().toISOString().slice(0, 10),
-      createdAt: new Date().toISOString(),
-    };
-    state.payments.push(payment);
-    refreshPurchaseOrderPaymentStatus(purchaseOrder);
-    persist();
-    return clone({ purchaseOrder, payment });
+    throw new Error("PO/WO payment recording is disabled. Use vendor bills for payables, or a controlled advance-payment workflow when it is formally implemented.");
   }
 
   function recordVendorBillPayment(vendorBillId, input = {}) {
@@ -4667,19 +4720,43 @@ export function createStore(seed = {}, options = {}) {
     const invoice = state.invoices.find((entry) => entry.id === id);
     if (!invoice) return null;
     assertInvoiceCanBeEdited(invoice);
-    const materialFields = ["items", "taxRate", "discount", "shipping", "roundOff", "currency", "customerId", "companyId"];
+    const targetStatus = updates.status !== undefined ? normalizeRecordStatus(updates.status, invoice.status || "draft") : "";
+    if (normalizeRecordStatus(invoice.status, "draft") === "draft" && targetStatus && targetStatus !== "draft") {
+      return finalizeInvoice(id, updates, limits);
+    }
+    const materialFields = [
+      "items",
+      "taxRate",
+      "discount",
+      "shipping",
+      "roundOff",
+      "draftNumber",
+      "currency",
+      "customerId",
+      "companyId",
+      "invoiceNumber",
+      "invoiceDate",
+      "dueDate",
+      "placeOfSupply",
+      "gstMode",
+      "billToName",
+      "billToAddress",
+    ];
     const hasFinancialPosting = state.financialEvents.some((event) => (
       event.eventType === "invoice_issued"
       && event.sourceId === invoice.id
       && event.postingStatus === "posted"
     ));
-    if (hasFinancialPosting && materialFields.some((field) => updates[field] !== undefined)) {
+    if (isInvoiceFinalized(invoice) && materialFields.some((field) => updates[field] !== undefined)) {
       throw new Error("Posted invoices cannot be financially edited. Use a controlled reversal or adjustment.");
+    }
+    if ((hasFinancialPosting || isInvoiceFinalized(invoice)) && targetStatus) {
+      throw new Error("Issued invoices cannot be status-edited without a controlled reversal, void, or adjustment.");
     }
 
     [
-      "status",
       "customerId",
+      "draftNumber",
       "invoiceNumber",
       "invoiceDate",
       "dueDate",
@@ -4696,10 +4773,9 @@ export function createStore(seed = {}, options = {}) {
       "billToName",
       "billToAddress",
     ].forEach((field) => {
-      if (updates[field] !== undefined) invoice[field] = field === "status"
-        ? normalizeRecordStatus(updates[field], invoice.status || "draft")
-        : String(updates[field] || "").trim();
+      if (updates[field] !== undefined) invoice[field] = String(updates[field] || "").trim();
     });
+    if (updates.status !== undefined) invoice.status = normalizeRecordStatus(updates.status, invoice.status || "draft");
     if (updates.invoiceNumber !== undefined) {
       const duplicateInvoice = state.invoices.find((entry) => (
         entry.id !== invoice.id
@@ -4744,16 +4820,98 @@ export function createStore(seed = {}, options = {}) {
     return clone(invoice);
   }
 
+  function finalizeInvoice(id, updates = {}, limits) {
+    const invoice = state.invoices.find((entry) => entry.id === id);
+    if (!invoice) return null;
+    assertInvoiceCanBeEdited(invoice);
+    const currentStatus = normalizeRecordStatus(invoice.status, "draft");
+    if (isInvoiceFinalized(invoice)) return clone(invoice);
+    const idempotencyKey = String(updates.idempotencyKey || updates.finalizationIdempotencyKey || "").trim();
+    if (idempotencyKey && invoice.finalizationIdempotencyKey === idempotencyKey && isInvoiceFinalized(invoice)) return clone(invoice);
+    const allowedDraftUpdates = { ...updates };
+    delete allowedDraftUpdates.status;
+    delete allowedDraftUpdates.idempotencyKey;
+    delete allowedDraftUpdates.finalizationIdempotencyKey;
+    if (Object.keys(allowedDraftUpdates).length > 0 && currentStatus === "draft") {
+      const draftUpdates = { ...allowedDraftUpdates, status: "draft" };
+      [
+        "customerId",
+        "draftNumber",
+        "invoiceDate",
+        "dueDate",
+        "currency",
+        "paymentTerms",
+        "placeOfSupply",
+        "gstMode",
+        "modeOfDelivery",
+        "modeOfPayment",
+        "notes",
+        "paymentInstructions",
+        "terms",
+        "recurringNextDate",
+        "billToName",
+        "billToAddress",
+      ].forEach((field) => {
+        if (draftUpdates[field] !== undefined) invoice[field] = String(draftUpdates[field] || "").trim();
+      });
+      if (draftUpdates.recurringEnabled !== undefined) invoice.recurringEnabled = Boolean(draftUpdates.recurringEnabled);
+      if (draftUpdates.recurringFrequency !== undefined) invoice.recurringFrequency = draftUpdates.recurringFrequency ? normalizeRecurringFrequency(draftUpdates.recurringFrequency) : "";
+      if (draftUpdates.hideEazinvoiceBranding !== undefined) invoice.hideEazinvoiceBranding = Boolean(draftUpdates.hideEazinvoiceBranding);
+      if (draftUpdates.companyId !== undefined) invoice.companyId = draftUpdates.companyId || null;
+      if (draftUpdates.taxRate !== undefined) invoice.taxRate = toNumber(draftUpdates.taxRate);
+      if (draftUpdates.discount !== undefined) invoice.discount = toNumber(draftUpdates.discount);
+      if (draftUpdates.shipping !== undefined) invoice.shipping = toNumber(draftUpdates.shipping);
+      if (draftUpdates.roundOff !== undefined) invoice.roundOff = toNumber(draftUpdates.roundOff);
+      if (draftUpdates.items !== undefined) {
+        invoice.items = normalizeFinancialItems(draftUpdates.items, toNumber(draftUpdates.taxRate ?? invoice.taxRate))
+          .filter((item) => item.description);
+      }
+      const totalsNeedRefresh = ["items", "taxRate", "discount", "shipping", "roundOff"].some((field) => draftUpdates[field] !== undefined);
+      if (totalsNeedRefresh) {
+        if (invoice.items.length > limits.invoiceItemsPerInvoice) throw new Error("invoice items exceed active plan limit");
+        Object.assign(invoice, calculateInvoiceTotals(invoice.items, toNumber(invoice.taxRate), invoice));
+      }
+    }
+    if (invoice.invoiceNumber) invoice.draftNumber = invoice.draftNumber || invoice.invoiceNumber;
+    const business = invoice.businessId ? findBusinessByIdOrLegacyOwner(invoice.businessId) : ensureBusinessForOwner(invoice.ownerUserId);
+    const allocated = nextAvailableInvoiceNumber(invoice, business, "");
+    invoice.invoiceCode = allocated.invoiceCode;
+    invoice.invoiceNumber = allocated.invoiceNumber;
+    invoice.status = "issued";
+    invoice.finalizedAt = invoice.finalizedAt || new Date().toISOString();
+    invoice.finalizationIdempotencyKey = idempotencyKey || invoice.finalizationIdempotencyKey || "";
+    invoice.paymentStatus = invoice.paymentStatus === "draft" ? "unpaid" : invoice.paymentStatus || "unpaid";
+    refreshInvoicePaymentStatus(invoice);
+    if (business) {
+      validateAccountingPosting(business, invoice.invoiceDate || invoice.createdAt.slice(0, 10), { ...updates, sourceType: "invoice", sourceId: invoice.id });
+      buildComplianceSnapshot("invoice", invoice, { direction: "output" });
+      postInvoiceIssued(state, invoice, business);
+    }
+    persist();
+    return clone(invoice);
+  }
+
   function updatePurchaseOrder(id, updates, limits) {
     const purchaseOrder = state.purchaseOrders.find((entry) => entry.id === id);
     if (!purchaseOrder) return null;
     assertPurchaseOrderCanBeEdited(purchaseOrder);
+    const targetStatus = updates.status !== undefined ? normalizeRecordStatus(updates.status, purchaseOrder.status || "draft") : "";
+    if (normalizeRecordStatus(purchaseOrder.status, "draft") === "draft" && targetStatus && targetStatus !== "draft") {
+      return issuePurchaseOrder(id, updates, limits);
+    }
+    const materialFields = ["items", "taxRate", "discount", "shipping", "roundOff", "draftNumber", "currency", "vendorId", "customerId", "companyId", "documentType", "poNumber", "poDate", "dueDate", "billToName", "billToAddress"];
+    if (isPurchaseOrderIssued(purchaseOrder) && materialFields.some((field) => updates[field] !== undefined)) {
+      throw new Error("Issued purchase/work orders cannot be materially edited. Create a revision or controlled cancellation.");
+    }
+    if (isPurchaseOrderIssued(purchaseOrder) && targetStatus) {
+      throw new Error("Issued purchase/work orders cannot be status-edited without a controlled cancellation/close workflow.");
+    }
 
     [
-      "status",
       "documentType",
       "vendorId",
       "customerId",
+      "draftNumber",
       "poNumber",
       "poDate",
       "dueDate",
@@ -4769,10 +4927,9 @@ export function createStore(seed = {}, options = {}) {
       "billToName",
       "billToAddress",
     ].forEach((field) => {
-      if (updates[field] !== undefined) purchaseOrder[field] = field === "status"
-        ? normalizeRecordStatus(updates[field], purchaseOrder.status || "created")
-        : String(updates[field] || "").trim();
+      if (updates[field] !== undefined) purchaseOrder[field] = String(updates[field] || "").trim();
     });
+    if (updates.status !== undefined) purchaseOrder.status = normalizeRecordStatus(updates.status, purchaseOrder.status || "draft");
     if (updates.poNumber !== undefined) {
       const duplicatePurchaseOrder = state.purchaseOrders.find((entry) => (
         entry.id !== purchaseOrder.id
@@ -4801,6 +4958,63 @@ export function createStore(seed = {}, options = {}) {
     }
     refreshPurchaseOrderPaymentStatus(purchaseOrder);
 
+    persist();
+    return clone(purchaseOrder);
+  }
+
+  function issuePurchaseOrder(id, updates = {}, limits) {
+    const purchaseOrder = state.purchaseOrders.find((entry) => entry.id === id);
+    if (!purchaseOrder) return null;
+    assertPurchaseOrderCanBeEdited(purchaseOrder);
+    if (isPurchaseOrderIssued(purchaseOrder)) return clone(purchaseOrder);
+    const idempotencyKey = String(updates.idempotencyKey || updates.issueIdempotencyKey || "").trim();
+    const draftUpdates = { ...updates };
+    delete draftUpdates.status;
+    delete draftUpdates.idempotencyKey;
+    delete draftUpdates.issueIdempotencyKey;
+    [
+      "documentType",
+      "vendorId",
+      "customerId",
+      "draftNumber",
+      "poDate",
+      "dueDate",
+      "currency",
+      "paymentTerms",
+      "placeOfSupply",
+      "gstMode",
+      "modeOfDelivery",
+      "modeOfPayment",
+      "notes",
+      "paymentInstructions",
+      "terms",
+      "billToName",
+      "billToAddress",
+    ].forEach((field) => {
+      if (draftUpdates[field] !== undefined) purchaseOrder[field] = String(draftUpdates[field] || "").trim();
+    });
+    if (draftUpdates.companyId !== undefined) purchaseOrder.companyId = draftUpdates.companyId || null;
+    if (draftUpdates.taxRate !== undefined) purchaseOrder.taxRate = toNumber(draftUpdates.taxRate);
+    if (draftUpdates.discount !== undefined) purchaseOrder.discount = toNumber(draftUpdates.discount);
+    if (draftUpdates.shipping !== undefined) purchaseOrder.shipping = toNumber(draftUpdates.shipping);
+    if (draftUpdates.roundOff !== undefined) purchaseOrder.roundOff = toNumber(draftUpdates.roundOff);
+    if (draftUpdates.items !== undefined) {
+      purchaseOrder.items = normalizeFinancialItems(draftUpdates.items, toNumber(draftUpdates.taxRate ?? purchaseOrder.taxRate))
+        .filter((item) => item.description);
+    }
+    const totalsNeedRefresh = ["items", "taxRate", "discount", "shipping", "roundOff"].some((field) => draftUpdates[field] !== undefined);
+    if (totalsNeedRefresh) {
+      if (purchaseOrder.items.length > limits.invoiceItemsPerInvoice) throw new Error("purchase/work order items exceed active plan limit");
+      Object.assign(purchaseOrder, calculateInvoiceTotals(purchaseOrder.items, toNumber(purchaseOrder.taxRate), purchaseOrder));
+    }
+    if (purchaseOrder.poNumber) purchaseOrder.draftNumber = purchaseOrder.draftNumber || purchaseOrder.poNumber;
+    const allocated = nextAvailablePurchaseOrderNumber(purchaseOrder, "");
+    purchaseOrder.poCode = allocated.poCode;
+    purchaseOrder.poNumber = allocated.poNumber;
+    purchaseOrder.status = "issued";
+    purchaseOrder.issuedAt = purchaseOrder.issuedAt || new Date().toISOString();
+    purchaseOrder.issueIdempotencyKey = idempotencyKey || purchaseOrder.issueIdempotencyKey || "";
+    refreshPurchaseOrderPaymentStatus(purchaseOrder);
     persist();
     return clone(purchaseOrder);
   }
@@ -5207,9 +5421,46 @@ export function createStore(seed = {}, options = {}) {
     if (!invoice) return null;
     const companiesOwned = new Set(state.companies.filter((company) => company.ownerUserId === user?.id).map((company) => company.id));
     if (user && user.role !== "admin" && invoice.ownerUserId !== user.id && !companiesOwned.has(invoice.companyId)) return null;
+    if (normalizeRecordStatus(invoice.status, "draft") !== "draft") {
+      throw new Error("Only draft invoices can be deleted. Use a controlled credit, reversal, refund, or void workflow for issued invoices.");
+    }
     invoice.status = "deleted";
     invoice.paymentStatus = "deleted";
     invoice.deletedAt = new Date().toISOString();
+    persist();
+    return clone(invoice);
+  }
+
+  function archiveInvoice(id, input = {}, user = null) {
+    const invoice = state.invoices.find((entry) => entry.id === id);
+    if (!invoice) return null;
+    const companiesOwned = new Set(state.companies.filter((company) => company.ownerUserId === user?.id).map((company) => company.id));
+    if (user && user.role !== "admin" && invoice.ownerUserId !== user.id && !companiesOwned.has(invoice.companyId)) return null;
+    const status = normalizeRecordStatus(invoice.status, "draft");
+    if (status === "draft") throw new Error("Draft invoices can be deleted instead of archived.");
+    if (status === "deleted") throw new Error("Deleted invoices cannot be archived.");
+    const now = new Date().toISOString();
+    invoice.archivedAt = invoice.archivedAt || now;
+    invoice.archivedBy = user?.id || input.archivedBy || "";
+    invoice.archiveReason = String(input.archiveReason || input.reason || invoice.archiveReason || "").trim();
+    invoice.updatedAt = now;
+    persist();
+    return clone(invoice);
+  }
+
+  function restoreInvoice(id, input = {}, user = null) {
+    const invoice = state.invoices.find((entry) => entry.id === id);
+    if (!invoice) return null;
+    const companiesOwned = new Set(state.companies.filter((company) => company.ownerUserId === user?.id).map((company) => company.id));
+    if (user && user.role !== "admin" && invoice.ownerUserId !== user.id && !companiesOwned.has(invoice.companyId)) return null;
+    if (normalizeRecordStatus(invoice.status, "draft") === "deleted") throw new Error("Deleted invoices cannot be restored through archive controls.");
+    const now = new Date().toISOString();
+    invoice.restoredAt = now;
+    invoice.restoredBy = user?.id || input.restoredBy || "";
+    invoice.archivedAt = "";
+    invoice.archivedBy = "";
+    invoice.archiveReason = "";
+    invoice.updatedAt = now;
     persist();
     return clone(invoice);
   }
@@ -5219,6 +5470,9 @@ export function createStore(seed = {}, options = {}) {
     if (!purchaseOrder) return null;
     const companiesOwned = new Set(state.companies.filter((company) => company.ownerUserId === user?.id).map((company) => company.id));
     if (user && user.role !== "admin" && purchaseOrder.ownerUserId !== user.id && !companiesOwned.has(purchaseOrder.companyId)) return null;
+    if (normalizeRecordStatus(purchaseOrder.status, "draft") !== "draft") {
+      throw new Error("Only draft purchase/work orders can be deleted. Use a controlled cancellation/close workflow for issued PO/WO records.");
+    }
     purchaseOrder.status = "deleted";
     purchaseOrder.paymentStatus = "deleted";
     purchaseOrder.deletedAt = new Date().toISOString();
@@ -5368,13 +5622,18 @@ export function createStore(seed = {}, options = {}) {
     summarizeMonetization,
     listReportsForUser,
     listInvoices,
+    listInvoicePayments,
     getInvoice,
     updateInvoice,
+    finalizeInvoice,
     updatePurchaseOrder,
+    issuePurchaseOrder,
     updateVendorBill,
     updateCreditNote,
     updateVendorCredit,
     deleteInvoice,
+    archiveInvoice,
+    restoreInvoice,
     deletePurchaseOrder,
     recordInvoicePayment,
     recordPurchaseOrderPayment,

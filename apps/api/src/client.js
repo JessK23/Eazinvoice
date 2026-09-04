@@ -123,6 +123,15 @@ export const apiClient = {
   updateInvoice(token, invoiceId, body, options = {}) {
     return request(`/invoices/${invoiceId}${queryString(options)}`, { method: "PATCH", token, body });
   },
+  finalizeInvoice(token, invoiceId, body = {}) {
+    return request(`/invoices/${invoiceId}/finalize`, { method: "POST", token, body });
+  },
+  archiveInvoice(token, invoiceId, body = {}) {
+    return request(`/invoices/${invoiceId}/archive`, { method: "POST", token, body });
+  },
+  restoreInvoice(token, invoiceId, body = {}) {
+    return request(`/invoices/${invoiceId}/restore`, { method: "POST", token, body });
+  },
   deleteInvoice(token, invoiceId, options = {}) {
     return request(`/invoices/${invoiceId}${queryString(options)}`, { method: "DELETE", token });
   },
@@ -134,6 +143,9 @@ export const apiClient = {
   },
   emailInvoice(token, invoiceId, body = {}) {
     return request(`/invoices/${invoiceId}/email`, { method: "POST", token, body });
+  },
+  whatsappInvoice(token, invoiceId, body = {}) {
+    return request(`/invoices/${invoiceId}/whatsapp`, { method: "POST", token, body });
   },
   runRecurringInvoiceDrafts(token, body = {}) {
     return request("/invoices/recurring/run", { method: "POST", token, body });
@@ -191,6 +203,9 @@ export const apiClient = {
   },
   updatePurchaseOrder(token, poId, body, options = {}) {
     return request(`/purchase-orders/${poId}${queryString(options)}`, { method: "PATCH", token, body });
+  },
+  issuePurchaseOrder(token, poId, body = {}) {
+    return request(`/purchase-orders/${poId}/issue`, { method: "POST", token, body });
   },
   recordPurchaseOrderPayment(token, poId, body) {
     return request(`/purchase-orders/${poId}/payments`, { method: "POST", token, body });

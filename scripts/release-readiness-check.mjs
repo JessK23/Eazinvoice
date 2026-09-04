@@ -42,7 +42,9 @@ check('Web user manual exists', exists('docs/user-manual-web.md'));
 check('Android user manual exists', exists('docs/user-manual-android.md'));
 check('Release SOP exists', exists('docs/release-and-verification-sop.md'));
 check('AI Agent roadmap exists', exists('docs/ai-agent-roadmap.md'));
-check('Android debug APK exists', exists('android/app/build/outputs/apk/debug/app-debug.apk'));
+check('Android release AAB exists', exists('android/app/build/outputs/bundle/release/app-release.aab'));
+check('Android release APK exists', exists('android/app/build/outputs/apk/release/app-release.apk'));
+check('Android debug APK absent', !exists('android/app/build/outputs/apk/debug/app-debug.apk'));
 check(`Plugin ${pluginVersion || 'current'} zip exists`, exists(pluginZip), pluginZip);
 
 for (const item of checks) {

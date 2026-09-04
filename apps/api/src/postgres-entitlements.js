@@ -60,7 +60,7 @@ export function usePostgresEntitlements(options = {}) {
   return String(requested).trim().toLowerCase() === "postgres";
 }
 
-export async function listPostgresSubscriptionsForUser(userId) {
+export async function listPostgresSubscriptionsForUser(userId, options = {}) {
   if (!hasPostgresConfig()) {
     return {
       available: false,
@@ -68,6 +68,9 @@ export async function listPostgresSubscriptionsForUser(userId) {
     };
   }
   return withPostgresClient(async (client) => {
+    if (options.rlsBypass) {
+      await client.query("select set_config('app.rls_bypass', 'true', true)");
+    }
     const result = await client.query(
       `select *
        from eazinvoice_subscriptions
@@ -152,6 +155,9 @@ export async function summarizePostgresEntitlements(user, options = {}) {
     };
   }
   return withPostgresClient(async (client) => {
+    if (options.rlsBypass) {
+      await client.query("select set_config('app.rls_bypass', 'true', true)");
+    }
     const subscriptionsResult = user
       ? await client.query(
         `select *

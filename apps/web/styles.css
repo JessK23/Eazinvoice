@@ -1648,7 +1648,8 @@ input, textarea, select {
   gap: 10px;
   margin-top: 14px;
 }
-.quick-actions a {
+.quick-actions a,
+.quick-action-disabled {
   text-decoration: none;
   color: var(--ink);
   border: 1px solid var(--line);
@@ -1656,6 +1657,10 @@ input, textarea, select {
   border-radius: 14px;
   padding: 14px;
   font-weight: 700;
+}
+.quick-action-disabled {
+  color: var(--muted);
+  cursor: not-allowed;
 }
 .ai-assistant-card {
   margin-top: 22px;

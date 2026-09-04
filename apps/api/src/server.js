@@ -61,6 +61,80 @@ function getPublicAppUrl(req = null) {
   return `${proto}://${host}`;
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function sendDocumentPrintHtml(res, document, kind) {
+  const isPurchase = kind === "purchase_order";
+  const title = isPurchase
+    ? (String(document.documentType || "po").toLowerCase() === "wo" ? "Work Order" : "Purchase Order")
+    : "Tax Invoice";
+  const number = isPurchase ? document.poNumber : document.invoiceNumber;
+  const date = isPurchase ? document.poDate : document.invoiceDate;
+  const rows = Array.isArray(document.items) ? document.items : [];
+  const rowHtml = rows.map((item) => `
+    <tr>
+      <td>${escapeHtml(item.description || "-")}</td>
+      <td>${escapeHtml(item.hsnSac || "-")}</td>
+      <td>${escapeHtml(item.quantity ?? 0)}</td>
+      <td>${escapeHtml(item.rate ?? 0)}</td>
+      <td>${escapeHtml(item.discount ?? 0)}</td>
+      <td>${escapeHtml(item.gstRate ?? document.taxRate ?? 0)}</td>
+      <td>${escapeHtml(item.total ?? 0)}</td>
+    </tr>
+  `).join("");
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(title)} ${escapeHtml(number || document.id)}</title>
+  <style>
+    body { color: #111827; font-family: Arial, sans-serif; margin: 32px; }
+    header { border-bottom: 2px solid #111827; display: flex; justify-content: space-between; margin-bottom: 24px; padding-bottom: 16px; }
+    h1 { font-size: 24px; margin: 0; text-transform: uppercase; }
+    table { border-collapse: collapse; margin-top: 24px; width: 100%; }
+    th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; }
+    th { background: #f3f4f6; }
+    .totals { margin-left: auto; margin-top: 24px; max-width: 320px; }
+    .totals div { display: flex; justify-content: space-between; padding: 6px 0; }
+    @media print { button { display: none; } body { margin: 0.5in; } }
+  </style>
+</head>
+<body>
+  <button onclick="window.print()">Print / Save as PDF</button>
+  <header>
+    <div>
+      <h1>${escapeHtml(title)}</h1>
+      <p>${escapeHtml(document.billToName || (isPurchase ? "Vendor" : "Customer"))}</p>
+      <p>${escapeHtml(document.billToAddress || "")}</p>
+    </div>
+    <div>
+      <p><strong>No:</strong> ${escapeHtml(number || "Unnumbered draft")}</p>
+      <p><strong>Date:</strong> ${escapeHtml(date || "")}</p>
+      <p><strong>Status:</strong> ${escapeHtml(document.status || "")}</p>
+    </div>
+  </header>
+  <table>
+    <thead><tr><th>Description</th><th>HSN/SAC</th><th>Qty</th><th>Rate</th><th>Discount</th><th>Tax %</th><th>Total</th></tr></thead>
+    <tbody>${rowHtml || "<tr><td colspan=\"7\">No line items</td></tr>"}</tbody>
+  </table>
+  <section class="totals">
+    <div><span>Subtotal</span><strong>${escapeHtml(document.subtotal ?? 0)}</strong></div>
+    <div><span>Tax</span><strong>${escapeHtml(document.taxAmount ?? 0)}</strong></div>
+    <div><span>Total</span><strong>${escapeHtml(document.total ?? 0)}</strong></div>
+  </section>
+</body>
+</html>`;
+  res.writeHead(200, securityHeaders({ "Content-Type": "text/html; charset=utf-8" }));
+  res.end(html);
+}
+
 function fillInviteTemplate(template, values = {}) {
   return String(template || "")
     .replace(/\{\{\s*name\s*\}\}/gi, values.name || "there")
@@ -1378,7 +1452,6 @@ export function createServer(options = {}) {
       "/auth/login",
       "/billing/razorpay/order",
       "/billing/razorpay/verify",
-      "/webhooks/razorpay",
       "/wordpress/connection",
     ];
     if (!sensitive.includes(url.pathname)) return false;
@@ -5233,6 +5306,8 @@ export function createServer(options = {}) {
         previewPlan,
         workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
         businessId: url.searchParams.get("businessId") || null,
+        archived: url.searchParams.get("archived") || "",
+        includeArchived: url.searchParams.get("includeArchived") === "true",
       }));
       return;
     }
@@ -5294,6 +5369,110 @@ export function createServer(options = {}) {
       } catch (error) {
         const status = /standard/i.test(error.message) ? 402 : 400;
         sendJson(res, status, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/invoices/") && url.pathname.endsWith("/finalize") && req.method === "POST") {
+      const id = url.pathname.split("/")[2];
+      const body = sanitizeStandardInvoiceFeatures(api, user, previewPlan, await readBody(req).catch(() => ({})));
+      const existing = api.getInvoice(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        businessId: body.businessId || null,
+      });
+      if (!existing) {
+        sendJson(res, 404, { error: "Not found" });
+        return;
+      }
+      const workspace = api.resolveRecordsWorkspaceAccess(user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || existing.ownerUserId || null,
+        businessId: body.businessId || existing.businessId || null,
+      }, "writeRecords");
+      const entitlement = await resolveWriteEntitlement(api, workspace.owner, previewPlan, options);
+      try {
+        const invoice = api.finalizeInvoice(id, body, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
+        const reportSync = await syncInvoiceReportRows(invoice, "invoice-finalize");
+        sendJson(res, 200, { ...invoice, reportSync });
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/invoices/") && url.pathname.endsWith("/pdf") && req.method === "GET") {
+      const id = url.pathname.split("/")[2];
+      const invoice = api.getInvoice(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
+      });
+      if (!invoice) {
+        sendJson(res, 404, { error: "Not found" });
+        return;
+      }
+      sendDocumentPrintHtml(res, invoice, "invoice");
+      return;
+    }
+
+    if (url.pathname.startsWith("/invoices/") && url.pathname.endsWith("/archive") && req.method === "POST") {
+      const id = url.pathname.split("/")[2];
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        const invoice = api.archiveInvoice(id, body, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null, businessId: body.businessId || null });
+        if (!invoice) {
+          sendJson(res, 404, { error: "Not found" });
+          return;
+        }
+        const reportSync = await syncInvoiceReportRows(invoice, "invoice-archive");
+        sendJson(res, 200, { ...invoice, reportSync });
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/invoices/") && url.pathname.endsWith("/restore") && req.method === "POST") {
+      const id = url.pathname.split("/")[2];
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        const invoice = api.restoreInvoice(id, body, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null, businessId: body.businessId || null });
+        if (!invoice) {
+          sendJson(res, 404, { error: "Not found" });
+          return;
+        }
+        const reportSync = await syncInvoiceReportRows(invoice, "invoice-restore");
+        sendJson(res, 200, { ...invoice, reportSync });
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/invoices/") && url.pathname.endsWith("/whatsapp") && req.method === "POST") {
+      const id = url.pathname.split("/")[2];
+      const body = await readBody(req).catch(() => ({}));
+      const existing = api.getInvoice(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        businessId: body.businessId || null,
+      });
+      if (!existing) {
+        sendJson(res, 404, { error: "Not found" });
+        return;
+      }
+      const entitlementOwner = existing.ownerUserId ? api.getUserById(existing.ownerUserId) : user;
+      try {
+        api.requireFeature(entitlementOwner, "whatsappShare", { previewPlan });
+        sendJson(res, 200, {
+          documentId: existing.id,
+          documentNumber: existing.invoiceNumber,
+          shareText: `Invoice ${existing.invoiceNumber || existing.id} from EazInvoice is ready. Please sign in to EazInvoice to view authorized document details.`,
+          message: "WhatsApp sharing is ready for this saved invoice. Use the device share sheet or copy the prepared message.",
+        });
+      } catch (error) {
+        sendJson(res, 402, { error: getFeatureRequirement("whatsappShare").message });
       }
       return;
     }
@@ -5469,16 +5648,20 @@ export function createServer(options = {}) {
 
     if (url.pathname.startsWith("/invoices/") && req.method === "DELETE") {
       const id = url.pathname.split("/")[2];
-      const deleted = api.deleteInvoice(id, user, {
-        previewPlan,
-        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
-      });
-      if (!deleted) {
-        sendJson(res, 404, { error: "Not found" });
-        return;
+      try {
+        const deleted = api.deleteInvoice(id, user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        });
+        if (!deleted) {
+          sendJson(res, 404, { error: "Not found" });
+          return;
+        }
+        const reportSync = await syncInvoiceReportRows(deleted, "invoice-delete");
+        sendJson(res, 200, { ...deleted, reportSync });
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
       }
-      const reportSync = await syncInvoiceReportRows(deleted, "invoice-delete");
-      sendJson(res, 200, { ...deleted, reportSync });
       return;
     }
 
@@ -5513,6 +5696,49 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname.startsWith("/purchase-orders/") && url.pathname.endsWith("/issue") && req.method === "POST") {
+      const id = url.pathname.split("/")[2];
+      const body = await readBody(req).catch(() => ({}));
+      const existing = api.getPurchaseOrder(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+        businessId: body.businessId || null,
+      });
+      if (!existing) {
+        sendJson(res, 404, { error: "Not found" });
+        return;
+      }
+      const workspace = api.resolveRecordsWorkspaceAccess(user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || existing.ownerUserId || null,
+        businessId: body.businessId || existing.businessId || null,
+      }, "writeRecords");
+      const entitlement = await resolveWriteEntitlement(api, workspace.owner, previewPlan, options);
+      try {
+        const purchaseOrder = api.issuePurchaseOrder(id, body, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
+        const reportSync = await syncPurchaseOrderReportRows(purchaseOrder, "purchase-order-issue");
+        sendJson(res, 200, { ...purchaseOrder, reportSync });
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/purchase-orders/") && url.pathname.endsWith("/pdf") && req.method === "GET") {
+      const id = url.pathname.split("/")[2];
+      const purchaseOrder = api.getPurchaseOrder(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
+      });
+      if (!purchaseOrder) {
+        sendJson(res, 404, { error: "Not found" });
+        return;
+      }
+      sendDocumentPrintHtml(res, purchaseOrder, "purchase_order");
+      return;
+    }
+
     if (url.pathname.startsWith("/purchase-orders/") && req.method === "GET") {
       const id = url.pathname.split("/")[2];
       const purchaseOrder = api.getPurchaseOrder(id, user, {
@@ -5539,49 +5765,12 @@ export function createServer(options = {}) {
         sendJson(res, 404, { error: "Not found" });
         return;
       }
-      const amount = Number(body.amount ?? existing.balanceAmount ?? existing.total);
-      if (!Number.isFinite(amount) || amount <= 0) {
-        sendJson(res, 400, { error: "Enter a valid paid amount" });
-        return;
-      }
-      const balance = Number(existing.balanceAmount ?? existing.total ?? 0);
-      if (balance > 0 && amount > balance + 0.01) {
-        sendJson(res, 400, { error: "Payment amount cannot be more than the pending PO/WO balance" });
-        return;
-      }
-      try {
-        const recorded = api.recordPurchaseOrderPayment(id, {
-          amount,
-          currency: body.currency || existing.currency,
-          mode: body.mode || "manual",
-          reference: body.reference,
-          notes: body.notes,
-          paymentDate: body.paymentDate,
-          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
-        }, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null });
-        await recordBusinessAudit(user, {
-          ownerUserId: body.workspaceOwnerUserId || recorded.purchaseOrder.ownerUserId || user.id,
-          companyId: recorded.purchaseOrder.companyId || null,
-          category: "payment",
-          action: "payment.purchase_order_recorded",
-          outcome: "success",
-          targetType: "purchase_order",
-          targetId: recorded.purchaseOrder.id,
-          targetLabel: recorded.purchaseOrder.poNumber || recorded.purchaseOrder.documentNumber,
-          message: `PO/WO payment recorded for ${recorded.payment.currency} ${recorded.payment.amount}.`,
-          metadata: {
-            amount: recorded.payment.amount,
-            currency: recorded.payment.currency,
-            mode: recorded.payment.mode,
-            reference: recorded.payment.reference,
-            paymentStatus: recorded.purchaseOrder.paymentStatus,
-          },
-        }, { previewPlan }, "business-purchase-order-payment-audit");
-        const reportSync = await syncPurchaseOrderReportRows(recorded?.purchaseOrder, "purchase-order-payment");
-        sendJson(res, 201, { ...recorded, reportSync });
-      } catch (error) {
-        sendJson(res, 400, { error: error.message });
-      }
+      api.resolveRecordsWorkspaceAccess(user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || existing.ownerUserId || null,
+        businessId: body.businessId || existing.businessId || null,
+      }, "writeRecords");
+      sendJson(res, 410, { error: "PO/WO payment recording is disabled. Use vendor bills for payables, or a controlled advance-payment workflow when it is formally implemented." });
       return;
     }
 
@@ -5627,16 +5816,20 @@ export function createServer(options = {}) {
 
     if (url.pathname.startsWith("/purchase-orders/") && req.method === "DELETE") {
       const id = url.pathname.split("/")[2];
-      const deleted = api.deletePurchaseOrder(id, user, {
-        previewPlan,
-        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
-      });
-      if (!deleted) {
-        sendJson(res, 404, { error: "Not found" });
-        return;
+      try {
+        const deleted = api.deletePurchaseOrder(id, user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        });
+        if (!deleted) {
+          sendJson(res, 404, { error: "Not found" });
+          return;
+        }
+        const reportSync = await syncPurchaseOrderReportRows(deleted, "purchase-order-delete");
+        sendJson(res, 200, { ...deleted, reportSync });
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
       }
-      const reportSync = await syncPurchaseOrderReportRows(deleted, "purchase-order-delete");
-      sendJson(res, 200, { ...deleted, reportSync });
       return;
     }
 

@@ -15,6 +15,7 @@ const signupOnlyFields = document.getElementById("signupOnlyFields");
 const companyRegistrantFields = document.getElementById("companyRegistrantFields");
 let mode = "signup";
 const initialTab = new URLSearchParams(window.location.search).get("tab");
+const requestedNext = new URLSearchParams(window.location.search).get("next");
 const API_BASE = window.location.origin;
 const OTP_IDLE_LABEL = "Send Email OTP";
 const OTP_SENT_LABEL = "Sent Successfully";
@@ -50,6 +51,22 @@ function saveToken(token) {
   localStorage.setItem("eazinvoice_token", token);
   sessionStorage.setItem("eazinvoice_token", token);
   document.cookie = `eazinvoice_token=${encodeURIComponent(token)}; path=/; SameSite=Lax`;
+}
+
+function isAdminResponse(response) {
+  return Boolean(
+    response?.admin?.authorized ||
+    response?.user?.role === "admin" ||
+    (Array.isArray(response?.user?.permissions) && response.user.permissions.includes("admin"))
+  );
+}
+
+function postAuthDestination(response) {
+  const admin = isAdminResponse(response);
+  if (requestedNext === "admin-gateway" && admin) return "/apps/web/admin.html#gateway";
+  if (requestedNext === "admin" && admin) return "/apps/web/admin.html";
+  if (admin) return "/apps/web/admin.html";
+  return "/apps/web/access.html";
 }
 
 function startGoogleOAuth(currentMode) {
@@ -272,11 +289,12 @@ form?.addEventListener("submit", async (event) => {
         registrantPhone: data.get("registrantPhone"),
     });
     saveToken(response.token);
+    const destination = postAuthDestination(response);
     setStatus(mode === "signup"
-      ? "Registration successful. Email verified. Taking you to your access page..."
-      : "Login successful. Taking you to your access page...");
+      ? "Registration successful. Email verified. Taking you to your workspace..."
+      : "Login successful. Taking you to your workspace...");
     window.setTimeout(() => {
-      window.location.href = "/apps/web/access.html";
+      window.location.href = destination;
     }, 700);
   } catch (error) {
     setStatus(error.message);

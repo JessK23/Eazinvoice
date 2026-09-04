@@ -1750,10 +1750,18 @@ export function createApi(deps = {}) {
 
     listInvoices(user, options = {}) {
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
-      if (workspace.businessId) {
-        return store.listInvoices().filter((invoice) => invoice.businessId === workspace.businessId || invoice.ownerUserId === workspace.ownerUserId);
-      }
-      return store.listInvoicesForUser(workspace.owner);
+      const archivedMode = String(options.archived || options.archive || "").toLowerCase();
+      const includeArchived = archivedMode === "all" || options.includeArchived === true;
+      const archivedOnly = archivedMode === "true" || archivedMode === "only" || options.archivedOnly === true;
+      const visible = workspace.businessId
+        ? store.listInvoices().filter((invoice) => invoice.businessId === workspace.businessId || invoice.ownerUserId === workspace.ownerUserId)
+        : store.listInvoicesForUser(workspace.owner);
+      return visible.filter((invoice) => {
+        const isArchived = Boolean(invoice.archivedAt);
+        if (archivedOnly) return isArchived;
+        if (includeArchived) return true;
+        return !isArchived;
+      });
     },
 
     getInvoice(id, user, options = {}) {
@@ -1773,6 +1781,21 @@ export function createApi(deps = {}) {
       if (!visible) return null;
       return store.updateInvoice(id, updates, this.getUserPlanLimits(workspace.owner, options));
     },
+    finalizeInvoice(id, updates = {}, options = {}) {
+      const actor = options.user || (updates.actorUserId ? store.getUserById(updates.actorUserId) : null);
+      const current = store.getInvoice(id);
+      const workspace = this.resolveRecordsWorkspaceAccess(actor || (current?.ownerUserId ? store.getUserById(current.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: updates.workspaceOwnerUserId || options.workspaceOwnerUserId || current?.ownerUserId,
+        businessId: updates.businessId || options.businessId || current?.businessId || null,
+      }, "writeRecords");
+      const visible = this.getInvoice(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
+      if (!visible) return null;
+      return store.finalizeInvoice(id, {
+        ...updates,
+        businessId: workspace.businessId,
+      }, this.getUserPlanLimits(workspace.owner, options));
+    },
     deleteInvoice(id, user, options = {}) {
       const current = store.getInvoice(id);
       const workspace = this.resolveRecordsWorkspaceAccess(user, {
@@ -1782,6 +1805,36 @@ export function createApi(deps = {}) {
       const visible = this.getInvoice(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
       if (!visible) return null;
       return store.deleteInvoice(id, visible.ownerUserId ? store.getUserById(visible.ownerUserId) : workspace.owner);
+    },
+    archiveInvoice(id, input = {}, options = {}) {
+      const actor = options.user || (input.actorUserId ? store.getUserById(input.actorUserId) : null);
+      const current = store.getInvoice(id);
+      if (current?.businessId && (input.businessId || options.businessId) && current.businessId !== (input.businessId || options.businessId)) {
+        throw new Error("Invoice does not belong to this business.");
+      }
+      const workspace = this.resolveRecordsWorkspaceAccess(actor || (current?.ownerUserId ? store.getUserById(current.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || current?.ownerUserId,
+        businessId: input.businessId || options.businessId || current?.businessId || null,
+      }, "writeRecords");
+      const visible = this.getInvoice(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
+      if (!visible) return null;
+      return store.archiveInvoice(id, input, actor || workspace.owner);
+    },
+    restoreInvoice(id, input = {}, options = {}) {
+      const actor = options.user || (input.actorUserId ? store.getUserById(input.actorUserId) : null);
+      const current = store.getInvoice(id);
+      if (current?.businessId && (input.businessId || options.businessId) && current.businessId !== (input.businessId || options.businessId)) {
+        throw new Error("Invoice does not belong to this business.");
+      }
+      const workspace = this.resolveRecordsWorkspaceAccess(actor || (current?.ownerUserId ? store.getUserById(current.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || current?.ownerUserId,
+        businessId: input.businessId || options.businessId || current?.businessId || null,
+      }, "writeRecords");
+      const visible = this.getInvoice(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
+      if (!visible) return null;
+      return store.restoreInvoice(id, input, actor || workspace.owner);
     },
     recordInvoicePayment(id, input = {}, options = {}) {
       const current = store.getInvoice(id);
@@ -1795,7 +1848,7 @@ export function createApi(deps = {}) {
     },
     createInvoicePaymentLink(id, input = {}, options = {}) {
       const invoice = store.getInvoice(id);
-      if (invoice && String(invoice.status || "").toLowerCase() === "created") {
+      if (invoice && !["draft", "deleted", "cancelled", "void"].includes(String(invoice.status || "").toLowerCase())) {
         const workspace = this.resolveRecordsWorkspaceAccess(options.user || input.user || (invoice.ownerUserId ? store.getUserById(invoice.ownerUserId) : null), {
           ...options,
           workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || invoice.ownerUserId,
@@ -1815,6 +1868,9 @@ export function createApi(deps = {}) {
         return store.listPaymentsForUser(null).filter((payment) => payment.businessId === workspace.businessId || payment.ownerUserId === workspace.ownerUserId);
       }
       return store.listPaymentsForUser(workspace.owner);
+    },
+    listInvoicePayments(invoiceId) {
+      return store.listInvoicePayments(invoiceId);
     },
 
     reverseCustomerPayment(input = {}, options = {}) {
@@ -1901,6 +1957,21 @@ export function createApi(deps = {}) {
       const visible = this.getPurchaseOrder(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
       if (!visible) return null;
       return store.updatePurchaseOrder(id, updates, this.getUserPlanLimits(workspace.owner, options));
+    },
+    issuePurchaseOrder(id, updates = {}, options = {}) {
+      const actor = options.user || (updates.actorUserId ? store.getUserById(updates.actorUserId) : null);
+      const current = store.getPurchaseOrder(id);
+      const workspace = this.resolveRecordsWorkspaceAccess(actor || (current?.ownerUserId ? store.getUserById(current.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: updates.workspaceOwnerUserId || options.workspaceOwnerUserId || current?.ownerUserId,
+        businessId: updates.businessId || options.businessId || current?.businessId || null,
+      }, "writeRecords");
+      const visible = this.getPurchaseOrder(id, workspace.owner, { workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
+      if (!visible) return null;
+      return store.issuePurchaseOrder(id, {
+        ...updates,
+        businessId: workspace.businessId,
+      }, this.getUserPlanLimits(workspace.owner, options));
     },
     recordPurchaseOrderPayment(id, input = {}, options = {}) {
       const current = store.getPurchaseOrder(id);

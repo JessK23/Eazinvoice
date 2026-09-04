@@ -22,6 +22,7 @@ async function importJsonState() {
   await withPostgresClient(async (client) => {
     await client.query("BEGIN");
     try {
+      await client.query("select set_config('app.rls_bypass', 'true', true)");
       await client.query(
         "insert into eazinvoice_legacy_snapshots (source, source_path, snapshot) values ($1, $2, $3::jsonb)",
         ["json-import", persistence.dataFile, JSON.stringify(state)],

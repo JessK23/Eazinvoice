@@ -21,13 +21,13 @@ This manual explains how a user should operate the EazInvoice web application af
 ## Invoice Workflow
 
 1. Open **Invoices**.
-2. Choose **Generate New Invoice**.
+2. Choose **New Invoice**.
 3. Select existing customer or add a new customer.
 4. Select currency.
 5. Add goods, services, HSN/SAC or tax details, quantity, rate, GST/tax, and discount amount.
 6. Save as draft when incomplete.
 7. Create invoice when final.
-8. Generate PDF or print after creation.
+8. Use **Print / Save as PDF** after the document is saved or finalized.
 9. Record payments from the invoice record until the invoice is fully paid.
 
 ## PO / WO Workflow

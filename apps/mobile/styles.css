@@ -262,6 +262,23 @@ button {
   color: #fff;
 }
 
+.auth-panel .otp-meta {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  border: 1px solid rgba(255, 255, 255, .26);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, .12);
+  color: rgba(255, 255, 255, .92);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.auth-panel .otp-meta[hidden] {
+  display: none;
+}
+
 .eyebrow {
   color: var(--blue);
   font-size: 11px;
@@ -476,6 +493,18 @@ h2 {
   text-align: right;
 }
 
+.inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  grid-column: 1 / -1;
+}
+
+.record-row .tiny {
+  min-height: 34px;
+  padding: 7px 10px;
+}
+
 .empty-state,
 .json-card {
   padding: 13px;
@@ -527,6 +556,15 @@ h2 {
   border-top: 1px solid rgba(216, 224, 234, .96);
   background: rgba(255, 255, 255, .96);
   backdrop-filter: blur(16px);
+}
+
+.bottom-nav[hidden],
+body[data-signed-in="false"] .bottom-nav {
+  display: none;
+}
+
+body[data-signed-in="false"] .mobile-shell {
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
 }
 
 .bottom-nav button {

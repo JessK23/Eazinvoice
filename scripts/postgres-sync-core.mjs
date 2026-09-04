@@ -13,13 +13,22 @@ function hasStateRecords(state) {
 }
 
 async function loadSafeState() {
+  const jsonState = loadPersistedState();
+  const jsonHasRecords = hasStateRecords(jsonState);
   try {
     const postgresState = await loadStateFromPostgres();
-    if (hasStateRecords(postgresState)) return postgresState;
+    if (!jsonHasRecords && hasStateRecords(postgresState)) return postgresState;
+    if (jsonHasRecords && hasStateRecords(postgresState)) {
+      const jsonCounts = countCoreState(jsonState);
+      const postgresCounts = countCoreState(postgresState);
+      const jsonTotal = Object.values(jsonCounts).reduce((total, count) => total + count, 0);
+      const postgresTotal = Object.values(postgresCounts).reduce((total, count) => total + count, 0);
+      return jsonTotal >= postgresTotal ? jsonState : postgresState;
+    }
   } catch (error) {
     console.warn(`Postgres state document unavailable, falling back to JSON: ${error.message}`);
   }
-  return loadPersistedState();
+  return jsonState;
 }
 
 loadLocalEnv();
@@ -32,10 +41,13 @@ try {
   const state = await loadSafeState();
   const syncCounts = countCoreState(state);
   console.log(`database: ${maskDatabaseUrl()}`);
+  console.log("sync_source_counts:");
+  console.table(syncCounts);
 
   await withPostgresClient(async (client) => {
     await client.query("BEGIN");
     try {
+      await client.query("select set_config('app.rls_bypass', 'true', true)");
       await syncCoreTables(client, state, {
         auditEvent: "core_tables_synced",
         pruneChildRows: true,

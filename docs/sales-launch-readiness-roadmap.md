@@ -85,10 +85,11 @@ Blockers:
 - Run native authenticated smoke against the intended QA/production-like API.
 - Finalize account-deletion URL, Data Safety answers, financial-services declaration, screenshots, support URL, and listing copy.
 
-Latest local signing report on 2026-08-22:
+Latest local signing report on 2026-08-23:
 
 - Release variant still reports `Config: null`, `Store: null`, and `Alias: null`.
 - This confirms that Play upload readiness is blocked by missing local release signing configuration, not by package id or Gradle configuration.
+- P2-3C is documented in `docs/p2-3c-play-signing-closure-report.md`; the remaining decision boundary is Play Console app/signing/versionCode confirmation before any upload key is generated or used.
 
 ## Step 5: Razorpay Live Subscription Audit
 
@@ -98,6 +99,19 @@ Passed locally on 2026-08-22:
 
 - `SKIP_POSTGRES_ENTITLEMENT_VERIFY=true npm run audit:subscriptions`: PASS.
 - Plan catalog monthly/yearly pricing matches expected values.
+- P2-3D local hardening on 2026-08-23 confirmed Standard yearly is INR 2,388, checkout signature verification is server-authoritative, webhook verification uses the raw body and `RAZORPAY_WEBHOOK_SECRET`, and duplicate verification is idempotent.
+
+Latest verification on 2026-08-23:
+
+- `npm run build`: PASS.
+- `node tests\api.test.js`: PASS, 139/139.
+- `npm run web:p22-check`: PASS, 32/32.
+- `npm run mobile:check`: PASS, 8/8.
+- `npm audit`: PASS, 0 vulnerabilities.
+
+Remaining blocker:
+
+- Complete one controlled live Standard yearly Razorpay payment, verify persistent Standard entitlement after reload/login, and confirm Razorpay webhook delivery returns 2xx in the live dashboard.
 - Razorpay subscription order amounts match expected paise amounts.
 - Verified payment activates the correct plan.
 - Duplicate payment verification is idempotent.

@@ -341,7 +341,7 @@
         <div class="quick-actions">
           <a href="/apps/web/invoice.html">Create Invoice</a>
           <a href="/apps/web/invoice.html?type=gst">Create GST Invoice</a>
-          <a href="/apps/web/invoice.html?type=quotation">Create Quotation</a>
+          <span class="quick-action-disabled" title="Quotation workflow is paused until the backend quotation model is implemented.">Quotation Coming Later</span>
           <a href="/apps/web/invoice.html?type=po">Create Purchase Order</a>
           <a href="/apps/web/invoice.html#customerStep">Add Customer</a>
           <a href="/apps/web/invoice.html#itemsStep">Add Item</a>
@@ -670,15 +670,15 @@
             <h2>Invoice Summary</h2>
           </div>
           <div class="row-actions">
-            <button id="runRecurringDraftsBtn" class="ghost" type="button">Generate Recurring Drafts</button>
-            <a class="primary" href="/apps/web/invoice.html">Generate New Invoice</a>
+            <button id="runRecurringDraftsBtn" class="ghost" type="button">Create Recurring Drafts</button>
+            <a class="primary" href="/apps/web/invoice.html">New Invoice</a>
           </div>
         </div>
         <p id="recurringDraftStatus" class="inline-status" hidden></p>
         <div class="quick-grid">
           <article class="quick-card">
-            <strong>Generate New Invoice</strong>
-            <span>Start a new invoice with customer, currency, items, tax and auto invoice number.</span>
+            <strong>New Invoice</strong>
+            <span>Start a draft with customer, currency, items and tax. Final number is assigned on finalization.</span>
             <a class="ghost small" href="/apps/web/invoice.html">Create Invoice</a>
           </article>
           <article class="quick-card">
@@ -687,9 +687,14 @@
             <strong id="draftInvoiceCount">0</strong>
           </article>
           <article class="quick-card">
-            <strong>Invoice Generated So Far</strong>
-            <span>Created invoice records that are counted in reports.</span>
+            <strong>Finalized Invoices</strong>
+            <span>Invoices created with server-assigned final numbers and retained in reports.</span>
             <strong id="createdInvoiceCount">0</strong>
+          </article>
+          <article class="quick-card">
+            <strong>Inactive / Archived</strong>
+            <span>Finalized invoices removed from the active work list without changing accounting history.</span>
+            <strong id="archivedInvoiceCount">0</strong>
           </article>
           <article class="quick-card">
             <strong>Revenue Report</strong>
@@ -708,9 +713,16 @@
           <section>
             <div class="panel-head compact">
               <h3>Invoice Records</h3>
-              <span class="pill blue">Created</span>
+              <span class="pill blue">Active</span>
             </div>
             <div id="createdInvoicesList" class="list"></div>
+          </section>
+          <section>
+            <div class="panel-head compact">
+              <h3>Inactive / Archived</h3>
+              <span class="pill gold">Retained</span>
+            </div>
+            <div id="archivedInvoicesList" class="list"></div>
           </section>
         </div>
       </section>
@@ -720,11 +732,11 @@
             <span class="pill blue">PO workspace</span>
             <h2>PO Summary</h2>
           </div>
-          <a class="primary" href="/apps/web/invoice.html?type=po">Generate New PO</a>
+          <a class="primary" href="/apps/web/invoice.html?type=po">New PO / WO</a>
         </div>
         <div class="quick-grid">
           <article class="quick-card">
-            <strong>Generate New PO</strong>
+            <strong>New PO / WO</strong>
             <span>Start a purchase order with vendor, items, totals, print and draft saving.</span>
             <a class="ghost small" href="/apps/web/invoice.html?type=po">Create PO</a>
           </article>
