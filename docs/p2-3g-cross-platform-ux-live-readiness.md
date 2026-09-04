@@ -166,19 +166,29 @@ The tracked diff is broad and includes recovered P2-3C/P2-3D/P2-3F work plus P2-
 
 ## V. Commit Details
 
-Not committed in this pass yet. Although code tests passed, the prompt requires stopping before push if external release validation or safe separation is uncertain. The current working tree includes broad recovered work and untracked generated artifacts that should be deliberately reviewed before one release commit.
+Primary release commit:
+
+- `0098d13 feat: complete document lifecycle and cross-platform readiness`
+
+The commit includes the reviewed recovered P2-3C/P2-3D/P2-3F work and the P2-3G implementation/report. Untracked generated plugin ZIP artifacts and local tooling folders were left out of the commit.
 
 ## W. Push Result
 
-Not pushed in this pass.
+Pushed normally to the confirmed deployment branch:
+
+- remote: `origin`
+- branch: `main`
+- range: `46ed4a0..0098d13`
+
+No force push was used.
 
 ## X. Render Deployment Result
 
-Not redeployed from this pass because no commit/push was performed. Render should still be checked manually after the reviewed commit is pushed to `main`.
+Render redeployment still needs external confirmation from the Render dashboard. The GitHub push to `main` succeeded; verify that Render picked up commit `0098d13`, completed build/deploy, and marked the service Live.
 
 ## Y. Production Validation
 
-Production validation could not be completed from this environment:
+Production validation could not be completed from this environment after the push:
 
 - shell request to `https://www.eazinvoice.com/readyz` failed through local proxy `127.0.0.1`;
 - deployment still needs Render evidence showing the new commit built and is Live;
