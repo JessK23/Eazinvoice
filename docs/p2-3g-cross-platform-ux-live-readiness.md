@@ -169,8 +169,9 @@ The tracked diff is broad and includes recovered P2-3C/P2-3D/P2-3F work plus P2-
 Primary release commit:
 
 - `0098d13 feat: complete document lifecycle and cross-platform readiness`
+- `6d2b2a9 docs: record p2-3g push result`
 
-The commit includes the reviewed recovered P2-3C/P2-3D/P2-3F work and the P2-3G implementation/report. Untracked generated plugin ZIP artifacts and local tooling folders were left out of the commit.
+The primary code commit includes the reviewed recovered P2-3C/P2-3D/P2-3F work and the P2-3G implementation/report. The follow-up commit records the actual push result in this report. Untracked generated plugin ZIP artifacts and local tooling folders were left out of the commits.
 
 ## W. Push Result
 
@@ -178,13 +179,13 @@ Pushed normally to the confirmed deployment branch:
 
 - remote: `origin`
 - branch: `main`
-- range: `46ed4a0..0098d13`
+- range: `46ed4a0..6d2b2a9`
 
 No force push was used.
 
 ## X. Render Deployment Result
 
-Render redeployment still needs external confirmation from the Render dashboard. The GitHub push to `main` succeeded; verify that Render picked up commit `0098d13`, completed build/deploy, and marked the service Live.
+Render redeployment still needs external confirmation from the Render dashboard. The GitHub push to `main` succeeded; verify that Render picked up latest commit `6d2b2a9`, completed build/deploy, and marked the service Live.
 
 ## Y. Production Validation
 
