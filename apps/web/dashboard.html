@@ -162,8 +162,8 @@
         <div class="dashboard-head">
           <div>
             <span class="pill blue">Paid feature</span>
-            <h1>AI Agent</h1>
-            <p class="hint">Use one command window to draft invoices, create PO/WO drafts, or summarize reports from your saved records.</p>
+            <h1>EazInvoice AI Agent</h1>
+            <p class="hint">Review accounts, receivables, GST/TDS, cash flow, compliance readiness, and safe document drafts from your authorized business records.</p>
           </div>
           <a class="ghost" href="/apps/web/subscription.html">View AI plans</a>
         </div>
@@ -172,7 +172,7 @@
             <div>
               <span class="pill blue">Pro AI Agent</span>
               <h2>AI Agent Workspace</h2>
-              <p class="hint">Ask naturally. The assistant can prepare invoice drafts, PO/WO drafts, and report summaries from your saved EazInvoice records.</p>
+              <p class="hint">Ask naturally. The Agent uses registered EazInvoice tools, separates facts from calculations and recommendations, and never finalizes, posts, pays, files, or deletes records.</p>
             </div>
             <span id="aiAssistantPlanBadge" class="pill gold">Upgrade to Pro</span>
           </div>
@@ -182,11 +182,11 @@
               <strong id="aiQuotaPlan">Free</strong>
             </div>
             <div>
-              <span class="hint">AI commands</span>
+              <span class="hint">Agent access</span>
               <strong id="aiQuotaRemaining">Upgrade to Pro</strong>
             </div>
             <div>
-              <span class="hint">Included AI tools</span>
+              <span class="hint">Connected tools</span>
               <strong id="aiQuotaFeatures">Locked</strong>
             </div>
           </div>
@@ -194,8 +194,8 @@
             <div class="ai-chat-message assistant">
               <div class="ai-avatar">AI</div>
               <div class="ai-bubble">
-                <strong>Hello, I am your EazInvoice assistant.</strong>
-                <p>I can draft invoices, create PO or WO drafts, explain missing customer details, and summarize your reports. I will ask for missing information before creating anything important.</p>
+                <strong>EazInvoice AI Agent</strong>
+                <p>I can review your accounts, receivables, GST/TDS, compliance position and business performance, prepare custom reports, and suggest actions based on your current EazInvoice business data.</p>
               </div>
             </div>
           </div>
@@ -203,7 +203,11 @@
           <div class="ai-prompt-chips">
             <button id="aiInvoiceExample" class="ghost small" type="button">Draft invoice</button>
             <button id="aiPoExample" class="ghost small" type="button">Draft PO / WO</button>
-            <button id="aiReportExample" class="ghost small" type="button">Summarize reports</button>
+            <button id="aiReportExample" class="ghost small" type="button">Business review</button>
+            <button class="ghost small ai-agent-example" data-ai-example="Show customers overdue more than 60 days by amount" type="button">Receivables review</button>
+            <button class="ghost small ai-agent-example" data-ai-example="Review GST and TDS readiness for this month" type="button">GST / TDS review</button>
+            <button class="ghost small ai-agent-example" data-ai-example="Review cash and bank position with receivables and payables" type="button">Cash flow review</button>
+            <button class="ghost small ai-agent-example" data-ai-example="Build a custom report of top customers by outstanding amount" type="button">Custom report</button>
           </div>
           <div class="ai-composer">
             <textarea id="aiCommandInput" rows="3" placeholder="Message EazInvoice AI, e.g. Create invoice for Rachel Antony amount 40000 plus 18% GST"></textarea>

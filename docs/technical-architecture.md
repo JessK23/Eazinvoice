@@ -252,15 +252,15 @@ Current AI implementation:
 
 - `ai-assistant.js` parses deterministic commands into invoice drafts, PO/WO drafts, and report summaries.
 - `ai-llm.js` can refine commands through an LLM when `OPENAI_API_KEY` is configured.
-- `ai-agent.js` wraps assistant results in a guided response with checks, a plan, warnings, and next actions.
+- `ai-agent.js` implements the P2-4A tool-based EazInvoice AI Agent foundation with registered internal tools, server-authorized business scope, bounded execution, safety checks, and structured Facts / Calculations / Recommendations output.
 - AI quota is plan-gated: Pro and Business plans support AI command usage; usage logs are recorded.
 
-Current agent posture is draft-first and confirmation-oriented at the response layer, but the full tool-based AI Agent remains planned. The customer-service chatbot is explicitly separate and deferred.
+Current agent posture is read-first and draft-only for writes. It can review business, receivables, payables, GST/TDS, cash/bank, reports, customers, vendors, and compliance readiness, and it can prepare invoice/PO/WO drafts. It cannot finalize invoices, make payments, post journals, file returns, delete records, run arbitrary SQL, reveal secrets, or cross tenant boundaries. The customer-service chatbot is explicitly separate and deferred.
 
 Planned AI Agent phases:
 
-1. Chat-style agent shell over the current assistant engine.
-2. Internal tool layer for invoice, PO/WO, report, customer, vendor, and compliance actions.
+1. Chat-style agent shell over the current assistant engine. Complete.
+2. Internal tool layer for invoice, PO/WO, report, customer, vendor, and compliance actions. P2-4A foundation complete.
 3. Structured LLM outputs after deterministic validation.
 4. Business-tier automation suggestions.
 5. Separate customer-service AI assistant for support and product questions.
@@ -357,14 +357,14 @@ P2-3B recorded previous verification success on 2026-08-16 for build, tests, web
 - Razorpay live behavior is implemented structurally, but live amount/webhook/entitlement consistency still needs final audit.
 - Mobile secure storage depends on runtime availability of native storage support; Keystore-backed hardening remains deferred.
 - WordPress plugin has local free-tier records and connection validation, but paid backend-delegated workflows need final parity validation.
-- The guided AI Agent wrapper exists, but the full tool-based agent is not yet complete.
+- The P2-4A AI Agent foundation exists, but approval-controlled automations such as finalization, payment, filing, journal posting, and deletion remain deferred.
 
 ## Planned Architecture
 
 - Direct Postgres repositories for financially material write paths.
 - Stronger database-level idempotency, locking, and partial-update workflows.
 - Final UI/UX redesign of web/dashboard/accounting/GST/reports/billing/AI/mobile after stabilization.
-- Tool-based AI Agent with explicit confirmation and audit logging.
+- Expanded AI Agent tools with explicit confirmation and audit logging for any future consequential action.
 - Separate customer-service AI assistant for public/support use.
 - Better mobile PDF retrieval/share and deep links.
 - WordPress paid feature parity tied to backend entitlement verification.

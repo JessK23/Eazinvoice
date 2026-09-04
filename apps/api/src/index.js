@@ -47,7 +47,7 @@ import {
   buildVendorRefundRegister,
 } from "./financial-reporting-service.js";
 import { buildAiCommand } from "./ai-assistant.js";
-import { buildAiAgentResponse } from "./ai-agent.js";
+import { runEazInvoiceAiAgent } from "./ai-agent.js";
 import { tryBuildAiCommandWithLlm } from "./ai-llm.js";
 
 function normalizeUsageMonth(input) {
@@ -1575,14 +1575,47 @@ export function createApi(deps = {}) {
     async runAiAgentCommand(user, input = {}, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
       const command = String(input.command || "").trim();
-      if (!command) throw new Error("Enter a command for the AI agent.");
-      const assistantResult = await this.runAiCommandAsync(user, {
-        ...input,
+      if (!command) throw new Error("Enter a command for the AI Agent.");
+      const wantsDraftCreation = input.createDraft === true;
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, wantsDraftCreation ? "writeRecords" : "read");
+      const featureOptions = {
+        ...options,
+        workspaceOwnerUserId: workspace.ownerUserId,
+        businessId: workspace.businessId,
+      };
+      const featureUser = workspace.owner;
+      if (!this.userCanUseFeature(featureUser, "aiInvoiceAssist", featureOptions)
+        && !this.userCanUseFeature(featureUser, "aiPoAssist", featureOptions)
+        && !this.userCanUseFeature(featureUser, "advancedReports", featureOptions)) {
+        throw new Error("AI Agent is available on Pro and Business plans.");
+      }
+      this.enforceAiQuota(featureUser, featureOptions, true);
+      const plan = this.getUserPlan(featureUser, featureOptions);
+      const result = await runEazInvoiceAiAgent({
+        api: this,
+        user,
+        input: {
+          ...input,
+          command,
+          approvedDraft: undefined,
+        },
+        options: featureOptions,
+      });
+      store.createAiUsageLog({
+        ownerUserId: workspace.ownerUserId,
+        businessId: workspace.businessId,
+        actorUserId: user.id,
+        plan: plan.plan,
+        provider: result.provider || "local_agent",
+        intent: result.intent || result.workflow || "agent",
+        status: result.type || "analysis",
         command,
-        previewOnly: true,
-        approvedDraft: undefined,
-      }, options);
-      return buildAiAgentResponse({ command, assistantResult });
+        billable: true,
+      });
+      return {
+        ...result,
+        quota: this.getAiQuota(featureUser, featureOptions),
+      };
     },
 
     getAiUsageSummary(user, options = {}) {

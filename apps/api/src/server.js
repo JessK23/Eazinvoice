@@ -5219,9 +5219,14 @@ export function createServer(options = {}) {
         sendJson(res, 201, await api.runAiAgentCommand(user, body, {
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
         }));
       } catch (error) {
-        const status = /pro|business|ai/i.test(error.message) ? 402 : 400;
+        const status = /available on Pro and Business|monthly AI command limit/i.test(error.message)
+          ? 402
+          : /forbidden|access denied|team role|cannot bypass/i.test(error.message)
+            ? 403
+            : 400;
         sendJson(res, status, { error: error.message });
       }
       return;

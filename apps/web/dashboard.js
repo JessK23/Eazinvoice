@@ -434,6 +434,7 @@ function selectedWorkspaceOptions(extra = {}) {
   return {
     ...extra,
     workspaceOwnerUserId: workspace?.ownerUserId || currentUser?.id || "",
+    businessId: workspace?.businessId || "",
   };
 }
 
@@ -1208,9 +1209,10 @@ function setAiAssistantStatus(message, tone = "") {
 
 function aiIncludedFeatureText(summary = activePlanSummary) {
   const features = [];
-  if (summary?.features?.aiInvoiceAssist) features.push("Invoices");
-  if (summary?.features?.aiPoAssist) features.push("PO / WO");
-  if (summary?.features?.advancedReports) features.push("Reports");
+  if (summary?.features?.advancedReports) features.push("Reviews");
+  if (summary?.features?.aiInvoiceAssist) features.push("Invoice drafts");
+  if (summary?.features?.aiPoAssist) features.push("PO / WO drafts");
+  if (summary?.features?.advancedReports) features.push("GST/TDS");
   return features.length ? features.join(", ") : "Locked";
 }
 
@@ -1486,7 +1488,7 @@ function renderAiAssistantAccess() {
   }
   if (aiCommandRun) aiCommandRun.disabled = disableAiControls;
   if (aiCommandInput) aiCommandInput.disabled = disableAiControls;
-  [aiInvoiceExample, aiPoExample, aiReportExample].forEach((button) => {
+  [aiInvoiceExample, aiPoExample, aiReportExample, ...document.querySelectorAll(".ai-agent-example")].forEach((button) => {
     if (button) button.disabled = disableAiControls;
   });
   if (aiVoiceButton) {
@@ -1499,7 +1501,7 @@ function renderAiAssistantAccess() {
     const adminPreviewHint = sessionContext?.session?.admin?.authorized
       ? " Admin plan preview can be used to test this locally."
       : "";
-    setAiAssistantStatus(`AI command drafting, PO/WO drafting, and AI report summaries are available on Pro and Business plans.${adminPreviewHint}`, "error");
+    setAiAssistantStatus(`The EazInvoice AI Agent is available on Pro and Business plans for accounts, GST/TDS, reports, and safe draft preparation.${adminPreviewHint}`, "error");
   } else {
     const aiLimit = planLimitLine("aiCommandsPerMonth", activePlanSummary);
     setAiAssistantStatus(
@@ -1507,7 +1509,7 @@ function renderAiAssistantAccess() {
         ? workspaceWriteLockMessage("run AI commands that create drafts or update records")
         : quotaBlocked
         ? `Monthly AI command limit reached for ${activePlanSummary.label || "this"} plan. Upgrade or wait for the next monthly reset.`
-        : `AI Agent is live on this plan. ${aiLimit.label}: ${aiLimit.value}.`,
+        : `AI Agent is connected to the current business. ${aiLimit.label}: ${aiLimit.value}.`,
       roleBlocked || aiLimit.tone === "red" ? "error" : "success"
     );
   }
@@ -1596,6 +1598,8 @@ function renderAiAgentSummary(agentResponse) {
   if (!agentResponse?.agent) return;
   const checks = Array.isArray(agentResponse.checks) ? agentResponse.checks : [];
   const plan = Array.isArray(agentResponse.plan) ? agentResponse.plan : [];
+  const sections = Array.isArray(agentResponse.sections) ? agentResponse.sections : [];
+  const sourceTools = Array.isArray(agentResponse.sourceTools) ? agentResponse.sourceTools : [];
   const toneForStatus = (status) => {
     if (status === "blocked") return "maroon";
     if (status === "warning") return "gold";
@@ -1604,9 +1608,16 @@ function renderAiAgentSummary(agentResponse) {
   appendAiChatMessage("assistant", `
     <div class="ai-result-card ai-agent-card">
       <div>
-        <strong>AI Agent plan</strong>
+        <strong>${escapeHtml(agentResponse.title || "EazInvoice AI Agent")}</strong>
         <div class="hint">${escapeHtml(agentResponse.reply || "I reviewed your command and prepared the next safe action.")}</div>
+        ${sourceTools.length ? `<div class="badge-row">${sourceTools.map((name) => `<span class="pill blue">${escapeHtml(name)}</span>`).join("")}</div>` : ""}
         ${plan.length ? `<ol class="compact-list">${plan.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol>` : ""}
+        ${sections.length ? sections.map((section) => `
+          <div class="ai-agent-section">
+            <strong>${escapeHtml(section.title || "Agent section")}</strong>
+            <ul class="compact-list">${(section.items || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+          </div>
+        `).join("") : ""}
         ${checks.length ? `
           <div class="badge-row">
             ${checks.map((check) => `<span class="pill ${toneForStatus(check.status)}" title="${escapeHtml(check.detail || "")}">${escapeHtml(check.label || check.status || "Check")}</span>`).join("")}
@@ -1626,6 +1637,7 @@ async function savePendingAiDraft() {
   try {
     const result = await apiClient.runAiCommand(token, {
       command: pendingAiDraftCommand,
+      ...selectedWorkspaceOptions(),
       approvedDraft: pendingAiDraftResult
         ? {
           intent: pendingAiDraftResult.intent,
@@ -5322,8 +5334,15 @@ aiPoExample?.addEventListener("click", () => {
 });
 
 aiReportExample?.addEventListener("click", () => {
-  if (aiCommandInput) aiCommandInput.value = "Show profit and loss report summary";
+  if (aiCommandInput) aiCommandInput.value = "Review my business for this month and tell me what needs attention";
   aiCommandInput?.focus();
+});
+
+document.querySelectorAll(".ai-agent-example").forEach((button) => {
+  button.addEventListener("click", () => {
+    if (aiCommandInput) aiCommandInput.value = button.dataset.aiExample || "";
+    aiCommandInput?.focus();
+  });
 });
 
 aiVoiceButton?.addEventListener("click", () => {
@@ -5376,7 +5395,10 @@ async function sendAiCommand() {
   showAiThinking();
   setAiAssistantStatus("AI is reviewing your command...", "");
   try {
-    const agentResponse = await apiClient.runAiAgentCommand(token, { command });
+    const agentResponse = await apiClient.runAiAgentCommand(token, {
+      command,
+      ...selectedWorkspaceOptions(),
+    });
     const result = agentResponse.result || agentResponse;
     removeAiThinking();
     applyAiQuotaResult(agentResponse.quota || result.quota);

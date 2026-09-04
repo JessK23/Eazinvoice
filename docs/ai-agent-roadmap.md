@@ -2,11 +2,11 @@
 
 ## Current State
 
-EazInvoice currently has an AI Assistant that parses structured user commands and can draft invoices, PO/WO records, and report summaries. It also has an optional LLM wrapper when `OPENAI_API_KEY` is configured.
+EazInvoice has an AI Assistant compatibility path that parses structured user commands and can draft invoices, PO/WO records, and report summaries. It also has an optional LLM wrapper when `OPENAI_API_KEY` is configured.
 
-The guided AI Agent wrapper is implemented at `/ai-agent/command`. It wraps assistant output with checks, a plan, warnings, and next actions. Current tests confirm the Agent does not auto-save financial records and keeps Pro/Business gates intact.
+P2-4A implements the first real tool-based EazInvoice AI Agent at `/ai-agent/command`. The Agent is domain-constrained to authorized EazInvoice accounting, tax, compliance, business-performance, and safe draft data. It plans against a registered internal tool matrix, separates facts from calculations and recommendations, and keeps Pro/Business gates intact.
 
-Commercially safe current claim: "AI-assisted invoice, PO/WO, and report drafting for Pro and Business plans."
+Commercially safe current claim: "EazInvoice AI Agent for business reviews, receivables, GST/TDS readiness, cash-flow review, custom reports, and safe invoice/PO/WO draft preparation for Pro and Business plans."
 
 Claims to avoid until later phases are complete:
 
@@ -14,7 +14,7 @@ Claims to avoid until later phases are complete:
 - Automatic tax filing.
 - Legal, tax, or CA-certified advice.
 - Unsupplied customer/vendor data completion without review.
-- Background financial record creation without user confirmation.
+- Finalization, payment, filing, journal posting, deletion, or background financial record creation without user confirmation.
 
 ## Target State
 
@@ -27,16 +27,28 @@ The AI Agent should become a guided business operator, not just a command parser
 - Produce explainable actions and audit logs.
 - Avoid exposing one user's data to another user.
 
+## Implemented Foundation
+
+P2-4A includes:
+
+- Registered read tools for business summary, P&L, balance sheet, trial balance, receivables, payables, GST, TDS, cash/bank, customers, vendors, custom reports, and compliance readiness.
+- Safe draft tools for invoice, PO, and WO drafts only.
+- Server-authorized business scope, workspace permission checks, plan gates, and AI quota logging.
+- Bounded execution with a maximum of 8 tool steps per request.
+- Rejection of arbitrary SQL, secret access, cross-business access, and non-finance chatbot requests.
+
+Excluded tools remain unavailable: `finalize_invoice`, `make_payment`, `post_journal`, `file_return`, statutory filing, and deletion.
+
 ## Recommended Build Phases
 
-### Phase 1: Agent Shell
+### Phase 1: Agent Shell - Complete
 
 - Add chat-style UI. Current dashboard UI has a chat-style Agent workspace; continue polishing it rather than starting again.
 - Keep current AI Assistant as the execution engine.
 - Add safe responses for missing customer/vendor/account data.
 - Add clear confirm/cancel actions before creating drafts.
 
-### Phase 2: Tool-Based Actions
+### Phase 2: Tool-Based Actions - Foundation Complete
 
 - Convert invoice, PO/WO, report, customer, vendor, and compliance actions into safe internal tools.
 - Add permission checks for each tool.
@@ -71,4 +83,4 @@ The AI Agent should become a guided business operator, not just a command parser
 
 ## Launch Readiness Position
 
-The current AI feature can remain in the sales story as an assisted drafting feature for paid plans after subscription verification is complete. The full tool-based AI Agent should stay after stabilization, because subscriptions, permissions, audit logging, and production persistence must remain the authority before the AI layer gains more actions.
+The P2-4A Agent can remain in the controlled launch story for paid plans after subscription verification is complete. Keep commercial wording narrow: reviews, reports, recommendations, and safe drafts. Do not market autonomous accounting, filing, payment, journal posting, or irreversible automation until later approval-controlled phases are built and audited.
