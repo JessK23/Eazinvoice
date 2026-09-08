@@ -4176,6 +4176,99 @@ test("razorpay subscription activation requires verified signature and is idempo
   }
 });
 
+test("razorpay paid checkout shows KYC blocker before gateway order creation", async () => {
+  const previousKeyId = process.env.RAZORPAY_KEY_ID;
+  const previousKeySecret = process.env.RAZORPAY_KEY_SECRET;
+  const previousWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  process.env.RAZORPAY_KEY_ID = "rzp_test_eazinvoice";
+  process.env.RAZORPAY_KEY_SECRET = "test_secret_for_signature";
+  process.env.RAZORPAY_WEBHOOK_SECRET = "webhook_secret_for_signature";
+
+  const originalFetch = globalThis.fetch;
+  let razorpayCalls = 0;
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url).startsWith("https://api.razorpay.com/v1/orders")) {
+      razorpayCalls += 1;
+      return new Response(JSON.stringify({ id: "order_should_not_exist" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return originalFetch(url, options);
+  };
+
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await originalFetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  try {
+    const otpResult = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: {
+        mode: "signup",
+        email: "checkout-kyc@example.com",
+        phone: "9123456780",
+      },
+    });
+    const signupResult = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "Checkout KYC User",
+        email: "checkout-kyc@example.com",
+        password: "Secure123",
+        phone: "9123456780",
+        otp: otpResult.payload.devOtp,
+      },
+    });
+    assert.equal(signupResult.response.status, 201);
+
+    for (const plan of ["standard", "pro", "business"]) {
+      const orderResult = await request("/billing/razorpay/order", {
+        method: "POST",
+        token: signupResult.payload.token,
+        body: { kind: "subscription", plan },
+      });
+      assert.equal(orderResult.response.status, 400);
+      assert.match(orderResult.payload.error, /KYC documents/i);
+    }
+    assert.equal(razorpayCalls, 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    globalThis.fetch = originalFetch;
+    if (previousKeyId === undefined) delete process.env.RAZORPAY_KEY_ID;
+    else process.env.RAZORPAY_KEY_ID = previousKeyId;
+    if (previousKeySecret === undefined) delete process.env.RAZORPAY_KEY_SECRET;
+    else process.env.RAZORPAY_KEY_SECRET = previousKeySecret;
+    if (previousWebhookSecret === undefined) delete process.env.RAZORPAY_WEBHOOK_SECRET;
+    else process.env.RAZORPAY_WEBHOOK_SECRET = previousWebhookSecret;
+  }
+});
+
+test("subscription page places checkout status above the KYC form", () => {
+  const html = fs.readFileSync(path.join(process.cwd(), "apps", "web", "subscription.html"), "utf8");
+  const statusIndex = html.indexOf('id="subscriptionStatus"');
+  const planCardsIndex = html.indexOf('id="subscriptionPlanCards"');
+  const formIndex = html.indexOf('id="subscriptionForm"');
+  assert.ok(statusIndex > -1);
+  assert.ok(planCardsIndex > -1);
+  assert.ok(formIndex > -1);
+  assert.ok(statusIndex < planCardsIndex);
+  assert.ok(statusIndex < formIndex);
+  assert.match(html, /class="status checkout-status"/);
+});
+
 test("manual paid subscription requests remain pending even when kyc is verified", async () => {
   const restoreAdminEmail = useTestAdminEmail();
   const server = createServer({ persist: false, useSupabaseEmailOtp: false });

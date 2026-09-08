@@ -34,6 +34,9 @@ function setStatus(message, tone = "") {
   if (!status) return;
   status.textContent = message || "";
   status.dataset.tone = tone;
+  if (message && tone === "error") {
+    status.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
 }
 
 function isUnlimitedLimit(value) {
@@ -278,6 +281,12 @@ async function openRazorpayCheckout(orderPayload) {
 
 async function startPaidCheckout(plan) {
   if (!plan) return;
+  const button = planCards?.querySelector(`.plan-checkout[data-plan="${CSS.escape(plan)}"]`);
+  const previousText = button?.textContent || "Pay yearly";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Opening...";
+  }
   setStatus(`Opening Razorpay yearly checkout for ${plan}...`);
   try {
     const orderPayload = await apiClient.createRazorpayOrder(token, { kind: "subscription", plan });
@@ -290,6 +299,11 @@ async function startPaidCheckout(plan) {
     await refreshSubscriptionPage();
   } catch (error) {
     setStatus(error.message || "Payment could not be completed. Please try again.", "error");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = previousText;
+    }
   }
 }
 

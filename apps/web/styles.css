@@ -52,6 +52,30 @@
   font-weight: 800;
 }
 
+.checkout-status {
+  display: block;
+  min-height: 20px;
+  margin: 12px 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.checkout-status:empty {
+  display: none;
+}
+
+.checkout-status[data-tone="success"] {
+  border-color: rgba(4, 120, 87, .24);
+  background: #ecfdf5;
+}
+
+.checkout-status[data-tone="error"] {
+  border-color: rgba(185, 28, 28, .24);
+  background: #fef2f2;
+}
+
 .subscription-history {
   margin-top: 18px;
   display: grid;
