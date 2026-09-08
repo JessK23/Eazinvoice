@@ -60,27 +60,42 @@
             <strong>Document details</strong>
             <span class="hint">Required for paid plans</span>
           </div>
-          <div class="notice">
+          <div id="kycDocumentGuidance" class="notice">
             Individuals provide PAN, Aadhaar, and address proof for document review. Companies and groups provide company PAN or GST details.
           </div>
           <div class="grid two">
             <label>Company or Name <input name="entityName" placeholder="Company or your full name" required /></label>
+            <label>Country
+              <select name="country" id="kycCountry">
+                <option value="IN">India</option>
+                <option value="US">United States</option>
+                <option value="GB">United Kingdom</option>
+                <option value="AE">United Arab Emirates</option>
+                <option value="SG">Singapore</option>
+                <option value="AU">Australia</option>
+                <option value="CA">Canada</option>
+                <option value="OTHER">Other country</option>
+              </select>
+            </label>
             <label>Entity Type
-              <select name="entityType">
-                <option value="company">Company</option>
-                <option value="group">Group</option>
+              <select name="entityType" id="kycEntityType">
+                <option value="individual">Individual</option>
                 <option value="freelancer">Freelancer</option>
                 <option value="consultant">Consultant</option>
+                <option value="company">Company</option>
+                <option value="group">Group</option>
               </select>
             </label>
             <label>Address <input name="address" placeholder="Registered / billing address" required /></label>
-            <label>GST Number <input name="gstNumber" placeholder="GST number" /></label>
-            <label>PAN Number <input name="panNumber" placeholder="PAN number" /></label>
-            <label>Aadhaar Number <input name="aadhaarNumber" placeholder="Only last 4 needed here" /></label>
-            <label>Address Proof <input name="addressProof" placeholder="Utility bill, rent agreement, etc." /></label>
-            <label>PAN Document <input name="panDocument" type="file" /></label>
-            <label>Aadhaar Document <input name="aadhaarDocument" type="file" /></label>
-            <label>GST Document <input name="gstDocument" type="file" /></label>
+            <label data-kyc-field="gst">GST Number <input name="gstNumber" placeholder="GST number" /></label>
+            <label data-kyc-field="pan">PAN Number <input name="panNumber" placeholder="PAN number" /></label>
+            <label data-kyc-field="aadhaar">Aadhaar Number <input name="aadhaarNumber" placeholder="Only last 4 needed here" /></label>
+            <label data-kyc-field="foreignTax">Tax ID / National ID <input name="taxId" placeholder="Country tax ID or national ID" /></label>
+            <label data-kyc-field="registration">Business Registration Number <input name="registrationNumber" placeholder="Company registration number" /></label>
+            <label>Address Proof <input name="addressProof" placeholder="Utility bill, bank statement, lease, etc." /></label>
+            <label data-kyc-doc="identity"><span>PAN Document</span><input name="panDocument" type="file" /></label>
+            <label data-kyc-doc="secondary"><span>Aadhaar Document</span><input name="aadhaarDocument" type="file" /></label>
+            <label data-kyc-doc="business"><span>GST Document</span><input name="gstDocument" type="file" /></label>
             <label>Logo URL <input name="logoUrl" placeholder="Optional logo URL" /></label>
           </div>
         </div>

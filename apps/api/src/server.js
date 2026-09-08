@@ -978,10 +978,73 @@ function hasSubmittedKyc(company) {
   return Boolean(
     String(company.panNumber || "").trim() ||
     String(company.gstNumber || "").trim() ||
+    String(company.taxId || "").trim() ||
+    String(company.registrationNumber || "").trim() ||
     String(company.addressProof || "").trim() ||
     (Array.isArray(company.documentNames) && company.documentNames.length) ||
     (Array.isArray(company.documentFiles) && company.documentFiles.length)
   );
+}
+
+function normalizeKycCountry(value) {
+  const normalized = String(value || "IN").trim();
+  if (!normalized) return "IN";
+  return normalized.toUpperCase();
+}
+
+function isIndiaKycCountry(value) {
+  return ["IN", "INDIA"].includes(normalizeKycCountry(value));
+}
+
+function isIndividualKycEntity(entityType) {
+  return ["individual", "freelancer", "consultant"].includes(String(entityType || "").trim().toLowerCase());
+}
+
+function resolveKycDocumentType({ country, entityType }) {
+  const india = isIndiaKycCountry(country);
+  const individual = isIndividualKycEntity(entityType);
+  if (india && individual) return "india-individual-pan-aadhaar-address-proof";
+  if (india) return "india-company-pan-gst-address-proof";
+  if (individual) return "international-individual-tax-id-address-proof";
+  return "international-company-registration-tax-address-proof";
+}
+
+function validatePaidKycInput(body = {}) {
+  const country = normalizeKycCountry(body.country || body.kycCountry);
+  const entityType = String(body.entityType || "company").trim().toLowerCase();
+  const individual = isIndividualKycEntity(entityType);
+  const india = isIndiaKycCountry(country);
+  const address = String(body.address || "").trim();
+  const addressProof = String(body.addressProof || "").trim();
+  const panNumber = String(body.panNumber || "").trim();
+  const gstNumber = String(body.gstNumber || "").trim();
+  const aadhaarNumber = String(body.aadhaarNumber || "").trim();
+  const taxId = String(body.taxId || "").trim();
+  const registrationNumber = String(body.registrationNumber || "").trim();
+  const hasUploadedDocument = (Array.isArray(body.documentNames) && body.documentNames.length)
+    || (Array.isArray(body.documentFiles) && body.documentFiles.length);
+
+  if (!address || (!addressProof && !hasUploadedDocument)) {
+    return { ok: false, error: "KYC requires address and address proof or an uploaded document." };
+  }
+  if (india && individual && (!panNumber || aadhaarNumber.length < 4)) {
+    return { ok: false, error: "India individual, freelancer, or consultant KYC requires PAN, Aadhaar last 4, address and address proof. GST is not required." };
+  }
+  if (india && !individual && (!panNumber && !gstNumber)) {
+    return { ok: false, error: "India company or group KYC requires company PAN or GST details." };
+  }
+  if (!india && individual && !taxId && !hasUploadedDocument) {
+    return { ok: false, error: "Non-India individual, freelancer, or consultant KYC requires a country tax ID/national ID or identity document." };
+  }
+  if (!india && !individual && !registrationNumber && !taxId && !hasUploadedDocument) {
+    return { ok: false, error: "Non-India company or group KYC requires business registration, tax ID, or company registration document." };
+  }
+  return {
+    ok: true,
+    country,
+    entityType,
+    kycDocumentType: resolveKycDocumentType({ country, entityType }),
+  };
 }
 
 function isPaidPlan(input) {
@@ -2870,22 +2933,12 @@ export function createServer(options = {}) {
 
     if (url.pathname === "/companies" && req.method === "POST") {
       const body = await readBody(req);
-      const entityType = body.entityType || "company";
+      const entityType = String(body.entityType || "company").trim().toLowerCase();
       const isOnboardingProfile = body.profilePurpose === "onboarding";
-      const requiresAadhaar = entityType === "freelancer" || entityType === "consultant";
-      const address = String(body.address || "").trim();
-      const panNumber = String(body.panNumber || "").trim();
-      const gstNumber = String(body.gstNumber || "").trim();
-      const aadhaarNumber = String(body.aadhaarNumber || "").trim();
-      const addressProof = String(body.addressProof || "").trim();
+      const kycValidation = validatePaidKycInput({ ...body, entityType });
       if (!isOnboardingProfile) {
-        if (requiresAadhaar) {
-          if (!panNumber || aadhaarNumber.length < 4 || !address || !addressProof) {
-            sendJson(res, 400, { error: "Individual KYC requires PAN, Aadhaar, address and address proof" });
-            return;
-          }
-        } else if (!panNumber && !gstNumber) {
-          sendJson(res, 400, { error: "Company or group KYC requires company PAN or GST" });
+        if (!kycValidation.ok) {
+          sendJson(res, 400, { error: kycValidation.error });
           return;
         }
       }
@@ -2898,11 +2951,17 @@ export function createServer(options = {}) {
         ...body,
         ownerUserId: workspace.ownerUserId,
         entityType,
+        country: kycValidation.country || normalizeKycCountry(body.country || body.kycCountry),
+        kycCountry: kycValidation.country || normalizeKycCountry(body.country || body.kycCountry),
+        gstNumber: isIndividualKycEntity(entityType) ? "" : body.gstNumber,
         kycStatus: isOnboardingProfile ? "not_submitted" : "pending",
         reviewStatus: "pending",
         reviewedAt: "",
         kycMode: "document-review",
-        kycDocumentType: requiresAadhaar ? "aadhaar-pan-address-proof" : "company-pan-or-gst",
+        kycDocumentType: kycValidation.kycDocumentType || resolveKycDocumentType({
+          country: body.country || body.kycCountry,
+          entityType,
+        }),
       }));
       return;
     }

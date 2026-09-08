@@ -6,6 +6,9 @@ const planBadge = document.getElementById("subscriptionPlanBadge");
 const usageGrid = document.getElementById("subscriptionUsageGrid");
 const usageNote = document.getElementById("subscriptionUsageNote");
 const planCards = document.getElementById("subscriptionPlanCards");
+const kycCountry = document.getElementById("kycCountry");
+const kycEntityType = document.getElementById("kycEntityType");
+const kycDocumentGuidance = document.getElementById("kycDocumentGuidance");
 const sessionContext = await requireSession();
 const token = sessionContext?.token;
 if (!token) throw new Error("Authentication required");
@@ -36,6 +39,64 @@ function setStatus(message, tone = "") {
   status.dataset.tone = tone;
   if (message && tone === "error") {
     status.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}
+
+function isIndiaCountry(value) {
+  return ["in", "india", ""].includes(String(value || "").trim().toLowerCase());
+}
+
+function isIndividualEntity(value) {
+  return ["individual", "freelancer", "consultant"].includes(String(value || "").trim().toLowerCase());
+}
+
+function setFieldVisible(selector, visible) {
+  document.querySelectorAll(selector).forEach((element) => {
+    element.hidden = !visible;
+    element.querySelectorAll("input, select, textarea").forEach((input) => {
+      input.disabled = !visible;
+      if (!visible && input.type !== "file") input.value = "";
+    });
+  });
+}
+
+function setDocLabel(kind, text) {
+  const label = document.querySelector(`[data-kyc-doc="${kind}"] span`);
+  if (label) label.textContent = text;
+}
+
+function updateKycFields() {
+  const country = kycCountry?.value || "IN";
+  const entityType = kycEntityType?.value || "individual";
+  const india = isIndiaCountry(country);
+  const individual = isIndividualEntity(entityType);
+
+  setFieldVisible('[data-kyc-field="gst"]', india && !individual);
+  setFieldVisible('[data-kyc-field="pan"]', india);
+  setFieldVisible('[data-kyc-field="aadhaar"]', india && individual);
+  setFieldVisible('[data-kyc-field="foreignTax"]', !india);
+  setFieldVisible('[data-kyc-field="registration"]', !india && !individual);
+
+  if (india && individual) {
+    if (kycDocumentGuidance) kycDocumentGuidance.textContent = "For India individual, freelancer, or consultant profiles, provide PAN, Aadhaar last 4, address proof, and supporting identity documents. GST is not required unless you are GST-registered as a business.";
+    setDocLabel("identity", "PAN Document");
+    setDocLabel("secondary", "Aadhaar / Identity Document");
+    setDocLabel("business", "Optional GST Document");
+  } else if (india) {
+    if (kycDocumentGuidance) kycDocumentGuidance.textContent = "For India company or group profiles, provide company PAN and GST details where applicable, plus address proof and business registration/tax documents.";
+    setDocLabel("identity", "Company PAN Document");
+    setDocLabel("secondary", "Registration / Address Document");
+    setDocLabel("business", "GST Document");
+  } else if (individual) {
+    if (kycDocumentGuidance) kycDocumentGuidance.textContent = "For non-India individual, freelancer, or consultant profiles, provide the country tax ID or national ID, address proof, and identity documents accepted in your country.";
+    setDocLabel("identity", "Tax ID / National ID Document");
+    setDocLabel("secondary", "Passport / Identity Document");
+    setDocLabel("business", "Optional Business Permit");
+  } else {
+    if (kycDocumentGuidance) kycDocumentGuidance.textContent = "For non-India company or group profiles, provide business registration, country tax ID where available, address proof, and company registration documents.";
+    setDocLabel("identity", "Business Registration Document");
+    setDocLabel("secondary", "Director / Authorized Person ID");
+    setDocLabel("business", "Tax / VAT Registration Document");
   }
 }
 
@@ -360,6 +421,10 @@ async function refreshSubscriptionPage() {
 
 await refreshSubscriptionPage();
 
+updateKycFields();
+kycCountry?.addEventListener("change", updateKycFields);
+kycEntityType?.addEventListener("change", updateKycFields);
+
 form?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const data = new FormData(form);
@@ -390,15 +455,19 @@ form?.addEventListener("submit", async (event) => {
       name: data.get("entityName"),
       legalName: data.get("entityName"),
       entityType,
+      country: data.get("country") || "IN",
       address: data.get("address"),
       gstNumber: data.get("gstNumber"),
       panNumber: data.get("panNumber"),
+      taxId: data.get("taxId"),
+      registrationNumber: data.get("registrationNumber"),
       addressProof: data.get("addressProof"),
       documentNames: uploaded.files.map((file) => file.storedName),
       documentFiles: uploaded.files,
       logoUrl: data.get("logoUrl"),
       kycStatus: "pending",
       kycMode: "document-review",
+      kycCountry: data.get("country") || "IN",
       aadhaarLast4: hasAadhaar ? aadhaarNumber.slice(-4) : "",
     });
     setStatus("Profile saved for paid plan review. You can now choose a paid yearly plan.", "success");

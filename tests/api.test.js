@@ -3328,6 +3328,134 @@ test("onboarding business profile can be created without KYC documents", async (
   }
 });
 
+test("paid KYC supports India individual/freelancer without GST and non-India company documents", async () => {
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  try {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email: "global-kyc@example.com", phone: "9011122233" },
+    });
+    const signup = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "Global KYC User",
+        email: "global-kyc@example.com",
+        password: "Secure123",
+        phone: "9011122233",
+        otp: otp.payload.devOtp,
+      },
+    });
+    const token = signup.payload.token;
+
+    const freelancer = await request("/companies", {
+      method: "POST",
+      token,
+      body: {
+        name: "Jess Consulting",
+        entityType: "freelancer",
+        country: "IN",
+        address: "Pune",
+        addressProof: "Bank statement",
+        panNumber: "ABCDE1234F",
+        aadhaarNumber: "1234",
+        gstNumber: "27ABCDE1234F1Z5",
+      },
+    });
+    assert.equal(freelancer.response.status, 201);
+    assert.equal(freelancer.payload.gstNumber, "");
+    assert.equal(freelancer.payload.kycDocumentType, "india-individual-pan-aadhaar-address-proof");
+
+    const companyOtp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email: "global-company-kyc@example.com", phone: "9011122234" },
+    });
+    const companySignup = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "Global Company User",
+        email: "global-company-kyc@example.com",
+        password: "Secure123",
+        phone: "9011122234",
+        otp: companyOtp.payload.devOtp,
+      },
+    });
+
+    const internationalCompany = await request("/companies", {
+      method: "POST",
+      token: companySignup.payload.token,
+      body: {
+        name: "Global Studio LLC",
+        entityType: "company",
+        country: "US",
+        address: "New York",
+        addressProof: "Lease",
+        registrationNumber: "US-REG-12345",
+        taxId: "US-TAX-67890",
+      },
+    });
+    assert.equal(internationalCompany.response.status, 201);
+    assert.equal(internationalCompany.payload.country, "US");
+    assert.equal(internationalCompany.payload.registrationNumber, "US-REG-12345");
+    assert.equal(internationalCompany.payload.kycDocumentType, "international-company-registration-tax-address-proof");
+
+    const consultantOtp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email: "global-consultant-kyc@example.com", phone: "9011122235" },
+    });
+    const consultantSignup = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "Global Consultant User",
+        email: "global-consultant-kyc@example.com",
+        password: "Secure123",
+        phone: "9011122235",
+        otp: consultantOtp.payload.devOtp,
+      },
+    });
+
+    const internationalFreelancerBlocked = await request("/companies", {
+      method: "POST",
+      token: consultantSignup.payload.token,
+      body: {
+        name: "No ID Consultant",
+        entityType: "consultant",
+        country: "GB",
+        address: "London",
+        addressProof: "Utility bill",
+      },
+    });
+    assert.equal(internationalFreelancerBlocked.response.status, 400);
+    assert.match(internationalFreelancerBlocked.payload.error, /country tax ID|identity document/i);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("subscription KYC form has adaptive country and document fields", () => {
+  const html = fs.readFileSync(path.join(process.cwd(), "apps", "web", "subscription.html"), "utf8");
+  assert.match(html, /id="kycCountry"/);
+  assert.match(html, /value="IN">India/);
+  assert.match(html, /value="individual">Individual/);
+  assert.match(html, /data-kyc-field="foreignTax"/);
+  assert.match(html, /data-kyc-field="registration"/);
+  assert.match(html, /data-kyc-doc="identity"/);
+});
+
 test("signed-in user can update access profile", async () => {
   const server = createServer({ persist: false, useSupabaseEmailOtp: false });
   await new Promise((resolve) => server.listen(0, resolve));
