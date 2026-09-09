@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>EazInvoice</title>
+  <path d="M20 2H7a3 3 0 0 0-3 3v23a2 2 0 0 0 2 2h18V11" fill="white" stroke="#061954" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M20 1v8a2 2 0 0 0 2 2h8Z" fill="#061954"/>
+  <path d="M8 11h2v5H8zm3-3h2v8h-2zm3-3h2v11h-2z" fill="#061954"/>
+  <path d="M8 20h12M8 24h7" fill="none" stroke="#061954" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="24" cy="24" r="8" fill="#061954" stroke="white" stroke-width="1"/>
+  <path d="m20 24 3 3 5-6" fill="none" stroke="#E5AC27" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
