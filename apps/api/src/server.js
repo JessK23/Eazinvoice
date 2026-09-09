@@ -1457,6 +1457,10 @@ function contentType(filePath) {
   if (filePath.endsWith(".html")) return "text/html; charset=utf-8";
   if (filePath.endsWith(".css")) return "text/css; charset=utf-8";
   if (filePath.endsWith(".js")) return "application/javascript; charset=utf-8";
+  if (filePath.endsWith(".json") || filePath.endsWith(".webmanifest")) return "application/manifest+json; charset=utf-8";
+  if (filePath.endsWith(".png")) return "image/png";
+  if (filePath.endsWith(".ico")) return "image/x-icon";
+  if (filePath.endsWith(".svg")) return "image/svg+xml";
   if (filePath.endsWith(".php")) return "text/plain; charset=utf-8";
   return "application/octet-stream";
 }
@@ -2140,6 +2144,16 @@ export function createServer(options = {}) {
       res.writeHead(302, {
         ...securityHeaders(),
         Location: "/apps/web/index.html",
+        "Cache-Control": "no-store",
+      });
+      res.end();
+      return;
+    }
+
+    if (url.pathname === "/favicon.ico" && (req.method === "GET" || req.method === "HEAD")) {
+      res.writeHead(302, {
+        ...securityHeaders(),
+        Location: "/apps/web/assets/favicon-32.png",
         "Cache-Control": "no-store",
       });
       res.end();

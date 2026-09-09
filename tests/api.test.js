@@ -3469,6 +3469,25 @@ test("homepage pricing highlights Standard as the primary paid plan", () => {
   assert.doesNotMatch(html, /Choose Pro/);
 });
 
+test("web and mobile expose EazInvoice branded icons", async () => {
+  const indexHtml = fs.readFileSync(path.join(process.cwd(), "apps", "web", "index.html"), "utf8");
+  assert.match(indexHtml, /rel="icon"[^>]+favicon-32\.png/);
+  assert.match(indexHtml, /rel="apple-touch-icon"[^>]+apple-touch-icon\.png/);
+  assert.match(indexHtml, /property="og:image"[^>]+eazinvoice-social-card\.png/);
+  const mobileManifest = JSON.parse(fs.readFileSync(path.join(process.cwd(), "apps", "mobile", "manifest.json"), "utf8"));
+  assert.ok(mobileManifest.icons.some((icon) => icon.src === "./assets/logo-icon-maskable.png" && icon.purpose === "maskable"));
+
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/favicon.ico`, { redirect: "manual" });
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get("location"), "/apps/web/assets/favicon-32.png");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("signed-in user can update access profile", async () => {
   const server = createServer({ persist: false, useSupabaseEmailOtp: false });
   await new Promise((resolve) => server.listen(0, resolve));
