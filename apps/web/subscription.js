@@ -76,12 +76,12 @@ function updateKycFields() {
   setFieldVisible('[data-kyc-field="aadhaar"]', india && individual);
   setFieldVisible('[data-kyc-field="foreignTax"]', !india);
   setFieldVisible('[data-kyc-field="registration"]', !india && !individual);
+  setFieldVisible('[data-kyc-doc="business"]', !individual);
 
   if (india && individual) {
-    if (kycDocumentGuidance) kycDocumentGuidance.textContent = "For India individual, freelancer, or consultant profiles, provide PAN, Aadhaar last 4, address proof, and supporting identity documents. GST is not required unless you are GST-registered as a business.";
+    if (kycDocumentGuidance) kycDocumentGuidance.textContent = "For India individual, freelancer, or consultant profiles, provide PAN, Aadhaar last 4, address proof, and supporting identity documents. GST is not applicable for this profile type; use Company or Group for GST/company registration.";
     setDocLabel("identity", "PAN Document");
     setDocLabel("secondary", "Aadhaar / Identity Document");
-    setDocLabel("business", "Optional GST Document");
   } else if (india) {
     if (kycDocumentGuidance) kycDocumentGuidance.textContent = "For India company or group profiles, provide company PAN and GST details where applicable, plus address proof and business registration/tax documents.";
     setDocLabel("identity", "Company PAN Document");
@@ -91,7 +91,6 @@ function updateKycFields() {
     if (kycDocumentGuidance) kycDocumentGuidance.textContent = "For non-India individual, freelancer, or consultant profiles, provide the country tax ID or national ID, address proof, and identity documents accepted in your country.";
     setDocLabel("identity", "Tax ID / National ID Document");
     setDocLabel("secondary", "Passport / Identity Document");
-    setDocLabel("business", "Optional Business Permit");
   } else {
     if (kycDocumentGuidance) kycDocumentGuidance.textContent = "For non-India company or group profiles, provide business registration, country tax ID where available, address proof, and company registration documents.";
     setDocLabel("identity", "Business Registration Document");

@@ -3454,6 +3454,19 @@ test("subscription KYC form has adaptive country and document fields", () => {
   assert.match(html, /data-kyc-field="foreignTax"/);
   assert.match(html, /data-kyc-field="registration"/);
   assert.match(html, /data-kyc-doc="identity"/);
+  const js = fs.readFileSync(path.join(process.cwd(), "apps", "web", "subscription.js"), "utf8");
+  assert.match(js, /setFieldVisible\('\[data-kyc-doc="business"\]', !individual\)/);
+  assert.doesNotMatch(js, /Optional GST Document/);
+  assert.match(js, /use Company or Group for GST\/company registration/);
+});
+
+test("homepage pricing highlights Standard as the primary paid plan", () => {
+  const html = fs.readFileSync(path.join(process.cwd(), "apps", "web", "index.html"), "utf8");
+  const featuredCard = html.match(/<article class="pricing-card featured">[\s\S]*?<\/article>/)?.[0] || "";
+  assert.match(featuredCard, /<span>Standard<\/span>/);
+  assert.match(featuredCard, /Choose Standard/);
+  assert.doesNotMatch(featuredCard, /<span>Pro<\/span>/);
+  assert.doesNotMatch(html, /Choose Pro/);
 });
 
 test("signed-in user can update access profile", async () => {
