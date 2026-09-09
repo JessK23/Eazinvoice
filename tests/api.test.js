@@ -3481,8 +3481,9 @@ test("web and mobile expose EazInvoice branded icons", async () => {
   await new Promise((resolve) => server.listen(0, resolve));
   try {
     const response = await fetch(`http://127.0.0.1:${server.address().port}/favicon.ico`, { redirect: "manual" });
-    assert.equal(response.status, 302);
-    assert.equal(response.headers.get("location"), "/apps/web/assets/favicon-32.png");
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") || "", /image\/png/);
+    assert.ok((await response.arrayBuffer()).byteLength > 500);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

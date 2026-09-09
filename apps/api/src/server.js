@@ -2151,12 +2151,13 @@ export function createServer(options = {}) {
     }
 
     if (url.pathname === "/favicon.ico" && (req.method === "GET" || req.method === "HEAD")) {
-      res.writeHead(302, {
+      const favicon = await fs.readFile(path.join(ROOT, "apps", "web", "assets", "favicon-32.png"));
+      res.writeHead(200, {
         ...securityHeaders(),
-        Location: "/apps/web/assets/favicon-32.png",
+        "Content-Type": "image/png",
         "Cache-Control": "no-store",
       });
-      res.end();
+      res.end(req.method === "HEAD" ? undefined : favicon);
       return;
     }
 
