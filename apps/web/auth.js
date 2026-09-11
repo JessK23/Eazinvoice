@@ -2,6 +2,7 @@ const form = document.getElementById("authForm");
 const status = document.getElementById("authStatus");
 const signupTab = document.getElementById("signupTab");
 const loginTab = document.getElementById("loginTab");
+const resetTab = document.getElementById("resetTab");
 const title = document.getElementById("authTitle");
 const googleAuth = document.getElementById("googleAuth");
 const requestOtp = document.getElementById("requestOtp");
@@ -178,33 +179,36 @@ function setMode(nextMode) {
   resetOtpButton();
   signupTab?.classList.toggle("active", mode === "signup");
   loginTab?.classList.toggle("active", mode === "login");
+  resetTab?.classList.toggle("active", mode === "reset");
   signupTab?.setAttribute("aria-selected", String(mode === "signup"));
   loginTab?.setAttribute("aria-selected", String(mode === "login"));
-  if (title) title.textContent = mode === "signup" ? "Create your free account" : "Welcome back";
+  resetTab?.setAttribute("aria-selected", String(mode === "reset"));
+  if (title) title.textContent = mode === "signup" ? "Create your free account" : mode === "reset" ? "Reset your password" : "Welcome back";
   const submit = form?.querySelector('button[type="submit"]');
-  if (submit) submit.textContent = mode === "signup" ? "Continue" : "Login";
+  if (submit) submit.textContent = mode === "signup" ? "Continue" : mode === "reset" ? "Reset password" : "Login";
   const passwordInput = form?.querySelector('input[name="password"]');
-  if (passwordInput) passwordInput.placeholder = mode === "signup" ? "Create password" : "Enter password";
+  if (passwordInput) passwordInput.placeholder = mode === "signup" ? "Create password" : mode === "reset" ? "New password" : "Enter password";
   if (phoneLabel) phoneLabel.textContent = "Mobile Number";
-  if (phoneFieldWrap) phoneFieldWrap.hidden = mode === "login";
+  if (phoneFieldWrap) phoneFieldWrap.hidden = mode !== "signup";
   const phoneInput = form?.querySelector('input[name="phone"]');
   if (phoneInput) {
     phoneInput.required = mode === "signup";
-    phoneInput.value = mode === "login" ? "" : phoneInput.value;
+    if (mode !== "signup") phoneInput.value = "";
   }
-  if (nameFieldWrap) nameFieldWrap.hidden = mode === "login";
+  if (nameFieldWrap) nameFieldWrap.hidden = mode !== "signup";
   const nameInput = form?.querySelector('input[name="name"]');
   if (nameInput) {
     nameInput.required = mode === "signup";
-    nameInput.value = mode === "login" ? "" : nameInput.value;
+    if (mode !== "signup") nameInput.value = "";
   }
-  if (signupOnlyFields) signupOnlyFields.hidden = mode === "login";
+  if (signupOnlyFields) signupOnlyFields.hidden = mode !== "signup";
   renderCompanyRegistrantFields();
-  if (googleAuth) googleAuth.hidden = mode === "login";
+  if (googleAuth) googleAuth.hidden = mode !== "signup";
 }
 
 signupTab?.addEventListener("click", () => setMode("signup"));
 loginTab?.addEventListener("click", () => setMode("login"));
+resetTab?.addEventListener("click", () => setMode("reset"));
 form?.querySelectorAll('input[name="subscriberType"]').forEach((input) => {
   input.addEventListener("change", renderCompanyRegistrantFields);
 });
@@ -229,7 +233,7 @@ async function requestEmailOtp() {
   try {
     const response = await apiRequest("/auth/email-otp/request", {
       email,
-      mode,
+      mode: mode === "reset" ? "reset-password" : mode,
     });
     const otpInput = form?.querySelector('input[name="otp"]');
     if (otpInput && response.devOtp) otpInput.value = response.devOtp;
@@ -276,7 +280,13 @@ form?.addEventListener("submit", async (event) => {
         password: data.get("password"),
         otp: data.get("otp"),
       })
-      : await apiRequest("/auth/signup", {
+      : mode === "reset"
+        ? await apiRequest("/auth/password-reset", {
+          email: data.get("email"),
+          otp: data.get("otp"),
+          newPassword: data.get("password"),
+        })
+        : await apiRequest("/auth/signup", {
         name: data.get("name"),
         email: data.get("email"),
         password: data.get("password"),
@@ -288,8 +298,13 @@ form?.addEventListener("submit", async (event) => {
         registrantEmail: data.get("registrantEmail"),
         registrantPhone: data.get("registrantPhone"),
     });
-    saveToken(response.token);
+    if (mode !== "reset") saveToken(response.token);
     const destination = postAuthDestination(response);
+    if (mode === "reset") {
+      setStatus("Password reset successfully. Please log in with your new password.");
+      window.setTimeout(() => setMode("login"), 900);
+      return;
+    }
     setStatus(mode === "signup"
       ? "Registration successful. Email verified. Taking you to your workspace..."
       : "Login successful. Taking you to your workspace...");
@@ -301,4 +316,4 @@ form?.addEventListener("submit", async (event) => {
   }
 });
 
-setMode(initialTab === "login" ? "login" : "signup");
+setMode(initialTab === "login" ? "login" : initialTab === "reset" ? "reset" : "signup");

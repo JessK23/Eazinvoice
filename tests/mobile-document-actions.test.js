@@ -20,6 +20,13 @@ test("mobile document workflows use the SaaS API instead of local accounting", (
   assert.match(mobileMarkup, /data-route="sales"/);
 });
 
+test("mobile auth exposes forgot password recovery using the shared reset API", () => {
+  assert.match(mobileScript, /authMode/);
+  assert.match(mobileScript, /data-auth-mode="reset"/);
+  assert.match(mobileScript, /\/auth\/password-reset/);
+  assert.match(mobileScript, /Forgot password\?/);
+});
+
 test("mobile document sharing is presentation-only and backend-authoritative", () => {
   assert.match(mobileScript, /function shareDocument/);
   assert.match(mobileScript, /navigator\.share/);

@@ -11,7 +11,7 @@
     { title: "Create invoice", detail: "Create or resume an invoice", url: "./invoice.html", keywords: "invoice gst tax draft customer", protected: true },
     { title: "Purchase / Work Order", detail: "Create a PO or WO", url: "./invoice.html?type=po", keywords: "purchase order work order po wo vendor", protected: true },
     { title: "Reports dashboard", detail: "Revenue, expenses and business reports", url: "./dashboard.html", keywords: "dashboard reports revenue profit loss expense", protected: true },
-    { title: "AI Agent", detail: "AI-assisted drafts and reports", url: "./dashboard.html#ai-assistant", keywords: "ai agent assistant invoice po report", protected: true },
+    { title: "AI Agent", detail: "AI-assisted drafts and reports", url: "./dashboard.html#ai-agent", keywords: "ai agent assistant invoice po report", protected: true },
     { title: "Customers", detail: "Customer records", url: "./dashboard.html#customers", keywords: "customers clients records", protected: true },
     { title: "Vendors", detail: "Vendor records", url: "./dashboard.html#vendors", keywords: "vendors suppliers records", protected: true },
     { title: "Business workspace", detail: "Team, approvals and integrations", url: "./dashboard.html#business-workspace", keywords: "business team approvals smtp api gateway", protected: true },

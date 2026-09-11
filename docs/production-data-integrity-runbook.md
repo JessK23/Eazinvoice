@@ -1,4 +1,4 @@
-# EazInvoice Production Data Integrity Runbook
+﻿# EazInvoice Production Data Integrity Runbook
 
 ## Source Of Truth
 
@@ -98,6 +98,41 @@ Bad release:
 - Do not roll back the database unless a migration caused unrecoverable corruption and a tested restore plan exists.
 - Preserve audit logs and incident notes.
 
+## Email OTP dependency and recovery
+
+### Architecture guardrail
+
+EazInvoice production architecture is the Render-hosted EazInvoice application/API with PostgreSQL persistence.
+Email OTP delivery is an external messaging dependency and must not be treated as the production database or source of truth.
+
+### Inspection record — 2026-09-09
+
+- Local checks and tests confirmed OTP request/verify code paths and fallback branching behavior in this checkout.
+- `/readyz` and persistence checks validate application and PostgreSQL readiness, not mailbox delivery by themselves.
+- Existing automated tests use mocked delivery behavior and local process state; they do not prove live delivery or live provider credentials.
+
+### Provider selection and impact
+
+`apps/api/src/server.js` uses configured OTP provider endpoints for request/verify, then falls back to app SMTP/local behavior when configured conditions are met.
+These provider choices affect message delivery reliability, but they do not replace Render + PostgreSQL as production runtime and data authority.
+
+### Safe delivery acceptance procedure
+
+1. Confirm deployed Render service/environment identity, revision, and OTP-related environment variable presence (without exposing secrets).
+2. Verify PostgreSQL production persistence remains authoritative and healthy (`/readyz`, migrations, and persistence checks).
+3. Use an explicitly authorized controlled mailbox and account for one end-to-end OTP request and verification flow.
+4. Verify production password-reset flow end-to-end (request OTP, verify OTP, set new password, login with new password).
+5. Validate SMTP/fallback delivery behavior only in approved isolated conditions; do not break production credentials to induce fallback.
+6. Record provider path used, redacted delivery outcome, timestamp, deployed revision, and pass/fail result.
+
+### Known blockers found in this checkout
+
+- **OTP disclosure:** local OTP responses can include `devOtp` in non-production fallback paths; production-facing behavior must keep OTP values out of client responses.
+- Fallback OTP generation/verification currently relies on process-local state and should be hardened for multi-instance reliability.
+- Timeout/error-hardening for upstream OTP provider calls should be explicitly validated under failure conditions.
+- SMTP completeness checks verify field presence, not guaranteed provider deliverability.
+
+Real production OTP delivery, password-reset proof, SMTP/fallback proof (where enabled), and deployed configuration identity remain external acceptance items.
 ## Deferred Risks
 
 P2-1C closes the major state-document/normalized-table crash window by committing compatibility state and normalized financial records atomically. Remaining hardening should move more request paths to direct repository writes and reduce reliance on full-state replacement, especially before high-volume multi-instance production usage.

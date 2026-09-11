@@ -247,6 +247,27 @@ button {
   line-height: 1;
 }
 
+.auth-mode-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.auth-mode-toggle button {
+  border: 1px solid rgba(255, 255, 255, .32);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .08);
+  color: #fff;
+  font-weight: 900;
+  text-transform: none;
+}
+
+.auth-mode-toggle button.active {
+  background: rgba(255, 255, 255, .24);
+  border-color: rgba(255, 255, 255, .7);
+}
+
 .auth-panel p,
 .form-note {
   margin: 0;

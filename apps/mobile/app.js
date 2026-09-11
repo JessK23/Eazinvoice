@@ -23,6 +23,7 @@ const state = {
   lastError: "",
   requestEpoch: 0,
   unsavedForm: false,
+  authMode: "login",
   data: emptyData(),
 };
 
@@ -286,6 +287,9 @@ const api = {
   login(email, password, otp) {
     return this.request("/auth/login", { method: "POST", body: { email, password, otp } });
   },
+  resetPassword(email, otp, newPassword) {
+    return this.request("/auth/password-reset", { method: "POST", body: { email, otp, newPassword } });
+  },
   me() {
     return this.request("/me");
   },
@@ -525,6 +529,20 @@ function setStatus(message, tone = "info") {
   dom.status.dataset.tone = tone;
 }
 
+function normalizedAuthMode(mode) {
+  return mode === "reset" ? "reset" : "login";
+}
+
+function setAuthMode(mode) {
+  const nextMode = normalizedAuthMode(mode);
+  if (state.authMode === nextMode) return;
+  state.authMode = nextMode;
+  resetOtpTimer();
+  state.lastError = "";
+  setStatus("");
+  render();
+}
+
 async function boot() {
   cacheDom();
   bindEvents();
@@ -738,9 +756,15 @@ function bindEvents() {
       void requestOtp();
       return;
     }
-    if (event.target.closest("#loginButton")) {
+    const authModeButton = event.target.closest("[data-auth-mode]");
+    if (authModeButton) {
       event.preventDefault();
-      void login();
+      setAuthMode(authModeButton.dataset.authMode);
+      return;
+    }
+    if (event.target.closest("#authSubmitButton")) {
+      event.preventDefault();
+      void submitAuth();
       return;
     }
     const routeButton = event.target.closest("[data-route]");
@@ -753,7 +777,7 @@ function bindEvents() {
   document.body.addEventListener("submit", (event) => {
     if (event.target.closest("#authForm")) {
       event.preventDefault();
-      void login();
+      void submitAuth();
       return;
     }
     const form = event.target.closest("[data-form]");
@@ -790,6 +814,14 @@ function bindEvents() {
   });
 }
 
+async function submitAuth() {
+  if (state.authMode === "reset") {
+    await resetPassword();
+  } else {
+    await login();
+  }
+}
+
 async function requestOtp() {
   state.lastError = "";
   setStatus("");
@@ -799,15 +831,17 @@ async function requestOtp() {
     setStatus("Enter your email address first.", "error");
     return;
   }
+  const otpMode = state.authMode === "reset" ? "reset-password" : "login";
+  const otpLabel = otpMode === "reset-password" ? "Reset" : "Login";
   await withBusy(async () => {
-    const response = await api.requestOtp(email, "login");
+    const response = await api.requestOtp(email, otpMode);
     const otpInput = document.getElementById("otp");
     if (otpInput && response.devOtp) otpInput.value = response.devOtp;
     startOtpTimer(response.expiresInSeconds);
     setStatus(response.devOtp
-      ? `OTP sent to ${response.email}. Local test OTP: ${response.devOtp}`
-      : `OTP sent to ${response.email}. Enter the code you receive.`);
-  }, "Requesting OTP...");
+      ? `${otpLabel} OTP sent to ${response.email}. Local test OTP: ${response.devOtp}`
+      : `${otpLabel} OTP sent to ${response.email}. Enter the code you receive.`);
+  }, `Requesting ${otpLabel}...`);
 }
 
 async function login() {
@@ -833,6 +867,42 @@ async function login() {
     await refreshSessionAndData();
     setStatus("Signed in.");
   }, "Signing in...");
+}
+
+async function resetPassword() {
+  state.lastError = "";
+  setStatus("");
+  const emailInput = document.getElementById("email");
+  const otpInput = document.getElementById("otp");
+  const newPasswordInput = document.getElementById("password");
+  const confirmPasswordInput = document.getElementById("confirmPassword");
+  const email = emailInput?.value.trim() || "";
+  const otp = otpInput?.value.trim() || "";
+  const newPassword = newPasswordInput?.value || "";
+  const confirmPassword = confirmPasswordInput?.value || "";
+  if (!email || !otp || !newPassword || !confirmPassword) {
+    setStatus("Enter email, reset OTP, and your new password.", "error");
+    return;
+  }
+  if (newPassword !== confirmPassword) {
+    setStatus("New password and confirmation do not match.", "error");
+    return;
+  }
+  if ((newPassword ?? "").trim().length < 8) {
+    setStatus("Use at least 8 characters for your new password.", "error");
+    return;
+  }
+  const result = await withBusy(async () => {
+    await api.resetPassword(email, otp, newPassword);
+    resetOtpTimer();
+    return true;
+  }, "Resetting password...");
+  if (result) {
+    if (otpInput) otpInput.value = "";
+    if (confirmPasswordInput) confirmPasswordInput.value = "";
+    setAuthMode("login");
+    setStatus("Password reset. Request a login OTP and sign in with your new password.", "success");
+  }
 }
 
 async function switchWorkspace(key) {
@@ -1154,22 +1224,46 @@ function workspaceName(workspace) {
 }
 
 function renderLogin() {
+  const resetMode = state.authMode === "reset";
+  const eyebrow = resetMode ? "Account recovery" : "Secure sign in";
+  const heading = resetMode ? "Reset your password" : "EazInvoice Android";
+  const description = resetMode
+    ? "Request a reset OTP for your registered business email, verify it, then set a new password before signing in."
+    : "Use the same email OTP identity and business access as the Web app. The backend stays authoritative for totals, tax, postings, compliance, and close controls.";
+  const otpLabel = resetMode ? "Reset OTP" : "Login OTP";
+  const otpPlaceholder = resetMode ? "Enter reset OTP" : "Enter login OTP";
+  const otpButtonLabel = resetMode ? "Request reset OTP" : "Request OTP";
+  const submitLabel = resetMode ? "Reset password" : "Sign in";
+  const note = resetMode
+    ? "After resetting, switch back to Sign in, request a login OTP, and use your new password."
+    : "OTP verification prevents unauthorized devices from signing in. Do not share your codes.";
   return `
     <section class="panel auth-panel">
-      <span class="eyebrow">Secure sign in</span>
-      <h1>EazInvoice Android</h1>
-      <p>Use the same email OTP identity and business access as the Web app. The backend stays authoritative for totals, tax, postings, compliance, and close controls.</p>
-      <form id="authForm" class="form-stack">
+      <span class="eyebrow">${eyebrow}</span>
+      <h1>${heading}</h1>
+      <p>${description}</p>
+      <div class="auth-mode-toggle" role="tablist" aria-label="Authentication options">
+        <button type="button" data-auth-mode="login" class="${resetMode ? "" : "active"}" aria-pressed="${resetMode ? "false" : "true"}">Sign in</button>
+        <button type="button" data-auth-mode="reset" class="${resetMode ? "active" : ""}" aria-pressed="${resetMode ? "true" : "false"}">Forgot password?</button>
+      </div>
+      <form id="authForm" class="form-stack" data-auth-mode="${resetMode ? "reset" : "login"}">
         <label>Email<input id="email" type="email" autocomplete="email" placeholder="owner@example.com" required /></label>
-        <label>Password<input id="password" type="password" autocomplete="current-password" placeholder="Enter password" required /></label>
-        <label>OTP<input id="otp" inputmode="numeric" autocomplete="one-time-code" placeholder="Enter OTP" /></label>
+        ${resetMode ? `
+          <label>${otpLabel}<input id="otp" inputmode="numeric" autocomplete="one-time-code" placeholder="${otpPlaceholder}" /></label>
+          <label>New password<input id="password" type="password" autocomplete="new-password" placeholder="Create new password" required /></label>
+          <label>Confirm new password<input id="confirmPassword" type="password" autocomplete="new-password" placeholder="Repeat new password" required /></label>
+        ` : `
+          <label>Password<input id="password" type="password" autocomplete="current-password" placeholder="Enter password" required /></label>
+          <label>${otpLabel}<input id="otp" inputmode="numeric" autocomplete="one-time-code" placeholder="${otpPlaceholder}" /></label>
+        `}
         <div id="otpMeta" class="otp-meta" hidden>
           <span id="otpExpiry">OTP expires in 1:30</span>
         </div>
         <div class="button-row">
-          <button id="otpRequestButton" class="secondary" type="button">Request OTP</button>
-          <button id="loginButton" class="primary" type="submit">Sign in</button>
+          <button id="otpRequestButton" class="secondary" type="button">${otpButtonLabel}</button>
+          <button id="authSubmitButton" class="primary" type="submit">${submitLabel}</button>
         </div>
+        <p class="form-note">${note}</p>
       </form>
     </section>
   `;

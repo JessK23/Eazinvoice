@@ -3469,6 +3469,31 @@ test("homepage pricing highlights Standard as the primary paid plan", () => {
   assert.doesNotMatch(html, /Choose Pro/);
 });
 
+
+test("web AI Agent entry points use the canonical ai-agent route", () => {
+  const accessHtml = fs.readFileSync(path.join(process.cwd(), "apps", "web", "access.html"), "utf8");
+  const dashboardHtml = fs.readFileSync(path.join(process.cwd(), "apps", "web", "dashboard.html"), "utf8");
+  const indexHtml = fs.readFileSync(path.join(process.cwd(), "apps", "web", "index.html"), "utf8");
+  const navScript = fs.readFileSync(path.join(process.cwd(), "apps", "web", "nav.js"), "utf8");
+  const dashboardScript = fs.readFileSync(path.join(process.cwd(), "apps", "web", "dashboard.js"), "utf8");
+
+  assert.match(accessHtml, /\/apps\/web\/dashboard\.html#ai-agent/);
+  assert.match(dashboardHtml, /id="ai-agent"/);
+  assert.match(dashboardHtml, /id="aiAgentPanel"/);
+  assert.match(indexHtml, /\/apps\/web\/dashboard\.html#ai-agent/);
+  assert.match(navScript, /\.\/dashboard\.html#ai-agent/);
+  assert.match(dashboardScript, /document\.getElementById\("aiAgentPanel"\) \?\? document\.getElementById\("aiAssistantPanel"\)/);
+  assert.match(dashboardScript, /document\.getElementById\("aiAgentStatus"\) \?\? document\.getElementById\("aiAssistantStatus"\)/);
+});
+
+test("web auth reset mode keeps tab state and routes OTP mode correctly", () => {
+  const authScript = fs.readFileSync(path.join(process.cwd(), "apps", "web", "auth.js"), "utf8");
+
+  assert.match(authScript, /resetTab\?\.classList\.toggle\("active", mode === "reset"\)/);
+  assert.match(authScript, /resetTab\?\.setAttribute\("aria-selected", String\(mode === "reset"\)\)/);
+  assert.match(authScript, /mode: mode === "reset" \? "reset-password" : mode/);
+  assert.match(authScript, /initialTab === "reset" \? "reset" : "signup"/);
+});
 test("web and mobile expose EazInvoice branded icons", async () => {
   const indexHtml = fs.readFileSync(path.join(process.cwd(), "apps", "web", "index.html"), "utf8");
   assert.match(indexHtml, /rel="icon"[^>]+favicon-32\.png/);
@@ -3697,6 +3722,42 @@ test("auth OTP falls back to app SMTP when Supabase email delivery fails", async
         process.env[key] = value;
       }
     }
+  }
+});
+
+test("password reset changes the password after reset OTP verification", async () => {
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const signupOtp = await fetch(`${baseUrl}/auth/email-otp/request`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "signup", email: "reset@example.com" }),
+    }).then((response) => response.json());
+    await fetch(`${baseUrl}/auth/signup`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Reset User", email: "reset@example.com", password: "OldSecure123", phone: "9876543210", otp: signupOtp.devOtp }),
+    });
+    const resetOtp = await fetch(`${baseUrl}/auth/email-otp/request`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "reset-password", email: "reset@example.com" }),
+    }).then((response) => response.json());
+    const reset = await fetch(`${baseUrl}/auth/password-reset`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "reset@example.com", otp: resetOtp.devOtp, newPassword: "NewSecure123" }),
+    });
+    assert.equal(reset.status, 200);
+    const loginOtp = await fetch(`${baseUrl}/auth/email-otp/request`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "login", email: "reset@example.com" }),
+    }).then((response) => response.json());
+    const login = await fetch(`${baseUrl}/auth/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "reset@example.com", password: "NewSecure123", otp: loginOtp.devOtp }),
+    });
+    assert.equal(login.status, 200);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
   }
 });
 

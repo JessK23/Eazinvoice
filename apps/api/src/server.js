@@ -2415,6 +2415,39 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/auth/password-reset" && req.method === "POST") {
+      const body = await readBody(req);
+      const existing = api.getUserByEmail(body.email ?? "");
+      if (!existing) {
+        sendJson(res, 400, { error: "Unable to reset password. Check the email and OTP, then try again." });
+        return;
+      }
+      try {
+        if (useSupabaseEmailOtp) {
+          try {
+            await supabaseEmailOtpVerifier({ email: body.email, otp: body.otp });
+          } catch (supabaseError) {
+            try {
+              emailOtps.verify({ otp: body.otp, email: body.email, mode: "reset-password" });
+            } catch {
+              throw supabaseError;
+            }
+          }
+        } else {
+          emailOtps.verify({ otp: body.otp, email: body.email, mode: "reset-password" });
+        }
+        const passwordHash = hashPassword(body.newPassword);
+        const user = promoteAdmin(api.updateUserAuthDetails(existing.id, {
+          passwordHash,
+          emailVerified: true,
+        }));
+        sendJson(res, 200, { ok: true, user });
+      } catch (error) {
+        sendJson(res, 400, { error: /password/i.test(error.message || "") ? error.message : "Unable to reset password. Check the email and OTP, then try again." });
+      }
+      return;
+    }
+
     if (url.pathname === "/auth/google" && req.method === "POST") {
       const body = await readBody(req);
       const existing = api.getUserByEmail(body.email ?? "");

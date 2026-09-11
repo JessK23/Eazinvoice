@@ -49,7 +49,7 @@
       <nav class="nav nav-groups" aria-label="EazInvoice workspace navigation">
         <div class="nav-section-label">Command Center</div>
         <a class="nav-item active" href="/apps/web/dashboard.html#reports" data-page-link="reports">Dashboard</a>
-        <a class="nav-item nav-item-featured" href="/apps/web/dashboard.html#ai-assistant" data-page-link="ai-assistant">AI Agent</a>
+        <a class="nav-item nav-item-featured" href="/apps/web/dashboard.html#ai-agent" data-page-link="ai-agent">AI Agent</a>
         <a id="adminOperationsSideLink" class="nav-item" href="/apps/web/dashboard.html#admin-operations" data-page-link="admin-operations" hidden>Admin Operations</a>
 
         <div class="nav-section-label">Sales</div>
@@ -158,7 +158,7 @@
           <small id="contextAccessMeta">Workspace access</small>
         </div>
       </section>
-      <section id="ai-assistant" class="panel dashboard-page ai-workspace-page" data-dashboard-page="ai-assistant">
+      <section id="ai-agent" class="panel dashboard-page ai-workspace-page" data-dashboard-page="ai-agent">
         <div class="dashboard-head">
           <div>
             <span class="pill blue">Paid feature</span>
@@ -167,14 +167,14 @@
           </div>
           <a class="ghost" href="/apps/web/subscription.html">View AI plans</a>
         </div>
-        <section id="aiAssistantPanel" class="ai-assistant-card ai-assistant-card-hero">
+        <section id="aiAgentPanel" class="ai-assistant-card ai-assistant-card-hero">
           <div class="panel-head">
             <div>
               <span class="pill blue">Pro AI Agent</span>
               <h2>AI Agent Workspace</h2>
               <p class="hint">Ask naturally. The Agent uses registered EazInvoice tools, separates facts from calculations and recommendations, and never finalizes, posts, pays, files, or deletes records.</p>
             </div>
-            <span id="aiAssistantPlanBadge" class="pill gold">Upgrade to Pro</span>
+            <span id="aiAgentPlanBadge" class="pill gold">Upgrade to Pro</span>
           </div>
           <div id="aiQuotaPanel" class="ai-quota-panel" aria-live="polite">
             <div>
@@ -190,7 +190,7 @@
               <strong id="aiQuotaFeatures">Locked</strong>
             </div>
           </div>
-          <div id="aiAssistantResult" class="ai-chat-transcript" aria-live="polite">
+          <div id="aiAgentResult" class="ai-chat-transcript" aria-live="polite">
             <div class="ai-chat-message assistant">
               <div class="ai-avatar">AI</div>
               <div class="ai-bubble">
@@ -199,7 +199,7 @@
               </div>
             </div>
           </div>
-          <p id="aiAssistantStatus" class="inline-status" hidden></p>
+          <p id="aiAgentStatus" class="inline-status" hidden></p>
           <div class="ai-prompt-chips">
             <button id="aiInvoiceExample" class="ghost small" type="button">Draft invoice</button>
             <button id="aiPoExample" class="ghost small" type="button">Draft PO / WO</button>
@@ -1258,7 +1258,7 @@
           <article class="quick-card"><strong>WordPress plugin SOP</strong><span>Install, configure API access, use free plugin features, validate paid access, and prepare SVN releases.</span><a class="ghost small" href="/apps/web/user-manual-web.html#plugin-manual">Open SOP</a></article>
           <article class="quick-card"><strong>Android app manual</strong><span>Mobile app testing, Play Store release checklist, and app signing safety.</span><a class="ghost small" href="/apps/web/user-manual-web.html#android-manual">Open guide</a></article>
           <article class="quick-card"><strong>Release verification</strong><span>Web, Razorpay, WordPress.org, Android, and go/no-go checks before production changes.</span><a class="ghost small" href="/docs/release-and-verification-sop.md" target="_blank" rel="noopener noreferrer">Open SOP</a></article>
-          <article class="quick-card"><strong>AI Agent roadmap</strong><span>Planned upgrade path from the current AI Assistant to a controlled AI Agent.</span><a class="ghost small" href="/docs/ai-agent-roadmap.md" target="_blank" rel="noopener noreferrer">Open roadmap</a></article>
+          <article class="quick-card"><strong>AI Agent roadmap</strong><span>Planned upgrade path from the established AI Agent foundation to deeper domain coverage.</span><a class="ghost small" href="/docs/ai-agent-roadmap.md" target="_blank" rel="noopener noreferrer">Open roadmap</a></article>
         </div>
       </section>
       <section id="admin-operations" class="panel dashboard-page" data-dashboard-page="admin-operations">
