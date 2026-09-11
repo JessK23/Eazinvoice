@@ -13,7 +13,7 @@
   <div id="installRisk" class="system-banner warning" hidden>Development API endpoint. Release builds must use HTTPS.</div>
 
   <main class="mobile-shell">
-    <header class="top-app-bar">
+    <header id="topAppBar" class="top-app-bar" hidden>
       <div class="brand-lockup">
         <img src="./assets/logo-icon.png" alt="" />
         <div>
@@ -24,7 +24,7 @@
       <button id="refreshButton" class="icon-action" type="button" aria-label="Refresh workspace" hidden>↻</button>
     </header>
 
-    <section class="workspace-bar" aria-label="Current business workspace">
+    <section id="workspaceBar" class="workspace-bar" aria-label="Current business workspace" hidden>
       <div>
         <strong id="profileName">Not signed in</strong>
         <span id="profileMeta">Configure API and sign in</span>
@@ -33,7 +33,7 @@
       <button id="logoutButton" class="text-action" type="button" hidden>Logout</button>
     </section>
 
-    <form id="apiBaseForm" class="endpoint-form">
+    <form id="apiBaseForm" class="endpoint-form" hidden>
       <label>
         <span>API</span>
         <input id="apiBase" name="apiBase" inputmode="url" autocomplete="url" />
@@ -46,13 +46,13 @@
     <section id="content" class="content-area"></section>
 
     <nav id="bottomNav" class="bottom-nav" aria-label="Primary mobile navigation">
-      <button class="active" type="button" data-route="home">Home</button>
-      <button type="button" data-route="sales">Sales</button>
-      <button type="button" data-route="purchases">Purchases</button>
-      <button type="button" data-route="money">Money</button>
-      <button type="button" data-route="reports">Reports</button>
-      <button type="button" data-route="more">More</button>
+      <button class="active" type="button" data-route="home"><span aria-hidden="true">⌂</span><small>Home</small></button>
+      <button type="button" data-route="sales"><span aria-hidden="true">▣</span><small>Sales</small></button>
+      <button type="button" data-route="purchases"><span aria-hidden="true">▤</span><small>Purchases</small></button>
+      <button type="button" data-route="money"><span aria-hidden="true">₹</span><small>Accounting</small></button>
+      <button type="button" data-route="more"><span aria-hidden="true">⋯</span><small>More</small></button>
     </nav>
+    <span data-route="reports" hidden aria-hidden="true"></span>
   </main>
 
   <script type="module" src="./app.js"></script>

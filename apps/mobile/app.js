@@ -24,6 +24,9 @@ const state = {
   requestEpoch: 0,
   unsavedForm: false,
   authMode: "login",
+  reportFinancialYear: "",
+  aiConversation: [],
+  aiRobotState: "idle",
   data: emptyData(),
 };
 
@@ -282,13 +285,19 @@ const api = {
     }
   },
   requestOtp(email, mode = "login") {
-    return this.request("/auth/email-otp/request", { method: "POST", body: { email, mode } });
+    return this.request("/auth/email-otp/request", { method: "POST", body: { email, mode, client: "mobile" } });
+  },
+  signup(name, email, password, phone, otp) {
+    return this.request("/auth/signup", { method: "POST", body: { name, email, password, phone, otp, subscriberType: "individual" } });
   },
   login(email, password, otp) {
     return this.request("/auth/login", { method: "POST", body: { email, password, otp } });
   },
   resetPassword(email, otp, newPassword) {
     return this.request("/auth/password-reset", { method: "POST", body: { email, otp, newPassword } });
+  },
+  aiAgent(command) {
+    return this.request("/ai-agent/command", { method: "POST", body: { command, ...workspaceParams() } });
   },
   me() {
     return this.request("/me");
@@ -530,7 +539,7 @@ function setStatus(message, tone = "info") {
 }
 
 function normalizedAuthMode(mode) {
-  return mode === "reset" ? "reset" : "login";
+  return ["signup", "reset"].includes(mode) ? mode : "login";
 }
 
 function setAuthMode(mode) {
@@ -616,7 +625,7 @@ async function hydrateWorkspaceData() {
 async function refreshBusinessData() {
   if (!state.token || !state.activeWorkspace) return;
   const epoch = ++state.requestEpoch;
-  const params = workspaceParams();
+  const params = workspaceParams(state.reportFinancialYear ? { financialYear: state.reportFinancialYear } : {});
   const guarded = async (promise, fallback) => {
     try {
       return await promise;
@@ -769,6 +778,20 @@ function bindEvents() {
     }
     const routeButton = event.target.closest("[data-route]");
     const action = event.target.closest("[data-action]");
+    const promptButton = event.target.closest("[data-agent-prompt]");
+    if (promptButton) {
+      const input = document.querySelector('[data-form="ai-agent"] input[name="command"]');
+      if (input) input.value = promptButton.dataset.agentPrompt || "";
+      if (input) input.form.requestSubmit();
+      return;
+    }
+    const addItem = event.target.closest("[data-add-item]");
+    if (addItem) {
+      event.preventDefault();
+      const editor = addItem.closest("[data-item-editor]");
+      if (editor) editor.insertAdjacentHTML("beforeend", itemRowMarkup());
+      return;
+    }
     if (routeButton) {
       routeTo(routeButton.dataset.route);
     }
@@ -789,6 +812,10 @@ function bindEvents() {
     if (event.target?.closest("[data-form]")) state.unsavedForm = true;
   });
   document.body.addEventListener("change", (event) => {
+    if (event.target?.matches("[data-report-period]")) {
+      state.reportFinancialYear = event.target.value;
+      void refreshBusinessData();
+    }
     if (event.target?.closest("[data-form]")) state.unsavedForm = true;
   });
   window.addEventListener("online", () => {
@@ -817,6 +844,8 @@ function bindEvents() {
 async function submitAuth() {
   if (state.authMode === "reset") {
     await resetPassword();
+  } else if (state.authMode === "signup") {
+    await signup();
   } else {
     await login();
   }
@@ -831,8 +860,8 @@ async function requestOtp() {
     setStatus("Enter your email address first.", "error");
     return;
   }
-  const otpMode = state.authMode === "reset" ? "reset-password" : "login";
-  const otpLabel = otpMode === "reset-password" ? "Reset" : "Login";
+  const otpMode = state.authMode === "reset" ? "reset-password" : state.authMode === "signup" ? "signup" : "login";
+  const otpLabel = otpMode === "reset-password" ? "Reset" : otpMode === "signup" ? "Signup" : "Login";
   await withBusy(async () => {
     const response = await api.requestOtp(email, otpMode);
     const otpInput = document.getElementById("otp");
@@ -867,6 +896,30 @@ async function login() {
     await refreshSessionAndData();
     setStatus("Signed in.");
   }, "Signing in...");
+}
+
+async function signup() {
+  state.lastError = "";
+  setStatus("");
+  const name = document.getElementById("name")?.value.trim() || "";
+  const email = document.getElementById("email")?.value.trim() || "";
+  const phone = document.getElementById("phone")?.value.trim() || "";
+  const password = document.getElementById("password")?.value || "";
+  const otp = document.getElementById("otp")?.value.trim() || "";
+  if (!name || !email || !phone || !password || !otp) {
+    setStatus("Enter your name, email, mobile number, password, and OTP.", "error");
+    return;
+  }
+  await withBusy(async () => {
+    const payload = await api.signup(name, email, password, phone, otp);
+    state.token = payload.token || "";
+    state.user = payload.user || null;
+    if (!state.token) throw new MobileApiError("Signup succeeded but no session token was returned.", 500, payload);
+    await saveSession();
+    resetOtpTimer();
+    await refreshSessionAndData();
+    setStatus("Account created. Signed in.", "success");
+  }, "Creating account...");
 }
 
 async function resetPassword() {
@@ -1036,6 +1089,7 @@ async function handleForm(name, form) {
   } else if (name === "vendor") {
     await run(() => api.createVendor({ ...workspaceParams(), name: value("name"), email: value("email"), gstin: value("gstin") }), "Vendor saved.");
   } else if (name === "invoice") {
+    const items = documentItems(data);
     await run(() => api.createInvoice({
       ...workspaceParams(),
       customerName: value("customerName"),
@@ -1044,12 +1098,7 @@ async function handleForm(name, form) {
       dueDate: value("dueDate") || value("invoiceDate") || today(),
       status: value("status") || "draft",
       currency: "INR",
-      items: [{
-        description: value("description"),
-        quantity: amount("quantity") || 1,
-        rate: amount("rate"),
-        taxRate: amount("taxRate"),
-      }],
+      items,
       idempotencyKey: idempotencyKey("invoice"),
     }), "Invoice sent to backend. Totals shown are server-authoritative.");
   } else if (name === "payment") {
@@ -1090,6 +1139,7 @@ async function handleForm(name, form) {
       idempotencyKey: idempotencyKey("payment-reversal"),
     }), "Payment reversal recorded. This is not a refund.");
   } else if (name === "purchase-order") {
+    const items = documentItems(data);
     await run(() => api.createPurchaseOrder({
       ...workspaceParams(),
       vendorName: value("vendorName"),
@@ -1097,14 +1147,22 @@ async function handleForm(name, form) {
       poDate: value("poDate") || today(),
       status: "draft",
       currency: "INR",
-      items: [{
-        description: value("description"),
-        quantity: amount("quantity") || 1,
-        rate: amount("rate"),
-        taxRate: amount("taxRate"),
-      }],
+      items,
       idempotencyKey: idempotencyKey("purchase-order"),
     }), "PO draft saved. Issue it when ready; it has no accounting impact.");
+  } else if (name === "work-order") {
+    const items = documentItems(data);
+    await run(() => api.createPurchaseOrder({
+      ...workspaceParams(),
+      documentType: "wo",
+      vendorName: value("vendorName"),
+      billToName: value("vendorName"),
+      poDate: value("poDate") || today(),
+      status: "draft",
+      currency: "INR",
+      items,
+      idempotencyKey: idempotencyKey("work-order"),
+    }), "Work order draft saved. Issue it when ready; it has no accounting impact.");
   } else if (name === "vendor-bill") {
     await run(() => api.createVendorBill({
       ...workspaceParams(),
@@ -1150,6 +1208,28 @@ async function handleForm(name, form) {
       reference: value("reference"),
       idempotencyKey: idempotencyKey("vendor-recovery"),
     }), "Vendor recovery recorded.");
+  } else if (name === "ai-agent") {
+    const command = value("command");
+    if (!command) {
+      setStatus("Ask a business question first.", "error");
+      return;
+    }
+    state.aiRobotState = "thinking";
+    state.aiConversation.push({ role: "user", text: command });
+    render();
+    await withBusy(async () => {
+      try {
+        const result = await api.aiAgent(command);
+        state.aiConversation.push({ role: "agent", result });
+        state.aiRobotState = "success";
+        setStatus("Insight ready.");
+      } catch (error) {
+        state.aiConversation.push({ role: "error", text: error.message || "The Agent could not complete that request." });
+        state.aiRobotState = "error";
+        setStatus("The Agent could not complete that request.", "error");
+      }
+      render();
+    }, "Analysing your business data...");
   } else if (name === "settings") {
     state.apiBase = normalizeApiBase(value("apiBase"));
     saveSettings();
@@ -1180,6 +1260,7 @@ function render() {
     money: renderMoney,
     reports: renderReports,
     more: renderMore,
+    agent: renderAgent,
   };
   dom.content.innerHTML = (renderers[state.route] || renderHome)();
   cacheDom();
@@ -1191,13 +1272,16 @@ function renderChrome() {
   dom.offlineBanner.hidden = state.online;
   dom.installRisk.hidden = !isReleaseUnsafeApiBase(state.apiBase);
   dom.routeTitle.textContent = routeLabel(state.route);
-  dom.profileName.textContent = state.user?.name || state.user?.email || "Not signed in";
-  dom.profileMeta.textContent = state.activeWorkspace ? `${workspaceName(state.activeWorkspace)} - ${titleCase(currentRole())}` : state.apiBase;
+  dom.profileName.textContent = state.user?.name || state.user?.email || "";
+  dom.profileMeta.textContent = state.activeWorkspace ? `${workspaceName(state.activeWorkspace)} - ${titleCase(currentRole())}` : "";
   dom.apiBase.value = state.apiBase;
   dom.logoutButton.hidden = !state.token;
   dom.refreshButton.hidden = !state.token;
   dom.workspaceSelect.hidden = !state.token || state.workspaces.length <= 1;
   dom.bottomNav.hidden = !state.token;
+  document.getElementById("topAppBar")?.toggleAttribute("hidden", !state.token);
+  document.getElementById("workspaceBar")?.toggleAttribute("hidden", !state.token);
+  dom.apiBaseForm.hidden = true;
   if (state.token) {
     dom.workspaceSelect.innerHTML = state.workspaces.map((workspace) => (
       `<option value="${escapeAttr(workspaceKey(workspace))}" ${workspace === state.activeWorkspace ? "selected" : ""}>${escapeHtml(workspaceName(workspace))} - ${escapeHtml(titleCase(workspace.role || "owner"))}</option>`
@@ -1216,6 +1300,7 @@ function routeLabel(route) {
     money: "Money",
     reports: "Reports",
     more: "More",
+    agent: "AI Agent",
   }[route] || "Home";
 }
 
@@ -1225,30 +1310,38 @@ function workspaceName(workspace) {
 
 function renderLogin() {
   const resetMode = state.authMode === "reset";
-  const eyebrow = resetMode ? "Account recovery" : "Secure sign in";
-  const heading = resetMode ? "Reset your password" : "EazInvoice Android";
+  const signupMode = state.authMode === "signup";
+  const eyebrow = resetMode ? "Account recovery" : signupMode ? "Create account" : "Secure sign in";
+  const heading = resetMode ? "Reset your password" : signupMode ? "Create your EazInvoice account" : "Sign in to EazInvoice";
   const description = resetMode
     ? "Request a reset OTP for your registered business email, verify it, then set a new password before signing in."
-    : "Use the same email OTP identity and business access as the Web app. The backend stays authoritative for totals, tax, postings, compliance, and close controls.";
-  const otpLabel = resetMode ? "Reset OTP" : "Login OTP";
-  const otpPlaceholder = resetMode ? "Enter reset OTP" : "Enter login OTP";
-  const otpButtonLabel = resetMode ? "Request reset OTP" : "Request OTP";
-  const submitLabel = resetMode ? "Reset password" : "Sign in";
+    : signupMode ? "Create an account with email verification to access your EazInvoice workspace."
+      : "Use your email OTP and password to access your EazInvoice workspace.";
+  const otpLabel = resetMode ? "Reset OTP" : signupMode ? "Signup OTP" : "Login OTP";
+  const otpPlaceholder = resetMode ? "Enter reset OTP" : signupMode ? "Enter signup OTP" : "Enter login OTP";
+  const otpButtonLabel = resetMode ? "Request reset OTP" : signupMode ? "Request signup OTP" : "Request OTP";
+  const submitLabel = resetMode ? "Reset password" : signupMode ? "Create account" : "Sign in";
   const note = resetMode
     ? "After resetting, switch back to Sign in, request a login OTP, and use your new password."
-    : "OTP verification prevents unauthorized devices from signing in. Do not share your codes.";
+    : "OTP verification protects your account. Do not share your code.";
   return `
     <section class="panel auth-panel">
       <span class="eyebrow">${eyebrow}</span>
       <h1>${heading}</h1>
       <p>${description}</p>
       <div class="auth-mode-toggle" role="tablist" aria-label="Authentication options">
-        <button type="button" data-auth-mode="login" class="${resetMode ? "" : "active"}" aria-pressed="${resetMode ? "false" : "true"}">Sign in</button>
+        <button type="button" data-auth-mode="login" class="${!resetMode && !signupMode ? "active" : ""}" aria-pressed="${!resetMode && !signupMode ? "true" : "false"}">Sign in</button>
+        <button type="button" data-auth-mode="signup" class="${signupMode ? "active" : ""}" aria-pressed="${signupMode ? "true" : "false"}">Sign up</button>
         <button type="button" data-auth-mode="reset" class="${resetMode ? "active" : ""}" aria-pressed="${resetMode ? "true" : "false"}">Forgot password?</button>
       </div>
-      <form id="authForm" class="form-stack" data-auth-mode="${resetMode ? "reset" : "login"}">
+      <form id="authForm" class="form-stack" data-auth-mode="${resetMode ? "reset" : signupMode ? "signup" : "login"}">
         <label>Email<input id="email" type="email" autocomplete="email" placeholder="owner@example.com" required /></label>
-        ${resetMode ? `
+        ${signupMode ? `
+          <label>Name<input id="name" autocomplete="name" placeholder="Your name" required /></label>
+          <label>Mobile number<input id="phone" inputmode="tel" autocomplete="tel" placeholder="10-digit mobile number" required /></label>
+          <label>${otpLabel}<input id="otp" inputmode="numeric" autocomplete="one-time-code" placeholder="Enter signup OTP" /></label>
+          <label>Password<input id="password" type="password" autocomplete="new-password" placeholder="Create password" required /></label>
+        ` : resetMode ? `
           <label>${otpLabel}<input id="otp" inputmode="numeric" autocomplete="one-time-code" placeholder="${otpPlaceholder}" /></label>
           <label>New password<input id="password" type="password" autocomplete="new-password" placeholder="Create new password" required /></label>
           <label>Confirm new password<input id="confirmPassword" type="password" autocomplete="new-password" placeholder="Repeat new password" required /></label>
@@ -1299,19 +1392,39 @@ function renderHome() {
   const payables = metricValue(["payables", "accountsPayable", "apBalance"]);
   const bank = metricValue(["bank", "cash", "bankCash", "bookBalance"]);
   return `
-    <section class="cockpit">
-      ${metricCard("Revenue", money(revenue), "Backend report")}
-      ${metricCard("Expenses", money(expenses), "Backend report")}
-      ${metricCard("Profit/Loss", money(profit), "Current view")}
-      ${metricCard("Receivables", money(receivables), `${state.data.invoices.length} invoices`)}
-      ${metricCard("Payables", money(payables), `${state.data.vendorBills.length} bills`)}
-      ${metricCard("Bank/Cash", money(bank), `${state.data.bankAccounts.length} accounts`)}
+    <section class="dashboard-greeting">
+      <span class="eyebrow">${escapeHtml(workspaceName(state.activeWorkspace))}</span>
+      <h1>Hello${state.user?.name ? `, ${escapeHtml(state.user.name)}` : ""}</h1>
+      <p>Your business at a glance</p>
+    </section>
+    <section class="dashboard-primary" aria-label="Primary financial summary">
+      ${financialCard("sales", "↗", "Total sales", money(revenue), "From backend report")}
+      ${financialCard("receivables", "◎", "Outstanding receivables", money(receivables), `${state.data.invoices.length} invoices`)}
+      ${financialCard("payables", "↓", "Outstanding payables", money(payables), `${state.data.vendorBills.length} bills`)}
     </section>
     <section class="panel">
-      <div class="section-head">
-        <div><span class="eyebrow">Risk summary</span><h2>Needs attention</h2></div>
-        <button class="tiny" type="button" data-route="reports">Review</button>
+      <div class="section-head"><div><span class="eyebrow">Business pulse</span><h2>More financials</h2></div></div>
+      <div class="secondary-metrics">
+        ${metricCard("Expenses", money(expenses), "Backend report")}
+        ${metricCard("Profit/Loss", money(profit), "Current view")}
+        ${metricCard("Bank/Cash", money(bank), `${state.data.bankAccounts.length} accounts`)}
       </div>
+    </section>
+    <section class="panel">
+      <div class="section-head"><div><span class="eyebrow">Next steps</span><h2>Quick actions</h2></div><span class="pill">${canMutate() ? "Enabled" : "Read-only"}</span></div>
+      <div class="action-grid">
+        ${actionTile("▣", "New invoice", "sales", "primary")}
+        ${actionTile("₹", "Receivables", "money")}
+        ${actionTile("▤", "Purchase order", "purchases")}
+        ${actionTile("♙", "Customers", "sales")}
+        ${actionTile("♧", "Vendors", "purchases")}
+        ${actionTile("▥", "Reports", "reports")}
+        ${actionTile("⌁", "Banking", "money")}
+        ${actionTile("⋯", "More", "more")}
+      </div>
+    </section>
+    <section class="panel attention-panel">
+      <div class="section-head"><div><span class="eyebrow">Review</span><h2>Needs attention</h2></div><button class="tiny" type="button" data-route="reports">Review</button></div>
       <div class="status-grid">
         ${riskCard("Overdue receivables", state.data.receivables?.overdueTotal || state.data.receivables?.summary?.overdueTotal || 0)}
         ${riskCard("Payables due", state.data.payables?.dueTotal || state.data.payables?.summary?.dueTotal || 0)}
@@ -1320,34 +1433,51 @@ function renderHome() {
       </div>
     </section>
     <section class="panel">
-      <div class="section-head">
-        <div><span class="eyebrow">Quick actions</span><h2>Common mobile work</h2></div>
-        <span class="pill">${canMutate() ? "Enabled" : "Read-only"}</span>
-      </div>
-      <div class="quick-actions">
-        <button class="primary" type="button" data-route="sales">New invoice</button>
-        <button class="secondary" type="button" data-route="sales">Record payment</button>
-        <button class="secondary" type="button" data-route="purchases">Vendor bill</button>
-        <button class="secondary" type="button" data-route="money">Receivables</button>
-      </div>
-    </section>
-    <section class="panel">
-      <div class="section-head compact"><h2>Recent financial records</h2><span class="pill">Live API</span></div>
-      ${recordList([...state.data.invoices, ...state.data.vendorBills, ...state.data.creditNotes].slice(0, 8), "No recent records yet.")}
+      <div class="section-head compact"><div><span class="eyebrow">Live API</span><h2>Recent activity</h2></div><button class="tiny" type="button" data-route="sales">View all</button></div>
+      ${activityList([...state.data.invoices, ...state.data.vendorBills, ...state.data.creditNotes].slice(0, 8), "No recent records yet.")}
     </section>
   `;
 }
 
+function financialCard(kind, icon, label, value, hint) {
+  return `<article class="financial-card ${kind}"><span class="metric-icon" aria-hidden="true">${icon}</span><div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(hint)}</small></div></article>`;
+}
+
+function actionTile(icon, label, route, tone = "") {
+  return `<button class="action-tile ${tone}" type="button" data-route="${escapeAttr(route)}"><span class="metric-icon" aria-hidden="true">${icon}</span><span>${escapeHtml(label)}</span></button>`;
+}
+
+function activityList(records, empty) {
+  if (!records?.length) return `<div class="empty-state">${escapeHtml(empty)}</div>`;
+  return `<div class="activity-list">${records.map((record) => {
+    const title = record.invoiceNumber || record.billNumber || record.creditNoteNumber || record.vendorCreditNumber || record.poNumber || record.id || "Record";
+    const amount = record.total || record.amount || record.balanceAmount || record.outstandingAmount || 0;
+    const status = String(record.status || record.paymentStatus || record.reconciliationStatus || "Review");
+    const normalized = status.toLowerCase();
+    const kind = record.vendorName || record.billNumber ? "▤" : record.creditNoteNumber ? "↺" : "▣";
+    const badgeClass = /paid|finalized|issued/.test(normalized) ? "paid" : /overdue|review|due/.test(normalized) ? "review" : /archived/.test(normalized) ? "archived" : "";
+    return `<article class="activity-row"><span class="activity-icon" aria-hidden="true">${kind}</span><div><strong>${escapeHtml(title)}</strong><span>${escapeHtml(record.customerName || record.vendorName || record.description || "Financial record")}</span></div><div class="activity-amount"><strong>${escapeHtml(money(amount, record.currency || "INR"))}</strong><small class="status-badge ${badgeClass}">${escapeHtml(titleCase(status))}</small></div></article>`;
+  }).join("")}</div>`;
+}
+
 function renderSales() {
   return `
-    <section class="tabs-panel">
-      ${formCard("Create Invoice", "invoice", `
+    <section class="document-header"><button class="tiny" type="button" data-route="home">← Back</button><div><span class="eyebrow">Sales</span><h1>New Invoice</h1></div><span class="status-badge">Draft</span></section>
+    <section class="panel document-card">
+      <form class="form-stack" data-form="invoice">
+        <div class="section-head compact"><div><span class="eyebrow">Document details</span><h2>Customer and dates</h2></div></div>
         <label>Customer<input name="customerName" required placeholder="Customer or business name" /></label>
-        <div class="split"><label>Invoice Date<input name="invoiceDate" type="date" value="${today()}" /></label><label>Due Date<input name="dueDate" type="date" /></label></div>
-        <label>Item / Service<input name="description" required placeholder="Consulting service" /></label>
-        <div class="split"><label>Qty<input name="quantity" type="number" step="0.01" value="1" /></label><label>Rate<input name="rate" type="number" step="0.01" required /></label></div>
-        <div class="split"><label>GST %<input name="taxRate" type="number" step="0.01" value="18" /></label><label>Status<select name="status"><option value="draft">Save Draft</option><option value="issued">Issue Invoice</option><option value="created">Create</option></select></label></div>
-      `)}
+        <div class="split"><label>Invoice date<input name="invoiceDate" type="date" value="${today()}" /></label><label>Due date<input name="dueDate" type="date" /></label></div>
+        <div class="section-head compact"><div><span class="eyebrow">Line items</span><h2>What are you billing?</h2></div></div>
+        <div class="item-editor" data-item-editor>${itemRowMarkup()}</div>
+        <button class="secondary full" type="button" data-add-item>Add item</button>
+        <div class="totals-card"><span>Totals calculated by EazInvoice</span><strong>Server-authoritative after save</strong><small>GST and final numbering are applied by the backend.</small></div>
+        <label>Status<select name="status"><option value="draft">Save Draft</option><option value="issued">Issue Invoice</option><option value="created">Create</option></select></label>
+        <button class="primary full" type="submit">Save Draft / Create Invoice</button>
+      </form>
+    </section>
+    <section class="panel"><div class="section-head compact"><div><span class="eyebrow">Saved work</span><h2>Invoices</h2></div></div>${recordList(state.data.invoices, "No invoices yet.")}</section>
+    <details class="workflow-card"><summary>Payments, credits and refunds</summary><div class="tabs-panel">
       ${formCard("Record Payment", "payment", `
         ${selectField("invoiceId", "Invoice", state.data.invoices, "invoiceNumber")}
         <div class="split"><label>Amount<input name="amount" type="number" step="0.01" required /></label><label>Date<input name="paymentDate" type="date" value="${today()}" /></label></div>
@@ -1369,23 +1499,41 @@ function renderSales() {
         <label>Reason<input name="reason" required placeholder="Failed/invalid payment reason" /></label>
         <p class="form-note">A reversal means the original payment should no longer count. A refund returns money after a valid payment.</p>
       `)}
-    </section>
+    </div></details>
     <section class="panel">${sectionTitle("Customers", "Outstanding and GST posture")}${partyList(state.data.customers, "No customers from API yet.")}</section>
-    <section class="panel">${sectionTitle("Invoices", "Authoritative backend totals")}${recordList(state.data.invoices, "No invoices yet.")}</section>
-    <section class="panel">${sectionTitle("Credit Notes / Refunds", "Append-only corrections")}${recordList([...state.data.creditNotes, ...state.data.customerRefunds], "No credit notes or refunds yet.")}</section>
   `;
 }
 
 function renderPurchases() {
   return `
+    <section class="document-header"><button class="tiny" type="button" data-route="home">← Back</button><div><span class="eyebrow">Purchases</span><h1>New Purchase Order</h1></div><span class="status-badge">Draft</span></section>
     <section class="notice-panel">A Purchase Order records intention only. A vendor bill records the accounting liability.</section>
-    <section class="tabs-panel">
-      ${formCard("Purchase Order", "purchase-order", `
+    <section class="panel document-card">
+      <form class="form-stack" data-form="purchase-order">
+        <div class="section-head compact"><div><span class="eyebrow">Document details</span><h2>Vendor and dates</h2></div></div>
         <label>Vendor<input name="vendorName" required placeholder="Vendor name" /></label>
-        <label>Item / Service<input name="description" required placeholder="Goods or service requested" /></label>
-        <div class="split"><label>Qty<input name="quantity" type="number" step="0.01" value="1" /></label><label>Rate<input name="rate" type="number" step="0.01" required /></label></div>
-        <div class="split"><label>GST %<input name="taxRate" type="number" step="0.01" value="18" /></label><label>PO Date<input name="poDate" type="date" value="${today()}" /></label></div>
-      `)}
+        <div class="split"><label>PO date<input name="poDate" type="date" value="${today()}" /></label><label>Expected date<input name="expectedDate" type="date" /></label></div>
+        <div class="section-head compact"><div><span class="eyebrow">Line items</span><h2>What are you ordering?</h2></div></div>
+        <div class="item-editor" data-item-editor>${itemRowMarkup()}</div>
+        <button class="secondary full" type="button" data-add-item>Add item</button>
+        <div class="totals-card"><span>Purchase order total</span><strong>Calculated by EazInvoice</strong><small>Issuing a PO does not create a payable journal.</small></div>
+        <button class="primary full" type="submit">Save PO Draft</button>
+      </form>
+    </section>
+    <section class="panel"><div class="section-head compact"><div><span class="eyebrow">Saved work</span><h2>Purchase Orders</h2></div></div>${recordList(state.data.purchaseOrders, "No purchase orders yet.")}</section>
+    <section class="panel document-card">
+      <div class="section-head compact"><div><span class="eyebrow">Operations</span><h2>New Work Order</h2></div><span class="status-badge">Non-accounting</span></div>
+      <form class="form-stack" data-form="work-order">
+        <label>Vendor / party<input name="vendorName" required placeholder="Customer, vendor or project party" /></label>
+        <div class="split"><label>Work order date<input name="poDate" type="date" value="${today()}" /></label><label>Expected completion<input name="expectedDate" type="date" /></label></div>
+        <label>Project / reference<input name="reference" placeholder="Optional project or reference" /></label>
+        <div class="item-editor" data-item-editor>${itemRowMarkup()}</div>
+        <button class="secondary full" type="button" data-add-item>Add work item</button>
+        <label>Notes<textarea name="notes" rows="3" placeholder="Work description and notes"></textarea></label>
+        <button class="primary full" type="submit">Save Work Order Draft</button>
+      </form>
+    </section>
+    <details class="workflow-card"><summary>Vendor bills and supplier recovery</summary><div class="tabs-panel">
       ${formCard("Vendor Bill", "vendor-bill", `
         <label>Vendor<input name="vendorName" required /></label><label>Vendor Ref<input name="reference" /></label>
         <div class="split"><label>Bill Date<input name="billDate" type="date" value="${today()}" /></label><label>Due Date<input name="dueDate" type="date" /></label></div>
@@ -1409,10 +1557,8 @@ function renderPurchases() {
         <div class="split"><label>Amount<input name="amount" type="number" step="0.01" required /></label><label>Received Date<input name="receivedDate" type="date" value="${today()}" /></label></div>
         <label>Reference<input name="reference" /></label><label>Reason<input name="reason" required /></label>
       `)}
-    </section>
+    </div></details>
     <section class="panel">${sectionTitle("Vendors", "Payable and supplier-credit posture")}${partyList(state.data.vendors, "No vendors from API yet.")}</section>
-    <section class="panel">${sectionTitle("Purchase Orders", "No accounting impact")}${recordList(state.data.purchaseOrders, "No purchase orders yet.")}</section>
-    <section class="panel">${sectionTitle("Vendor Bills / Credits", "A/P and input tax")}${recordList([...state.data.vendorBills, ...state.data.vendorCredits, ...state.data.vendorRefunds], "No vendor accounting records yet.")}</section>
   `;
 }
 
@@ -1431,29 +1577,44 @@ function renderMoney() {
 
 function renderReports() {
   return `
-    <section class="panel">${sectionTitle("Profit & Loss", "Summary first")}${jsonSummary(state.data.profitLoss, ["revenue", "income", "expenses", "netProfit", "profit"])}</section>
-    <section class="panel">${sectionTitle("Balance Sheet", "Derived from ledger")}${jsonSummary(state.data.balanceSheet, ["assets", "liabilities", "equity", "isBalanced", "completenessStatus"])}</section>
-    <section class="panel">${sectionTitle("Trial Balance", "Read-only mobile review")}${jsonSummary(state.data.trialBalance, ["debits", "credits", "isBalanced", "difference"])}</section>
-    <section class="panel">${sectionTitle("General Ledger", "Search and dense journal review remain Web-preferred")}${recordList(state.data.trialBalance?.accounts || state.data.trialBalance?.entries || [], "Open Web for detailed ledger drill-down.")}</section>
+    <section class="report-header"><div><span class="eyebrow">Accounting</span><h1>Reports</h1><p>Summary-first financial review</p></div><label class="period-control">Financial year<select data-report-period>${periodOptions()}</select></label></section>
+    <section class="report-card-grid">
+      ${reportCard("Profit & Loss", "Revenue and net result", state.data.profitLoss, ["revenue", "netProfit", "profit"])}
+      ${reportCard("Balance Sheet", "Assets, liabilities and equity", state.data.balanceSheet, ["assets", "liabilities", "equity"])}
+      ${reportCard("Trial Balance", "Debit and credit control", state.data.trialBalance, ["debits", "credits", "difference"])}
+      ${reportCard("Receivables", "Customer ageing", state.data.receivables, ["totalOutstanding", "overdueTotal"])}
+      ${reportCard("Payables", "Vendor ageing", state.data.payables, ["totalOutstanding", "overdueTotal"])}
+      ${reportCard("GST", "Prepared for review", state.data.gst, ["outputGst", "inputGst", "netGst"])}
+    </section>
+    <section class="panel report-detail">${sectionTitle("Profit & Loss", "Selected period")}${structuredReport(state.data.profitLoss, ["revenue", "income", "expenses", "netProfit", "profit", "grossProfit", "operatingProfit"])}</section>
+    <section class="panel report-detail">${sectionTitle("Balance Sheet", "Derived from ledger")}${structuredReport(state.data.balanceSheet, ["assets", "liabilities", "equity", "isBalanced", "completenessStatus"])}</section>
+    <section class="panel report-detail">${sectionTitle("Trial Balance", "Read-only mobile review")}${trialBalanceView(state.data.trialBalance)}</section>
+    <section class="panel report-detail">${sectionTitle("General Ledger", "Detailed search remains Web-preferred")}${recordList(state.data.trialBalance?.accounts || state.data.trialBalance?.entries || [], "Open Web for detailed ledger drill-down.")}</section>
   `;
 }
 
 function renderMore() {
   return `
-    <section class="panel">${sectionTitle("GST", "Output, input and review status")}${jsonSummary(state.data.gst, ["outputGst", "inputGst", "netGst", "needsReviewCount", "reconciliationStatus"])}</section>
-    <section class="panel">${sectionTitle("TDS", "Liabilities and needs-review")}${jsonSummary(state.data.tds, ["tdsPayable", "needsReviewCount", "transactionCount"])}</section>
-    <section class="panel">${sectionTitle("Compliance", "Prepared is not government-filed")}${jsonSummary(state.data.compliance, ["openTasks", "dueSoon", "overdue", "preparedCount", "filedCount"])}</section>
-    <section class="panel">
-      ${sectionTitle("Accounting Periods", "Close/reopen is Web-preferred unless controlled")}
-      ${recordList(state.data.periods, "No accounting periods returned.")}
-      <button class="secondary full" type="button" data-action="period-readiness">Check today's readiness</button>
+    <section class="panel agent-entry"><div class="section-head compact"><div><span class="eyebrow">Assistant</span><h2>EazInvoice AI Agent</h2></div><button class="primary compact" type="button" data-route="agent">Open Agent</button></div><p class="form-note">Your business assistant, always ready.</p></section>
+    <section class="report-header"><div><span class="eyebrow">Review centre</span><h1>Compliance</h1><p>Prepared for review; not filed through EazInvoice.</p></div><label class="period-control">Financial year<select data-report-period>${periodOptions()}</select></label></section>
+    <section class="compliance-grid">
+      ${complianceCard("GST", state.data.gst, ["outputGst", "inputGst", "netGst", "needsReviewCount", "reconciliationStatus"])}
+      ${complianceCard("TDS", state.data.tds, ["tdsPayable", "needsReviewCount", "transactionCount"])}
+      ${complianceCard("Readiness", state.data.compliance, ["openTasks", "dueSoon", "overdue", "preparedCount"])}
     </section>
+    <section class="panel compliance-note"><span class="status-badge review">Prepared / Not Filed</span><p>EazInvoice prepares and summarizes compliance data for review. Government returns are not filed through this mobile app.</p></section>
+    <section class="panel">${sectionTitle("Accounting Periods", "Open, soft closed or closed")}${periodList(state.data.periods)}</section>
     <section class="panel">
       ${sectionTitle("Year-End", "Preview only on mobile")}
       ${jsonSummary(state.data.yearEnd, ["financialYear", "ready", "blockerCount", "retainedEarningsImpact", "status"])}
       <button class="secondary full" type="button" data-action="preview-year-end">Preview year-end impact</button>
     </section>
     <section class="panel">${sectionTitle("Business / Team", "Secrets stay Web-preferred")}${businessGovernance()}</section>
+    <section class="panel account-deletion-card">
+      ${sectionTitle("Account", "Access and privacy")}
+      <p class="form-note">Request account deletion from your registered email. Financial, tax, payment and audit records may need to be retained.</p>
+      <a class="secondary full action-link" href="https://www.eazinvoice.com/apps/web/delete-account.html">Review deletion options</a>
+    </section>
     <section class="panel">
       ${sectionTitle("API Endpoint", "Development, staging or production")}
       <form class="form-stack" data-form="settings">
@@ -1465,8 +1626,67 @@ function renderMore() {
   `;
 }
 
+function renderAgent() {
+  const prompts = ["Show my sales summary for this month", "List my unpaid invoices", "Which are my top customers?", "What is my GST position?", "Give me insights to improve cash flow"];
+  return `<section class="agent-header"><button class="tiny" type="button" data-route="home">← Back</button><div><span class="eyebrow">EazInvoice</span><h1>AI Agent</h1><p>Your business assistant, always ready.</p></div></section>
+    <section class="agent-welcome"><div class="robot robot-${escapeAttr(state.aiRobotState)}" aria-hidden="true"><svg viewBox="0 0 120 120" role="presentation"><path class="robot-body" d="M28 48h64a10 10 0 0 1 10 10v36a10 10 0 0 1-10 10H28a10 10 0 0 1-10-10V58a10 10 0 0 1 10-10Z"/><rect class="robot-face" x="30" y="58" width="60" height="34" rx="10"/><circle class="robot-eye" cx="48" cy="75" r="4"/><circle class="robot-eye" cx="72" cy="75" r="4"/><path class="robot-mouth" d="M51 84c6 4 12 4 18 0"/><path class="robot-antenna" d="M60 48V31"/><circle class="robot-dot" cx="60" cy="25" r="6"/></svg></div><div><h2>${state.aiConversation.length ? "What would you like to explore next?" : "Hi! I’m your EazInvoice AI Agent."}</h2><p>${state.aiConversation.length ? "Ask another question about this business." : "How can I help you today?"}</p></div></section>
+    <section class="agent-conversation">${state.aiConversation.map(agentMessage).join("")}</section>
+    ${state.aiConversation.length ? "" : `<section class="prompt-grid">${prompts.map((prompt) => `<button class="secondary prompt-chip" type="button" data-agent-prompt="${escapeAttr(prompt)}">${escapeHtml(prompt)}</button>`).join("")}</section>`}
+    <form class="agent-input" data-form="ai-agent"><input name="command" aria-label="Ask about your business" placeholder="Ask about your business…" autocomplete="off" required /><button class="primary" type="submit">Send</button></form>`;
+}
+
+function agentMessage(message) {
+  if (message.role === "user") return `<div class="agent-message user-message"><span>You</span><p>${escapeHtml(message.text)}</p></div>`;
+  if (message.role === "error") return `<div class="agent-message error-message"><span>Agent</span><p>${escapeHtml(message.text)}</p><button class="secondary" type="button" data-route="agent">Retry</button></div>`;
+  const result = message.result || {};
+  return `<div class="agent-message agent-answer"><span>Agent · ${escapeHtml(result.title || "Business insight")}</span><p>${escapeHtml(result.reply || result.summary || "Insight prepared from authorized EazInvoice data.")}</p>${(result.sections || []).map((section) => `<div class="answer-section"><strong>${escapeHtml(section.title || "Details")}</strong>${(section.items || []).map((item) => `<p>${escapeHtml(item)}</p>`).join("")}</div>`).join("")}<small>Facts, calculations and recommendations are based on authorized business context.</small></div>`;
+}
+
 function metricCard(label, value, hint) {
   return `<article class="metric-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(hint)}</small></article>`;
+}
+
+function periodOptions() {
+  const selected = state.reportFinancialYear || currentFinancialYear();
+  const years = [...new Set([selected, currentFinancialYear(), `${new Date().getFullYear() - 1}-${String(new Date().getFullYear()).slice(-2)}`])];
+  return years.map((year) => `<option value="${escapeAttr(year)}" ${year === selected ? "selected" : ""}>${escapeHtml(year)}</option>`).join("");
+}
+
+function reportValue(source, key) {
+  const value = source?.[key] ?? source?.summary?.[key] ?? source?.totals?.[key];
+  return value === undefined ? null : value;
+}
+
+function reportCard(title, subtitle, source, keys) {
+  const entries = keys.map((key) => [key, reportValue(source, key)]).filter(([, value]) => value !== null);
+  return `<article class="report-summary-card"><span class="metric-icon" aria-hidden="true">▥</span><div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p>${entries.slice(0, 2).map(([key, value]) => `<strong>${escapeHtml(typeof value === "number" ? money(value) : String(value))}</strong><small>${escapeHtml(titleCase(key))}</small>`).join("") || `<small>No data returned</small>`}</div></article>`;
+}
+
+function structuredReport(source, keys) {
+  if (!source) return `<div class="empty-state">No backend data returned for this period.</div>`;
+  const rows = keys.map((key) => {
+    const value = reportValue(source, key);
+    if (value === null) return "";
+    const rendered = typeof value === "number" && !/count|days/i.test(key) ? money(value) : String(value);
+    const tone = typeof value === "number" && value < 0 ? "negative" : "";
+    return `<div class="report-row"><span>${escapeHtml(titleCase(key))}</span><strong class="${tone}">${escapeHtml(rendered)}</strong></div>`;
+  }).filter(Boolean).join("");
+  return rows || `<div class="empty-state">No summarized values returned for this period.</div>`;
+}
+
+function trialBalanceView(source) {
+  const accounts = source?.accounts || source?.entries;
+  if (!Array.isArray(accounts) || !accounts.length) return structuredReport(source, ["debits", "credits", "isBalanced", "difference"]);
+  return `<div class="report-table" role="table"><div class="report-table-head"><span>Account</span><span>Debit</span><span>Credit</span></div>${accounts.slice(0, 25).map((account) => `<div class="report-table-row"><span>${escapeHtml(account.accountName || account.name || "Account")}</span><strong>${escapeHtml(money(account.debit || account.debits || 0))}</strong><strong>${escapeHtml(money(account.credit || account.credits || 0))}</strong></div>`).join("")}</div>`;
+}
+
+function complianceCard(title, source, keys) {
+  return `<article class="compliance-card"><div class="section-head compact"><h2>${escapeHtml(title)}</h2><span class="status-badge review">Review</span></div>${structuredReport(source, keys)}</article>`;
+}
+
+function periodList(periods) {
+  if (!periods?.length) return `<div class="empty-state">No accounting periods returned.</div>`;
+  return `<div class="period-list">${periods.slice(0, 12).map((period) => { const status = String(period.status || "open"); const cls = status.toLowerCase().replace(/\s+/g, "-"); return `<div class="period-row"><div><strong>${escapeHtml(period.name || period.financialYear || period.period || "Accounting period")}</strong><small>${escapeHtml(period.financialYear || period.startDate || "")}</small></div><span class="status-badge ${cls}">${escapeHtml(titleCase(status))}</span></div>`; }).join("")}</div>`;
 }
 
 function riskCard(label, value) {
@@ -1493,6 +1713,23 @@ function formCard(title, formName, fields) {
       </form>
     </details>
   `;
+}
+
+function itemRowMarkup() {
+  return `<div class="item-row" data-item-row><label>Description<input name="description" required placeholder="Item or service" /></label><label>Qty<input name="quantity" type="number" min="0" step="0.01" value="1" /></label><label>Rate<input name="rate" type="number" min="0" step="0.01" required /></label><label>Tax %<input name="taxRate" type="number" min="0" step="0.01" value="18" /></label></div>`;
+}
+
+function documentItems(data) {
+  const descriptions = data.getAll("description");
+  const quantities = data.getAll("quantity");
+  const rates = data.getAll("rate");
+  const taxes = data.getAll("taxRate");
+  return descriptions.map((description, index) => ({
+    description: String(description || "").trim(),
+    quantity: number(quantities[index]) || 1,
+    rate: number(rates[index]),
+    taxRate: number(taxes[index]),
+  })).filter((item) => item.description);
 }
 
 function selectField(name, label, records, preferredKey) {

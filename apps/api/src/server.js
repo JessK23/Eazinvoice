@@ -1243,7 +1243,7 @@ async function supabaseAuthRequest(pathname, body) {
   return payload;
 }
 
-async function requestSupabaseEmailOtp({ email }) {
+async function requestSupabaseEmailOtp({ email, redirectTo = "" }) {
   const normalizedEmail = String(email || "").trim().toLowerCase();
   if (!normalizedEmail || !normalizedEmail.includes("@")) {
     throw new Error("Enter a valid email address for OTP verification");
@@ -1251,6 +1251,7 @@ async function requestSupabaseEmailOtp({ email }) {
   await supabaseAuthRequest("otp", {
     email: normalizedEmail,
     create_user: true,
+    ...(redirectTo ? { redirect_to: redirectTo } : {}),
   });
   return { email: normalizedEmail, expiresInSeconds: getEmailOtpExpirySeconds() };
 }
@@ -2255,7 +2256,10 @@ export function createServer(options = {}) {
         let provider = "local-email";
         if (useSupabaseEmailOtp) {
           try {
-            otp = await supabaseEmailOtpRequester({ email: body.email });
+            otp = await supabaseEmailOtpRequester({
+              email: body.email,
+              redirectTo: body.client === "mobile" ? "https://www.eazinvoice.com/apps/web/auth.html?tab=login" : "",
+            });
             provider = "supabase";
           } catch (supabaseError) {
             if (!authEmailSmtpReady()) {
