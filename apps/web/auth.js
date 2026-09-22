@@ -66,8 +66,7 @@ function postAuthDestination(response) {
   const admin = isAdminResponse(response);
   if (requestedNext === "admin-gateway" && admin) return "/apps/web/admin.html#gateway";
   if (requestedNext === "admin" && admin) return "/apps/web/admin.html";
-  if (admin) return "/apps/web/admin.html";
-  return "/apps/web/access.html";
+  return "/apps/web/dashboard.html";
 }
 
 function startGoogleOAuth(currentMode) {

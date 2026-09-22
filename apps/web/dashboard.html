@@ -3,8 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Eazinvoice Reports</title>
+  <title>Eazinvoice Dashboard</title>
   <link rel="stylesheet" href="./styles.css?v=20260723-ui-banner-refresh-5" />
+  <link rel="stylesheet" href="./design-system-v1.css?v=20260919-stage1" />
   <link rel="stylesheet" href="./sidebar-fix.css?v=20260724-sidebar-contrast-1" />
   <script src="./nav.js?v=20260614-responsive-menu" defer></script>
 </head>
@@ -30,7 +31,7 @@
             <strong id="profileDropdownName">User</strong>
             <span id="profileDropdownEmail">user@example.com</span>
           </div>
-          <a href="/apps/web/subscription.html">Account Settings</a>
+          <a href="/apps/web/access.html?tab=profile">Account Settings</a>
           <a id="profileAdminLink" href="/apps/web/admin.html" hidden>Admin Access</a>
           <button id="profileLogoutBtn" type="button">Sign-out</button>
         </div>
@@ -43,12 +44,13 @@
         <div class="mark"><img src="./assets/logo-mark.png?v=20260605-logo-refresh" alt="EazInvoice" /></div>
         <div>
           <div class="brand-name">Eazinvoice</div>
-          <div class="brand-sub">Reports</div>
+          <div class="brand-sub">Workspace</div>
         </div>
       </div>
       <nav class="nav nav-groups" aria-label="EazInvoice workspace navigation">
         <div class="nav-section-label">Command Center</div>
-        <a class="nav-item active" href="/apps/web/dashboard.html#reports" data-page-link="reports">Dashboard</a>
+        <a class="nav-item active" href="/apps/web/dashboard.html" data-page-link="home">Dashboard</a>
+        <a class="nav-item" href="/apps/web/dashboard.html#reports" data-page-link="reports">Reports</a>
         <a class="nav-item nav-item-featured" href="/apps/web/dashboard.html#ai-agent" data-page-link="ai-agent">AI Agent</a>
         <a id="adminOperationsSideLink" class="nav-item" href="/apps/web/dashboard.html#admin-operations" data-page-link="admin-operations" hidden>Admin Operations</a>
 
@@ -253,28 +255,16 @@
           <article class="quick-card"><strong>AI Report Summary</strong><span>Summarize revenue, expenses, unpaid balances, and profit using saved records.</span></article>
         </div>
       </section>
-      <section id="reports" class="panel dashboard-page" data-dashboard-page="reports">
+      <section id="dashboard-home" class="panel dashboard-page" data-dashboard-page="home">
         <div class="dashboard-head">
           <div>
             <span class="pill blue">MSME workspace</span>
-            <h1>Reports</h1>
+            <h1>Workspace Dashboard</h1>
           </div>
           <div class="dashboard-search">
             <input id="dashboardSearch" placeholder="Search invoices, customers, payments" />
           <a class="primary" href="/apps/web/invoice.html">Create New Invoice</a>
           </div>
-        </div>
-        <div class="report-period-bar">
-          <label>Report Month
-            <select id="reportMonth">
-              <option value="">All months</option>
-            </select>
-          </label>
-          <label>Report Year
-            <select id="reportYear">
-              <option value="">All years</option>
-            </select>
-          </label>
         </div>
         <section id="firstRunSetupPanel" class="first-run-panel" aria-labelledby="firstRunTitle">
           <div class="panel-head compact-head">
@@ -349,6 +339,26 @@
           <a href="/apps/web/invoice.html?type=po">Create Purchase Order</a>
           <a href="/apps/web/invoice.html#customerStep">Add Customer</a>
           <a href="/apps/web/invoice.html#itemsStep">Add Item</a>
+        </div>
+      </section>
+      <section id="reports" class="panel dashboard-page" data-dashboard-page="reports" hidden>
+        <div class="dashboard-head">
+          <div>
+            <span class="pill blue">Business reporting</span>
+            <h1>Reports</h1>
+          </div>
+        </div>
+        <div class="report-period-bar">
+          <label>Report Month
+            <select id="reportMonth">
+              <option value="">All months</option>
+            </select>
+          </label>
+          <label>Report Year
+            <select id="reportYear">
+              <option value="">All years</option>
+            </select>
+          </label>
         </div>
         <div class="panel-head section-break">
           <h2>Report Categories</h2>
@@ -1357,6 +1367,21 @@
       <div id="documentEmailStatus" class="inline-status" aria-live="polite"></div>
     </div>
   </div>
+  <dialog id="profileSetupDialog" class="eaz-modal profile-setup-dialog" aria-labelledby="profileSetupTitle" aria-describedby="profileSetupDescription">
+    <div class="profile-setup-heading">
+      <span class="pill blue">Account setup</span>
+      <h2 id="profileSetupTitle">Complete your EazInvoice setup</h2>
+      <p id="profileSetupDescription">Add the remaining details so EazInvoice can set up your account and business workspace correctly.</p>
+    </div>
+    <div class="profile-setup-statuses">
+      <div><span>Account Profile</span><strong data-profile-status="account">Needs attention</strong></div>
+      <div><span>Business Profile</span><strong data-profile-status="business">Needs attention</strong></div>
+    </div>
+    <div class="profile-setup-actions">
+      <a class="eaz-button eaz-button--primary" data-profile-setup-action href="/apps/web/access.html?tab=profile">Complete Profile</a>
+      <form method="dialog"><button class="eaz-button eaz-button--secondary" type="submit">Continue to Workspace</button></form>
+    </div>
+  </dialog>
   <script type="module" src="./dashboard.js?v=20260603-report-charts"></script>
 </body>
 </html>

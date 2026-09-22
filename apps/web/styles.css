@@ -126,6 +126,18 @@ html { scroll-behavior: smooth; }
 .topnav a {
   text-decoration: none;
 }
+.topnav .workspace-nav-link {
+  color: #fff;
+  border-color: rgba(13,46,87,.34);
+  background: linear-gradient(135deg, rgba(13,46,87,.94), rgba(37,99,235,.72));
+  box-shadow: 0 8px 20px rgba(13,46,87,.14);
+}
+.topnav .workspace-nav-link:hover,
+.topnav .workspace-nav-link:focus-visible {
+  color: #fff;
+  border-color: rgba(37,99,235,.44);
+  background: linear-gradient(135deg, rgba(13,46,87,.98), rgba(37,99,235,.78));
+}
 .profile-menu {
   position: relative;
 }
@@ -3281,7 +3293,13 @@ input:focus, textarea:focus, select:focus { outline: 3px solid rgba(37,99,235,.1
     linear-gradient(160deg, rgba(13,46,87,.84), rgba(37,99,235,.68)),
     url("https://images.unsplash.com/photo-1554224155-6726b3ff858f?auto=format&fit=crop&w=1000&q=80") center/cover;
   color: #fff;
+  text-decoration: none;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.18);
+}
+.tier-banner-card:hover,
+.tier-banner-card:focus-visible {
+  border-color: rgba(255,255,255,.42);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.24), 0 10px 24px rgba(13,46,87,.16);
 }
 .tier-banner-card strong {
   font-size: 18px;
@@ -3292,22 +3310,22 @@ input:focus, textarea:focus, select:focus { outline: 3px solid rgba(37,99,235,.1
 }
 .access-shell[data-plan="free"] .tier-banner-card {
   background:
-    linear-gradient(160deg, rgba(37,99,235,.88), rgba(16,185,129,.70)),
+    linear-gradient(160deg, rgba(13,46,87,.82), rgba(37,99,235,.52)),
     url("https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=1000&q=80") center/cover;
 }
 .access-shell[data-plan="standard"] .tier-banner-card {
   background:
-    linear-gradient(160deg, rgba(11,42,102,.90), rgba(211,155,22,.74)),
+    linear-gradient(160deg, rgba(13,46,87,.82), rgba(37,99,235,.52)),
     url("https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?auto=format&fit=crop&w=1000&q=80") center/cover;
 }
 .access-shell[data-plan="pro"] .tier-banner-card {
   background:
-    linear-gradient(160deg, rgba(15,118,110,.92), rgba(37,99,235,.78)),
+    linear-gradient(160deg, rgba(13,46,87,.82), rgba(37,99,235,.52)),
     url("https://images.unsplash.com/photo-1554224155-1696413565d3?auto=format&fit=crop&w=1000&q=80") center/cover;
 }
 .access-shell[data-plan="business"] .tier-banner-card {
   background:
-    linear-gradient(160deg, rgba(17,24,39,.92), rgba(37,99,235,.78)),
+    linear-gradient(160deg, rgba(13,46,87,.82), rgba(37,99,235,.52)),
     url("https://images.unsplash.com/photo-1554224154-22dec7ec8818?auto=format&fit=crop&w=1000&q=80") center/cover;
 }
 .invoice-workspace { grid-template-columns: minmax(0, 1fr); background: #f8fafc; }
@@ -4003,6 +4021,24 @@ video {
     position: static;
     margin-top: 16px;
   }
+}
+
+.profile-setup-dialog::backdrop { background: rgba(6, 26, 58, .62); backdrop-filter: blur(3px); }
+.profile-setup-dialog { color: #111827; }
+.profile-setup-heading { display: grid; gap: 10px; }
+.profile-setup-heading .pill { width: max-content; }
+.profile-setup-heading h2 { margin: 0; color: #0b2b64; font-size: 28px; letter-spacing: 0; }
+.profile-setup-heading p { margin: 0; color: #667085; line-height: 1.55; }
+.profile-setup-statuses { display: grid; gap: 10px; margin: 22px 0; }
+.profile-setup-statuses > div { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border: 1px solid #e4e7ec; border-radius: 8px; background: #f8fafc; }
+.profile-setup-statuses strong { color: #b54708; font-size: 13px; }
+.profile-setup-statuses strong.is-complete { color: #067647; }
+.profile-setup-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.profile-setup-actions form { margin: 0; }
+@media (max-width: 480px) {
+  .profile-setup-dialog { max-height: calc(100dvh - 24px); padding: 18px; overflow-y: auto; }
+  .profile-setup-heading h2 { font-size: 23px; }
+  .profile-setup-actions, .profile-setup-actions form, .profile-setup-actions .eaz-button { width: 100%; }
 }
 
 /* Shared navigation search */

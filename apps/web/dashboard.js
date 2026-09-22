@@ -1,4 +1,5 @@
 import { apiClient, clearToken, money, mountAdminPlanPreview, requireSession } from "./common.js?v=20260601-session";
+import { getProfileSetupState, showProfileSetupDialog } from "./profile-setup.js?v=20260920-stage2a";
 
 const sessionContext = await requireSession();
 const token = sessionContext?.token;
@@ -338,10 +339,10 @@ const LIMIT_LABELS = {
 };
 
 function currentDashboardPage() {
-  const page = (window.location.hash || "#reports").replace(/^#/, "");
+  const page = (window.location.hash || "#home").replace(/^#/, "");
   const supported = new Set([...dashboardPages].map((section) => section.getAttribute("data-dashboard-page")));
   if (page.startsWith("report-")) return page;
-  return supported.has(page) ? page : "reports";
+  return supported.has(page) ? page : "home";
 }
 
 function showDashboardPage(page = currentDashboardPage()) {
@@ -359,7 +360,11 @@ function showDashboardPage(page = currentDashboardPage()) {
   if (businessWorkspaceNavGroup) {
     businessWorkspaceNavGroup.open = visiblePage === "business-workspace";
   }
-  document.title = page === "reports" ? "Eazinvoice Reports" : `Eazinvoice ${page.replace(/-/g, " ")}`;
+  document.title = page === "home"
+    ? "Eazinvoice Dashboard"
+    : page === "reports"
+      ? "Eazinvoice Reports"
+      : `Eazinvoice ${page.replace(/-/g, " ")}`;
   if (page.startsWith("report-")) {
     syncDetailFilterVisibility();
     renderReportDetail(page.replace("report-", ""));
@@ -6112,6 +6117,7 @@ async function initializeDashboard() {
   dashboardVendors = vendors;
   dashboardPurchaseOrders = purchaseOrders;
   dashboardPayments = payments;
+  showProfileSetupDialog(getProfileSetupState(currentUser, dashboardCompanies));
   populateReportFilters(dashboardInvoices, dashboardPurchaseOrders);
   await refreshDashboardReportSummary();
   await refreshAccountingSummary();

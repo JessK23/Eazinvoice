@@ -1,5 +1,8 @@
 const API_BASE = window.location.origin;
-const tokenFromUrl = new URLSearchParams(window.location.search).get("token") || "";
+const initialParams = new URLSearchParams(window.location.search);
+const tokenFromUrl = initialParams.get("token") || "";
+const legacyAccessTab = initialParams.get("tab") || "";
+
 if (tokenFromUrl) {
   localStorage.setItem("eazinvoice_token", tokenFromUrl);
   sessionStorage.setItem("eazinvoice_token", tokenFromUrl);
@@ -8,6 +11,7 @@ if (tokenFromUrl) {
   cleanUrl.searchParams.delete("token");
   window.history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
 }
+
 const cookieToken = document.cookie
   .split(";")
   .map((part) => part.trim())
@@ -17,6 +21,18 @@ const token = localStorage.getItem("eazinvoice_token")
   || sessionStorage.getItem("eazinvoice_token")
   || (cookieToken ? decodeURIComponent(cookieToken) : "")
   || tokenFromUrl;
+
+const legacyAccessDestinations = {
+  dashboard: "/apps/web/dashboard.html",
+  invoice: "/apps/web/dashboard.html#invoices",
+  po: "/apps/web/dashboard.html#purchase-orders",
+  reports: "/apps/web/dashboard.html#reports",
+  ai: "/apps/web/dashboard.html#ai-agent",
+  features: "/apps/web/subscription.html",
+};
+if (legacyAccessDestinations[legacyAccessTab]) {
+  window.location.replace(legacyAccessDestinations[legacyAccessTab]);
+}
 
 const app = document.getElementById("accessApp");
 const tabs = document.querySelectorAll(".access-tab");
@@ -30,21 +46,14 @@ const accessProfileName = document.getElementById("accessProfileName");
 const accessProfileMeta = document.getElementById("accessProfileMeta");
 const accessDropdownName = document.getElementById("accessDropdownName");
 const accessDropdownEmail = document.getElementById("accessDropdownEmail");
+const accessAdminLink = document.getElementById("accessAdminLink");
 const profileForm = document.getElementById("profileForm");
 const companyForm = document.getElementById("companyAccessForm");
 const profileStatus = document.getElementById("profileStatus");
 const companyStatus = document.getElementById("companyStatus");
-const adminAccessTab = document.getElementById("adminAccessTab");
 const companyAccessTab = document.getElementById("companyAccessTab");
 const addCompanyAccessBtn = document.getElementById("addCompanyAccessBtn");
 const companyAccessHint = document.getElementById("companyAccessHint");
-const accessDraftInvoiceCount = document.getElementById("accessDraftInvoiceCount");
-const accessCreatedInvoiceCount = document.getElementById("accessCreatedInvoiceCount");
-const accessDraftInvoicesList = document.getElementById("accessDraftInvoicesList");
-const accessCreatedInvoicesList = document.getElementById("accessCreatedInvoicesList");
-const accessDraftPoCount = document.getElementById("accessDraftPoCount");
-const accessCreatedPoCount = document.getElementById("accessCreatedPoCount");
-const accessPlanFeatureGrid = document.getElementById("accessPlanFeatureGrid");
 const accessTierBanner = document.getElementById("accessTierBanner");
 const accessTierBannerBadge = document.getElementById("accessTierBannerBadge");
 const accessTierBannerTitle = document.getElementById("accessTierBannerTitle");
@@ -55,62 +64,17 @@ const accessTierBannerMetricText = document.getElementById("accessTierBannerMetr
 
 let currentUser = null;
 let companies = [];
-let customers = [];
-let invoices = [];
-let purchaseOrders = [];
 let plan = null;
 let adminAuthorized = false;
 
 function authHeaders() {
-  const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const previewPlan = localStorage.getItem("eazinvoice_admin_plan_preview") || "";
-  if (previewPlan) headers["X-Eazinvoice-Plan-Preview"] = previewPlan;
-  return headers;
-}
-
-function mountAdminPlanPreview() {
-  if (!adminAuthorized || document.getElementById("adminPlanPreviewControl")) return;
-  const container = document.querySelector(".topnav") || document.querySelector(".topbar");
-  if (!container) return;
-  const currentPreview = localStorage.getItem("eazinvoice_admin_plan_preview") || "";
-  const control = document.createElement("label");
-  control.id = "adminPlanPreviewControl";
-  control.className = "admin-preview-control";
-  control.innerHTML = `
-    <span>Admin Preview</span>
-    <select id="adminPlanPreviewSelect" aria-label="Admin plan preview">
-      <option value="">Real plan</option>
-      <option value="free">Free</option>
-      <option value="standard">Standard</option>
-      <option value="pro">Pro</option>
-      <option value="business">Business</option>
-    </select>
-  `;
-  container.append(control);
-  const select = control.querySelector("select");
-  select.value = currentPreview;
-  select.addEventListener("change", () => {
-    const selected = select.value;
-    if (selected) localStorage.setItem("eazinvoice_admin_plan_preview", selected);
-    else localStorage.removeItem("eazinvoice_admin_plan_preview");
-    window.location.reload();
-  });
-
-  if (!plan?.preview?.enabled) return;
-  const banner = document.createElement("div");
-  banner.id = "adminPlanPreviewBanner";
-  banner.className = "admin-preview-banner";
-  banner.textContent = `Admin Preview Mode: ${plan.label} plan. No billing or subscription record is being changed.`;
-  document.querySelector(".topbar")?.after(banner);
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 async function request(path, { method = "GET", body } = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     method,
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
-    },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: body ? JSON.stringify(body) : undefined,
   });
   const responseText = await response.text();
@@ -126,10 +90,6 @@ async function request(path, { method = "GET", body } = {}) {
   return payload;
 }
 
-function money(value) {
-  return `INR ${Number(value || 0).toFixed(2)}`;
-}
-
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -143,89 +103,19 @@ function setText(id, value) {
   if (node) node.textContent = value;
 }
 
-function badge(text, tone = "blue") {
-  return `<span class="pill ${tone}">${text}</span>`;
-}
-
-function renderPlanFeatures(catalog = []) {
-  if (!accessPlanFeatureGrid) return;
-  const activePlan = plan?.plan || "free";
-  const plans = catalog.length ? catalog : [
-    { plan: "free", label: "Free", amount: 0, highlights: ["Limited invoices", "Basic GST invoices", "PDF-ready print", "No AI"] },
-    { plan: "standard", label: "Standard", amount: 499, highlights: ["WhatsApp sharing", "Razorpay collection links", "Recurring invoice drafts"] },
-    { plan: "pro", label: "Pro", amount: 999, highlights: ["AI invoice assist", "AI PO assist", "Advanced reports", "Multiple businesses"] },
-    { plan: "business", label: "Business", amount: 1999, highlights: ["Team access", "Approvals", "API access", "Advanced analytics"] },
-  ];
-  accessPlanFeatureGrid.innerHTML = plans.map((entry) => {
-    const features = entry.features || {};
-    const highlights = entry.highlights || [];
-    const implementation = entry.implementation || {};
-    const pending = implementation.pending || [];
-    const selected = entry.plan === activePlan;
-    return `
-      <article class="plan-tile ${selected ? "selected" : ""}">
-        <strong>${escapeHtml(entry.label || entry.plan)}</strong>
-        <p>${escapeHtml(entry.description || highlights.join(", "))}</p>
-        <small>${escapeHtml(highlights.join(", "))}</small>
-        <div class="badge-row">
-          ${features.aiInvoiceAssist ? badge("AI invoice", "blue") : badge("AI locked", "gold")}
-          ${features.razorpayCollections ? badge("Gateway", "blue") : badge("Manual payments", "gold")}
-          ${features.apiAccess ? badge("API", "blue") : ""}
-          ${implementation.status ? badge(implementation.status.replace(/_/g, " "), pending.length ? "gold" : "green") : ""}
-          ${selected ? badge("Current", "maroon") : ""}
-        </div>
-        ${pending.length ? `<div class="hint">Next build: ${escapeHtml(pending.slice(0, 2).join(", "))}</div>` : ""}
-      </article>
-    `;
-  }).join("");
-}
-
 function renderTierBanner() {
   if (!accessTierBanner) return;
   const tier = (plan?.plan || "free").toLowerCase();
   if (app) app.dataset.plan = tier;
-  const banner = {
-    free: {
-      badge: "Free plan",
-      title: "Start lean, upgrade when you need more.",
-      text: "Basic invoices, core records, and guided access in a lighter workspace banner.",
-      metric: "Free tier",
-      metricText: "Invoices, profile updates, and essential access are available now.",
-      tags: ["Basic invoices", "Limited records", "Upgrade ready"],
-    },
-    standard: {
-      badge: "Standard plan",
-      title: "Recurring billing and WhatsApp sharing made simple.",
-      text: "A clean workspace for growing teams that need invoice delivery, recurring drafts, and payment collection.",
-      metric: "Standard tier",
-      metricText: "WhatsApp sharing, recurring drafts, and payment workflows are highlighted here.",
-      tags: ["WhatsApp share", "Recurring drafts", "Razorpay links"],
-    },
-    pro: {
-      badge: "Pro plan",
-      title: "AI-assisted invoicing and reporting for faster decisions.",
-      text: "Pro brings AI invoice drafting, AI PO support, and advanced reports into a focused, modern workspace.",
-      metric: "Pro tier",
-      metricText: "AI assistant, report summaries, and multiple-business operations are featured here.",
-      tags: ["AI assistant", "Advanced reports", "Multiple businesses"],
-    },
-    business: {
-      badge: "Business plan",
-      title: "Team access, approvals, and audit-ready control.",
-      text: "Business elevates the workspace for multi-user approvals, compliance, notifications, and API access.",
-      metric: "Business tier",
-      metricText: "Team workflows, audit trails, and compliance controls are surfaced here.",
-      tags: ["Team access", "Approvals", "Audit trail"],
-    },
-  }[tier] || {};
-
-  if (accessTierBannerBadge && banner.badge) accessTierBannerBadge.textContent = banner.badge;
-  if (accessTierBannerTitle && banner.title) accessTierBannerTitle.textContent = banner.title;
-  if (accessTierBannerText && banner.text) accessTierBannerText.textContent = banner.text;
-  if (accessTierBannerMetric && banner.metric) accessTierBannerMetric.textContent = banner.metric;
-  if (accessTierBannerMetricText && banner.metricText) accessTierBannerMetricText.textContent = banner.metricText;
+  if (accessTierBannerBadge) accessTierBannerBadge.textContent = plan?.label || `${tier.charAt(0).toUpperCase()}${tier.slice(1)} plan`;
+  if (accessTierBannerTitle) accessTierBannerTitle.textContent = "Your account and plan";
+  if (accessTierBannerText) accessTierBannerText.textContent = "Keep your account, business identity, and subscription details current.";
+  if (accessTierBannerMetric) accessTierBannerMetric.textContent = "Workspace";
+  if (accessTierBannerMetricText) accessTierBannerMetricText.textContent = "Open Workspace for invoices, PO/WO, reports, payments, and AI.";
   if (accessTierBannerTags) {
-    accessTierBannerTags.innerHTML = (banner.tags || []).map((tag) => `<span class="pill blue">${escapeHtml(tag)}</span>`).join("");
+    accessTierBannerTags.innerHTML = ["Account profile", "Business profile", "Subscription"]
+      .map((tag) => `<span class="pill blue">${escapeHtml(tag)}</span>`)
+      .join("");
   }
 }
 
@@ -238,15 +128,15 @@ function requestedTab() {
 }
 
 function showTab(name, { push = true } = {}) {
-  if (name === "company" && companyAccessTab?.hidden && !addCompanyAccessBtn?.dataset.opening) return;
-  tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === name));
+  const nextTab = validTabs.has(name) ? name : "status";
+  tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === nextTab));
   panes.forEach((pane) => {
-    pane.hidden = pane.dataset.pane !== name;
+    pane.hidden = pane.dataset.pane !== nextTab;
   });
   if (push) {
     const url = new URL(window.location.href);
-    url.searchParams.set("tab", name);
-    window.history.pushState({ tab: name }, "", `${url.pathname}${url.search}${url.hash}`);
+    url.searchParams.set("tab", nextTab);
+    window.history.pushState({ tab: nextTab }, "", `${url.pathname}${url.search}${url.hash}`);
   }
 }
 
@@ -263,59 +153,53 @@ function fillForm(form, values) {
 function renderAccess() {
   const activeCompany = companies[0] || null;
   const type = currentUser?.subscriberType || (currentUser?.registrant ? "company" : "individual");
-  const hasCompanyControls = type === "company" || type === "group";
-  const displayName = activeCompany?.name || currentUser?.name || currentUser?.email || "User";
-  const initials = displayName
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase())
-    .join("") || "U";
+  const displayName = currentUser?.name || currentUser?.email || "User";
+  const initials = displayName.split(/\s+/).filter(Boolean).slice(0, 2)
+    .map((part) => part[0]?.toUpperCase()).join("") || "U";
+
   accessProfileMenu?.removeAttribute("hidden");
   if (accessProfileInitials) accessProfileInitials.textContent = initials;
   if (accessProfileName) accessProfileName.textContent = displayName;
   if (accessProfileMeta) accessProfileMeta.textContent = adminAuthorized ? "Admin account" : `${(plan?.plan || "free").toUpperCase()} plan`;
   if (accessDropdownName) accessDropdownName.textContent = displayName;
   if (accessDropdownEmail) accessDropdownEmail.textContent = currentUser?.email || "";
+  if (accessAdminLink) accessAdminLink.hidden = !adminAuthorized;
+
   localStorage.setItem("eazinvoice_user", JSON.stringify({
     name: displayName,
     email: currentUser?.email || "",
     role: currentUser?.role || "user",
     plan: plan?.plan || "free",
   }));
-  setText("accessName", activeCompany?.name || currentUser?.name || currentUser?.email || "User");
+
+  setText("accessName", displayName);
   setText("accessEmail", currentUser?.email || "");
-  setText("accessCompany", activeCompany ? `${activeCompany.entityType || "business"} - ${activeCompany.state || "state pending"}` : type === "individual" ? "Individual profile" : "No company profile yet");
-  setText("accessIntro", type === "individual"
-    ? "Manage your personal profile, invoices, purchase orders, reports, and plan features from one place."
-    : "Manage your profile, company profile, invoices, purchase orders, reports, and plan features from one place.");
+  setText("accessCompany", activeCompany
+    ? `${activeCompany.name || "Business"} - ${activeCompany.entityType || "business"}`
+    : type === "individual" ? "Individual account - no business profile yet" : "No business profile yet");
+  setText("accessIntro", "Manage your profile, business details, account settings and subscription.");
   setText("accessPlanBadge", `${(plan?.plan || "free").toUpperCase()} Plan`);
   setText("statusPlan", (plan?.plan || "free").toUpperCase());
-  setText("statusInvoices", String(invoices.length));
   setText("statusCompanies", `${companies.length}/${plan?.limits?.companies || 1}`);
-  setText("statusCustomers", `${customers.length}/${plan?.limits?.customers || 100}`);
-  setText("statusPo", String(purchaseOrders.length));
   setText("statusEmail", currentUser?.emailVerified ? "Verified" : "Pending");
   setText("statusMobile", currentUser?.phone ? "Registered" : "Pending");
   renderTierBanner();
 
-  const total = invoices.reduce((sum, invoice) => sum + Number(invoice.total || 0), 0);
   const activity = document.getElementById("statusActivity");
   if (activity) {
     activity.innerHTML = `
       <div class="invoice-card">
-        <div><strong>Account status</strong><div class="hint">${adminAuthorized ? "Admin access enabled" : "Normal user access"}</div></div>
+        <div><strong>Account status</strong><div class="hint">${adminAuthorized ? "Administrator account" : "Standard account access"}</div></div>
         <span class="pill blue">${escapeHtml(currentUser?.accountStatus || "active")}</span>
       </div>
       <div class="invoice-card">
-        <div><strong>Total invoice value</strong><div class="hint">${money(total)} across saved invoices</div></div>
-        <span class="pill gold">Billing</span>
+        <div><strong>Business profile</strong><div class="hint">${activeCompany ? escapeHtml(activeCompany.name || "Business details saved") : "No business profile saved"}</div></div>
+        <span class="pill gold">${activeCompany ? "Available" : "Optional"}</span>
       </div>
       <div class="invoice-card">
-        <div><strong>Plan usage</strong><div class="hint">${escapeHtml(plan?.status?.reason || "within limits")}</div></div>
-        <span class="pill maroon">Tier</span>
-      </div>
-    `;
+        <div><strong>Plan and subscription</strong><div class="hint">${escapeHtml(plan?.status?.reason || "Account is within plan limits")}</div></div>
+        <a class="ghost small" href="/apps/web/subscription.html">Manage</a>
+      </div>`;
   }
 
   fillForm(profileForm, {
@@ -326,188 +210,25 @@ function renderAccess() {
     panNumber: currentUser?.panNumber,
     aadhaarNumber: currentUser?.aadhaarNumber,
   });
+  fillForm(companyForm, activeCompany || { entityType: "company", name: "" });
 
-  fillForm(companyForm, activeCompany || {
-    entityType: currentUser?.registrant ? "company" : "company",
-    name: activeCompany?.name || "",
-  });
-
-  if (adminAccessTab) adminAccessTab.hidden = !adminAuthorized;
-  if (companyAccessTab) companyAccessTab.hidden = !hasCompanyControls;
+  if (companyAccessTab) companyAccessTab.hidden = false;
   if (addCompanyAccessBtn) {
-    addCompanyAccessBtn.hidden = type !== "individual";
+    addCompanyAccessBtn.hidden = Boolean(activeCompany);
     addCompanyAccessBtn.dataset.opening = "";
   }
   if (companyAccessHint) {
-    companyAccessHint.textContent = type === "individual"
-      ? "Do you want to add a company? Save the company details and your login access will switch to company mode."
-      : type === "group"
-        ? "Add or update company profiles under this group login."
-        : "Update your registered company profile.";
-  }
-  if (!hasCompanyControls && document.querySelector('.access-pane[data-pane="company"]')?.hidden === false) {
-    showTab("profile");
-  }
-  renderAccessInvoiceWorkspace();
-  renderAccessPoWorkspace();
-}
-
-function createdInvoicesOnly(records) {
-  return records.filter((invoice) => String(invoice.status || "created").toLowerCase() !== "draft");
-}
-
-function renderAccessInvoiceWorkspace() {
-  const drafts = invoices.filter((invoice) => String(invoice.status || "").toLowerCase() === "draft");
-  const created = createdInvoicesOnly(invoices);
-  if (accessDraftInvoiceCount) accessDraftInvoiceCount.textContent = String(drafts.length);
-  if (accessCreatedInvoiceCount) accessCreatedInvoiceCount.textContent = String(created.length);
-
-  const row = (invoice, tone) => `
-    <div class="invoice-card">
-      <div>
-        <strong>${escapeHtml(invoice.invoiceNumber || "Draft invoice")}</strong>
-        <div class="hint">${escapeHtml(invoice.billToName || "Customer")} - ${escapeHtml(invoice.invoiceDate || "No date")} - ${escapeHtml(invoice.currency || "INR")} ${Number(invoice.total || 0).toFixed(2)}</div>
-      </div>
-      <div class="row-actions">
-        <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoice.id)}">Open</a>
-        <span class="pill ${tone}">${escapeHtml(String(invoice.status || (tone === "gold" ? "draft" : "created")).toUpperCase())}</span>
-      </div>
-    </div>
-  `;
-
-  if (accessDraftInvoicesList) {
-    accessDraftInvoicesList.innerHTML = drafts.length
-      ? drafts.slice().reverse().map((invoice) => row(invoice, "gold")).join("")
-      : '<div class="notice">No invoice drafts yet.</div>';
-  }
-  if (accessCreatedInvoicesList) {
-    accessCreatedInvoicesList.innerHTML = created.length
-      ? created.slice().reverse().map((invoice) => row(invoice, "blue")).join("")
-      : '<div class="notice">No generated invoices yet.</div>';
+    companyAccessHint.textContent = activeCompany
+      ? "Update the business identity associated with this account."
+      : "Add a business identity without changing the existing profile data contract.";
   }
 }
 
-function renderAccessPoWorkspace() {
-  const drafts = purchaseOrders.filter((po) => String(po.status || "").toLowerCase() === "draft");
-  const created = purchaseOrders.filter((po) => String(po.status || "created").toLowerCase() !== "draft");
-  if (accessDraftPoCount) accessDraftPoCount.textContent = String(drafts.length);
-  if (accessCreatedPoCount) accessCreatedPoCount.textContent = String(created.length);
-}
-
-function renderAdminUsers(users) {
-  const adminUsers = document.getElementById("accessAdminUsers");
-  if (!adminUsers) return;
-  adminUsers.innerHTML = users.length
-    ? users.map((user) => `
-      <div class="invoice-card">
-        <div>
-          <strong>${escapeHtml(user.name || user.email || "User")}</strong>
-          <div class="hint">${escapeHtml(user.email || "")} - ${escapeHtml(user.role || "user")} - ${escapeHtml(user.accountStatus || "active")}</div>
-          <div class="badge-row">
-            ${badge((user.role || "user").toUpperCase(), user.role === "admin" ? "maroon" : "blue")}
-            ${badge((user.accountStatus || "active").toUpperCase(), user.accountStatus === "restricted" ? "gold" : "blue")}
-            ${(user.permissions || []).map((permission) => badge(permission.replace(/-/g, " ").toUpperCase(), "gold")).join("") || badge("NO PERMISSIONS", "blue")}
-          </div>
-          <div class="hint">${user.restrictedReason ? `Reason: ${escapeHtml(user.restrictedReason)}` : "No restriction reason"}</div>
-        </div>
-        <div class="actions">
-          <button class="ghost small" data-admin-action="restrict" data-user="${escapeHtml(user.id)}">Restrict</button>
-          <button class="ghost small" data-admin-action="restore" data-user="${escapeHtml(user.id)}">Restore</button>
-          <button class="ghost small" data-admin-action="kyc-review" data-user="${escapeHtml(user.id)}">Grant KYC Review</button>
-        </div>
-      </div>
-    `).join("")
-    : "<p>No users yet.</p>";
-
-  adminUsers.querySelectorAll("button[data-user]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const userId = button.getAttribute("data-user");
-      const action = button.getAttribute("data-admin-action");
-      if (action === "kyc-review") {
-        await request(`/admin/users/${userId}?action=permissions`, {
-          method: "PATCH",
-          body: { permissions: ["kyc-review"] },
-        });
-      } else {
-        const reason = action === "restrict" ? "Suspicious activity review" : "";
-        await request(`/admin/users/${userId}?action=${encodeURIComponent(action)}`, {
-          method: "PATCH",
-          body: { reason },
-        });
-      }
-      const refreshed = await request("/admin/users");
-      renderAdminUsers(refreshed.users || []);
-    });
-  });
-}
-
-function renderAdminKyc(companiesForReview) {
-  const kycQueue = document.getElementById("accessAdminKyc");
-  if (!kycQueue) return;
-  kycQueue.innerHTML = companiesForReview.length
-    ? companiesForReview.map((company) => `
-      <div class="invoice-card">
-        <div>
-          <strong>${escapeHtml(company.name || "Company")}</strong>
-          <div class="hint">${escapeHtml(company.entityType || "company")} - KYC ${escapeHtml(company.kycStatus || "pending")} - Review ${escapeHtml(company.reviewStatus || "pending")}</div>
-          <div class="badge-row">
-            ${badge((company.kycStatus || "pending").toUpperCase(), company.kycStatus === "verified" ? "blue" : "gold")}
-            ${badge((company.reviewStatus || "pending").toUpperCase(), company.reviewStatus === "approved" ? "blue" : company.reviewStatus === "rejected" ? "maroon" : "gold")}
-          </div>
-          <div class="hint">Docs: ${escapeHtml((company.documentNames || []).join(", ") || "none")}</div>
-        </div>
-        <div class="actions">
-          <button class="ghost small" data-kyc-action="approve" data-company="${escapeHtml(company.id)}">Approve</button>
-          <button class="ghost small" data-kyc-action="reject" data-company="${escapeHtml(company.id)}">Reject</button>
-        </div>
-      </div>
-    `).join("")
-    : "<p>No KYC items waiting for review.</p>";
-
-  kycQueue.querySelectorAll("button[data-company]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const companyId = button.getAttribute("data-company");
-      const action = button.getAttribute("data-kyc-action");
-      const reason = action === "reject" ? "KYC documents need review" : "Approved by admin";
-      await request(`/admin/kyc-review/${companyId}?action=${encodeURIComponent(action)}`, {
-        method: "PATCH",
-        body: { reason },
-      });
-      const refreshed = await request("/admin/kyc-review");
-      renderAdminKyc(refreshed.companies || []);
-    });
-  });
-}
-
-async function loadAdminAccess() {
-  if (!adminAuthorized) return;
-  const [moneyPayload, usersPayload, kycPayload] = await Promise.all([
-    request("/admin/money"),
-    request("/admin/users"),
-    request("/admin/kyc-review"),
-  ]);
-  const summary = moneyPayload.summary || {};
-  setText("accessAdminTotal", money(summary.totalAmount));
-  setText("accessAdminCount", String(summary.count || 0));
-  setText("accessAdminCompany", money(summary.byType?.company || 0));
-  setText("accessAdminIndividual", money(summary.byType?.individual || 0));
-  setText("accessAdminGroup", money(summary.byType?.group || 0));
-  const subscriptions = document.getElementById("accessAdminSubscriptions");
-  if (subscriptions) {
-    subscriptions.innerHTML = (moneyPayload.subscriptions || []).length
-      ? moneyPayload.subscriptions.map((subscription) => `
-        <div class="invoice-card">
-          <div>
-            <strong>${escapeHtml(subscription.subscriberName || subscription.groupName || subscription.subscriberType || "Subscriber")}</strong>
-            <div class="hint">${escapeHtml(subscription.subscriberType || "user")} - ${escapeHtml(subscription.plan || "free")} - ${escapeHtml(subscription.currency || "INR")} ${Number(subscription.amount || 0).toFixed(2)}</div>
-          </div>
-          <span class="pill blue">${escapeHtml(subscription.status || "active")}</span>
-        </div>
-      `).join("")
-      : "<p>No subscriptions yet.</p>";
-  }
-  renderAdminUsers(usersPayload.users || []);
-  renderAdminKyc(kycPayload.companies || []);
+function normalizeRejectedAdminRoute() {
+  if (legacyAccessTab !== "admin") return;
+  const url = new URL(window.location.href);
+  url.searchParams.delete("tab");
+  window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
 }
 
 async function loadAccess() {
@@ -520,26 +241,22 @@ async function loadAccess() {
     currentUser = me.user;
     plan = me.plan;
     adminAuthorized = Boolean(me.admin?.authorized);
-    mountAdminPlanPreview();
-    const planPayload = await request("/plans").catch(() => ({ catalog: [] }));
-    renderPlanFeatures(planPayload.catalog || []);
+    if (legacyAccessTab === "admin" && adminAuthorized) {
+      window.location.replace("/apps/web/admin.html");
+      return;
+    }
+    normalizeRejectedAdminRoute();
     companies = await request("/companies");
-    customers = await request("/customers");
-    invoices = await request("/invoices");
-    purchaseOrders = await request("/purchase-orders");
     renderAccess();
-    await loadAdminAccess();
     app?.removeAttribute("hidden");
   } catch {
     localStorage.removeItem("eazinvoice_token");
+    sessionStorage.removeItem("eazinvoice_token");
     window.location.replace("/apps/web/auth.html?tab=login");
   }
 }
 
-tabs.forEach((tab) => {
-  tab.addEventListener("click", () => showTab(tab.dataset.tab));
-});
-
+tabs.forEach((tab) => tab.addEventListener("click", () => showTab(tab.dataset.tab)));
 window.addEventListener("popstate", () => showTab(requestedTab(), { push: false }));
 
 logout?.addEventListener("click", () => {
@@ -602,7 +319,7 @@ profileForm?.addEventListener("submit", async (event) => {
     currentUser = updated.user;
     if (profileForm.elements.currentPassword) profileForm.elements.currentPassword.value = "";
     if (profileForm.elements.newPassword) profileForm.elements.newPassword.value = "";
-    if (profileStatus) profileStatus.textContent = "Profile updated.";
+    if (profileStatus) profileStatus.textContent = "Account profile updated.";
     renderAccess();
   } catch (error) {
     if (profileStatus) profileStatus.textContent = error.message;
@@ -610,10 +327,8 @@ profileForm?.addEventListener("submit", async (event) => {
 });
 
 addCompanyAccessBtn?.addEventListener("click", () => {
-  addCompanyAccessBtn.dataset.opening = "true";
   showTab("company");
-  if (companyStatus) companyStatus.textContent = "Do you want to add a company? Fill the details and save.";
-  addCompanyAccessBtn.dataset.opening = "";
+  if (companyStatus) companyStatus.textContent = "Complete the business details and save the profile.";
 });
 
 companyForm?.addEventListener("submit", async (event) => {
@@ -655,5 +370,7 @@ companyForm?.addEventListener("submit", async (event) => {
   }
 });
 
-showTab(requestedTab(), { push: false });
-loadAccess();
+if (!legacyAccessDestinations[legacyAccessTab]) {
+  showTab(requestedTab(), { push: false });
+  loadAccess();
+}

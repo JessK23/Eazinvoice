@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Eazinvoice | Home</title>
-  <meta name="description" content="EazInvoice helps MSMEs create invoices, manage PO/WO work, track payments, and review GST/TDS-ready business workflows." />
-  <meta name="theme-color" content="#071f60" />
+  <title>EazInvoice | Money Managed Easy</title>
+  <meta name="description" content="EazInvoice helps Indian MSMEs create invoices, manage PO/WO work, track payments, and review GST/TDS-ready business workflows." />
+  <meta name="theme-color" content="#0b2b64" />
   <meta property="og:title" content="EazInvoice - Money Managed Easy" />
   <meta property="og:description" content="Invoices, PO/WO, payments, reports, and GST/TDS-ready workflows for MSMEs." />
   <meta property="og:image" content="https://www.eazinvoice.com/apps/web/assets/eazinvoice-social-card.png" />
@@ -16,39 +16,35 @@
   <link rel="icon" type="image/svg+xml" sizes="any" href="/apps/web/assets/favicon.svg?v=2" />
   <link rel="apple-touch-icon" sizes="180x180" href="/apps/web/assets/apple-touch-icon.png" />
   <link rel="stylesheet" href="./styles.css?v=20260723-ui-banner-refresh-5" />
+  <link rel="stylesheet" href="./design-system-v1.css?v=20260919-stage1" />
   <link rel="stylesheet" href="./landing-phase1.css?v=20260822-sales-entry" />
+  <link rel="stylesheet" href="./home-redesign.css?v=20260921-stage2c-recovery" />
   <script src="./nav.js?v=20260614-responsive-menu" defer></script>
 </head>
 <body class="landing-page">
   <header class="landing-header">
-    <div class="brand">
+    <a class="brand" href="#home" aria-label="EazInvoice home">
       <img class="header-full-logo" src="./assets/logo-header.png?v=20260605-logo-refresh" alt="EazInvoice Money Managed Easy" />
-    </div>
-    <nav class="landing-nav">
-      <a href="#home">Home</a>
+    </a>
+    <nav class="landing-nav" aria-label="Primary navigation">
+      <a class="is-active" href="#home" aria-current="page">Home</a>
       <a href="#about">Who It Helps</a>
       <a href="#workflow">Workflow</a>
       <a href="#features">Features</a>
       <a href="#pricing">Pricing</a>
       <a id="homeLoginLink" href="/apps/web/auth.html?tab=login" class="nav-cta">Login</a>
-      <a id="homeSignupLink" href="/apps/web/auth.html" class="nav-cta solid">Signup / Register</a>
-      <a id="homeAccessPlanLink" href="/apps/web/access.html" class="nav-cta solid" hidden>Free - User Access</a>
+      <a id="homeSignupLink" href="/apps/web/auth.html" class="nav-cta solid">Get Started</a>
+      <a id="homeAccessPlanLink" href="/apps/web/access.html" class="nav-cta solid" hidden>Free - My Account</a>
       <div id="homeProfileMenu" class="profile-menu" hidden>
         <button id="homeProfileButton" class="profile-button" type="button" aria-expanded="false">
           <span id="homeProfileInitials" class="profile-avatar">U</span>
-          <span>
-            <strong id="homeProfileName">User</strong>
-            <small>Signed in</small>
-          </span>
+          <span><strong id="homeProfileName">User</strong><small>Signed in</small></span>
         </button>
         <div id="homeProfileDropdown" class="profile-dropdown" hidden>
-          <div class="profile-summary">
-            <strong id="homeDropdownName">User</strong>
-            <span id="homeDropdownEmail">Signed in</span>
-          </div>
-          <a href="/apps/web/access.html">User Access</a>
-          <a href="/apps/web/access.html#update-profile">Account Settings</a>
-          <a href="/apps/web/dashboard.html">Reports</a>
+          <div class="profile-summary"><strong id="homeDropdownName">User</strong><span id="homeDropdownEmail">Signed in</span></div>
+          <a href="/apps/web/access.html">My Account</a>
+          <a href="/apps/web/access.html?tab=profile">Account Settings</a>
+          <a href="/apps/web/dashboard.html#reports">Reports</a>
           <a href="/apps/web/dashboard.html#ai-agent">AI Agent</a>
           <a href="/apps/web/invoice.html">Generate Invoice</a>
           <a href="/apps/web/invoice.html?type=po">Generate PO</a>
@@ -59,361 +55,225 @@
     </nav>
   </header>
 
-  <main class="landing-shell" id="home">
-    <section class="landing-hero">
-      <div class="landing-copy">
-        <div class="eyebrow">GST/TDS-ready billing workspace for Indian MSMEs</div>
-        <h1>Create invoices, manage PO/WO work, and track payments without spreadsheet chaos</h1>
-        <p>
-          EazInvoice gives freelancers, agencies, consultants, shops, coaching centers, and service businesses
-          one workspace for billing, purchase orders, customers, vendors, reports, and paid-plan AI drafting.
-        </p>
-        <div class="actions">
-          <a id="homePrimaryAction" href="/apps/web/auth.html" class="primary">Start Free</a>
-          <a id="homeSecondaryAction" href="#pricing" class="ghost">See Plans</a>
-        </div>
-        <div class="sales-trust-row" aria-label="Launch readiness notes">
-          <span>Free web access available</span>
-          <span>Paid plans bill yearly</span>
-          <span>Android and WordPress status shown clearly</span>
-        </div>
-        <div class="mini-launch-row">
-          <a class="mini-launch-card" href="/apps/web/mobile-app.html">
-            <strong>Android release status</strong>
-            <span>See release status, internal testing notes, and mobile guidance.</span>
-          </a>
-          <a class="mini-launch-card light" href="/apps/web/user-manual-web.html">
-            <strong>Manuals and setup</strong>
-            <span>Open web, Android, release, and WordPress operating guides.</span>
-          </a>
-        </div>
-        <div id="loggedInHomePanel" class="logged-home-panel" hidden>
-          <div>
-            <span class="pill blue">Logged in</span>
-            <h2 id="loggedInHomeName">Your workspace</h2>
-            <p id="loggedInHomeMeta">Continue your EazInvoice work from here.</p>
-          </div>
-          <div class="logged-feature-grid">
-            <a href="/apps/web/invoice.html"><strong>Invoice Creation</strong><span>Create, draft, print, and track invoices.</span></a>
-            <a href="/apps/web/invoice.html?type=po"><strong>Purchase Orders</strong><span>Create and save PO drafts and records.</span></a>
-            <a href="/apps/web/dashboard.html#ai-agent"><strong>AI Agent</strong><span>Paid-plan command workspace for invoices, PO/WO, and reports.</span></a>
-            <a href="/apps/web/dashboard.html"><strong>Reports</strong><span>Invoice, PO, revenue, P&L, and balance reports.</span></a>
-            <a href="/apps/web/subscription.html"><strong>Subscription</strong><span>View free plan and upgrade options.</span></a>
-          </div>
-          <div class="logged-plan-grid" aria-label="Subscription plans">
-            <article><strong>Free</strong><span>INR 0</span><small>Limited invoices, basic reports, PDF print, no AI.</small></article>
-            <article><strong>Standard</strong><span>INR 199/mo</span><small>INR 2,388 collected yearly. WhatsApp sharing, payment links, recurring drafts.</small></article>
-            <article><strong>Pro</strong><span>INR 499/mo</span><small>INR 5,988 collected yearly. AI invoices, AI PO/WO, advanced reports.</small></article>
-            <article><strong>Business</strong><span>INR 999/mo</span><small>INR 11,988 collected yearly. Pro features plus teams, approvals, API, SMTP, gateway controls.</small></article>
-          </div>
-        </div>
-        <div class="landing-tags">
-          <span>GST invoices</span>
-          <span>PO / WO</span>
-          <span>Payments</span>
-          <span>Receivables</span>
-          <span>Payables</span>
-          <span>AI drafting</span>
-        </div>
-        <div class="launch-note" role="note">
-          EazInvoice supports business billing and GST/TDS readiness workflows. It does not provide legal or tax advice, government filing, banking, lending, or autonomous accounting.
-        </div>
-      </div>
-      <div class="landing-showcase">
-        <article class="showcase-card dashboard-preview-card">
-          <div class="showcase-head">
-            <strong>Workspace Preview</strong>
-            <span class="pill blue">Web app</span>
-          </div>
-          <div class="sales-metric-grid" aria-label="Example workspace metrics">
-            <div><span>Invoices</span><strong>25</strong></div>
-            <div><span>Receivables</span><strong>INR 1.28L</strong></div>
-            <div><span>Overdue</span><strong>4</strong></div>
-          </div>
-          <div class="dashboard-preview">
-            <div class="preview-side">
-              <span></span><span></span><span></span><span></span>
-            </div>
-            <div class="preview-main">
-              <div class="preview-toolbar"></div>
-              <div class="preview-metrics">
-                <strong>Sales</strong><strong>Purchases</strong><strong>Reports</strong>
-              </div>
-              <div class="preview-table">
-                <span></span><span></span><span></span>
+  <main id="home">
+    <section class="hero-carousel" data-carousel aria-roledescription="carousel" aria-label="EazInvoice product highlights">
+      <div class="hero-stage" aria-live="off">
+        <article class="hero-slide hero-slide--workspace is-active" data-carousel-slide aria-hidden="false">
+          <div class="hero-inner">
+            <div class="hero-copy">
+              <span class="hero-badge">Business workspace for Indian MSMEs</span>
+              <h1>Run your business without spreadsheet chaos.</h1>
+              <p>Manage invoices, purchase and work orders, payments, customers, vendors and business insights from one connected workspace.</p>
+              <div class="hero-actions">
+                <a id="homePrimaryAction" class="eaz-button hero-primary" href="/apps/web/dashboard.html">Open Workspace</a>
+                <a id="homeSecondaryAction" class="eaz-button hero-secondary" href="#workflow">See How It Works</a>
               </div>
             </div>
           </div>
         </article>
-        <article class="showcase-card showcase-report">
-          <div class="showcase-head">
-            <strong>Example Invoice</strong>
-            <span class="pill gold">GST-ready</span>
+
+        <article class="hero-slide hero-slide--orders" data-carousel-slide aria-hidden="true">
+          <img class="hero-slide-image" src="./assets/home-slider-po-wo.png" width="1672" height="941" alt="" />
+          <div class="hero-inner">
+            <div class="hero-copy">
+              <span class="hero-badge">Purchase &amp; work order management</span>
+              <h2>Purchase. Order.<br />Deliver. Track.</h2>
+              <p>Create and manage purchase and work orders with clear status, supplier details and connected business records.</p>
+              <div class="hero-actions">
+                <a class="eaz-button hero-primary" href="/apps/web/dashboard.html#purchase-orders">Manage PO / WO</a>
+                <a class="eaz-button hero-secondary" href="#feature-purchase-orders">Explore Purchase Management</a>
+              </div>
+            </div>
           </div>
-          <div class="sample-doc">
-            <div class="sample-row"><span>Client</span><strong>Rahul Sharma</strong></div>
-            <div class="sample-row"><span>Service</span><strong>Website Design</strong></div>
-            <div class="sample-row"><span>GST</span><strong>18%</strong></div>
-            <div class="sample-row total"><span>Total</span><strong>INR 17,700</strong></div>
+        </article>
+
+        <article class="hero-slide hero-slide--ai" data-carousel-slide aria-hidden="true">
+          <img class="hero-slide-image" src="./assets/home-slider-ai-agent.png" width="1672" height="941" alt="" />
+          <div class="hero-inner">
+            <div class="hero-copy">
+              <span class="hero-badge">AI-assisted business workflows</span>
+              <h2>Your business.<br />Assisted by AI.</h2>
+              <p>Draft documents, find information and understand your business faster while EazInvoice remains in control of your financial records.</p>
+              <div class="hero-actions">
+                <a class="eaz-button hero-primary" href="/apps/web/dashboard.html#ai-agent">Explore AI Agent</a>
+                <a class="eaz-button hero-secondary" href="#feature-ai">See AI Capabilities</a>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="hero-slide hero-slide--payments" data-carousel-slide aria-hidden="true">
+          <img class="hero-slide-image" src="./assets/home-slider-payments.png" width="1672" height="941" alt="" />
+          <div class="hero-inner">
+            <div class="hero-copy">
+              <span class="hero-badge">Payments &amp; receivables</span>
+              <h2>Know what's paid.<br />Know what's due.</h2>
+              <p>Track collections, outstanding invoices and payment activity without chasing information across spreadsheets.</p>
+              <div class="hero-actions">
+                <a class="eaz-button hero-primary" href="/apps/web/dashboard.html#report-invoices">View Receivables</a>
+                <a class="eaz-button hero-secondary" href="#feature-payments">Explore Payments</a>
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+      <button class="carousel-arrow carousel-arrow--previous" type="button" data-carousel-prev aria-label="Previous product highlight">&#8592;</button>
+      <button class="carousel-arrow carousel-arrow--next" type="button" data-carousel-next aria-label="Next product highlight">&#8594;</button>
+      <div class="carousel-dots" role="group" aria-label="Choose a product highlight">
+        <button class="carousel-dot is-active" type="button" data-carousel-dot="0" aria-label="Show slide 1 of 4: Workspace" aria-current="true"></button>
+        <button class="carousel-dot" type="button" data-carousel-dot="1" aria-label="Show slide 2 of 4: PO / WO"></button>
+        <button class="carousel-dot" type="button" data-carousel-dot="2" aria-label="Show slide 3 of 4: AI Agent"></button>
+        <button class="carousel-dot" type="button" data-carousel-dot="3" aria-label="Show slide 4 of 4: Payments"></button>
+      </div>
+      <p class="visually-hidden" data-carousel-status aria-live="polite">Workspace, slide 1 of 4</p>
+    </section>
+
+    <section class="carousel-selectors page-container" role="tablist" aria-label="Choose a product highlight">
+      <button class="carousel-selector is-active" type="button" role="tab" data-carousel-select="0" aria-selected="true"><span class="selector-visual" aria-hidden="true"><img src="./assets/home-selector-workspace.png" width="1254" height="1254" alt="" /></span><span><strong>Workspace</strong><small>Run your business</small></span></button>
+      <button class="carousel-selector" type="button" role="tab" data-carousel-select="1" aria-selected="false"><span class="selector-visual" aria-hidden="true"><img src="./assets/home-selector-po-wo.png" width="1254" height="1254" alt="" /></span><span><strong>PO / WO</strong><small>Track and manage</small></span></button>
+      <button class="carousel-selector" type="button" role="tab" data-carousel-select="2" aria-selected="false"><span class="selector-visual" aria-hidden="true"><img src="./assets/home-selector-ai-agent.png" width="1254" height="1254" alt="" /></span><span><strong>AI Agent</strong><small>Draft, analyze, assist</small></span></button>
+      <button class="carousel-selector" type="button" role="tab" data-carousel-select="3" aria-selected="false"><span class="selector-visual" aria-hidden="true"><img src="./assets/home-selector-payments.png" width="1254" height="1254" alt="" /></span><span><strong>Payments</strong><small>Track receivables</small></span></button>
+    </section>
+
+    <section class="home-section workflow-section" id="workflow">
+      <div class="page-container">
+        <div class="section-heading centered"><span>Simple. Powerful. Built for your business.</span><h2>From invoice to insight - all in one workspace</h2><p>EazInvoice connects the everyday flow from creating a business document to tracking payment and reviewing the result.</p></div>
+        <ol class="workflow-track">
+          <li class="journey-step journey-step--create"><div class="journey-marker"><b>1</b><span class="journey-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 2.5h8l4 4V21H5zM13 2.5V7h4.5M8 11h6M8 14.5h5M8 18h3" /><circle cx="17.5" cy="17.5" r="3.25" /><path d="M17.5 15.8v3.4M15.8 17.5h3.4" /></svg></span></div><div><strong>Create</strong><span>Invoices, quotations or PO/WO</span></div></li>
+          <li class="journey-step journey-step--send"><div class="journey-marker"><b>2</b><span class="journey-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m2.5 10.5 19-8-7.8 19-3-8zM10.7 13.5 21.5 2.5" /><circle cx="18" cy="17.5" r="3.5" /><path d="m16.5 17.5 1 1 2-2.2" /></svg></span></div><div><strong>Send / Issue</strong><span>Share approved documents</span></div></li>
+          <li class="journey-step journey-step--track"><div class="journey-marker"><b>3</b><span class="journey-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 20.5h18M5 18v-5M10 18V9M15 18v-7M20 18V5" /><path d="m4 9 5-4 5 2 6-5M17 2h3v3" /></svg></span></div><div><strong>Track</strong><span>Monitor status and outstanding items</span></div></li>
+          <li class="journey-step journey-step--paid"><div class="journey-marker"><b>4</b><span class="journey-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7h15.5A2.5 2.5 0 0 1 21 9.5v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 18.5zM3 10.5h18M6 7V5.5A2.5 2.5 0 0 1 8.5 3H18v4" /><circle cx="16.5" cy="15.5" r="3.25" /><path d="m15.1 15.5 1 1 1.9-2.1" /></svg></span></div><div><strong>Get Paid</strong><span>Record and track collections</span></div></li>
+          <li class="journey-step journey-step--review"><div class="journey-marker"><b>5</b><span class="journey-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M11 12V3a9 9 0 1 0 6.36 15.36z" /><path d="M14 3v7h7a7 7 0 0 0-7-7z" /></svg></span></div><div><strong>Review / Insight</strong><span>Review reports and business activity</span></div></li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="home-section feature-showcase" id="features">
+      <div class="page-container">
+        <div class="section-heading"><span>One connected product</span><h2>Daily business work, clearly organized</h2><p>Practical tools for documents, payments and reporting, presented with the same vocabulary used inside EazInvoice.</p></div>
+        <article class="feature-story" id="feature-invoicing">
+          <div class="story-copy"><span>GST Invoicing</span><h3>Create professional GST-ready invoices without the spreadsheet work.</h3><p>Prepare line items, taxes, customer details and payment instructions, then review the document before finalizing or issuing it.</p><a class="story-link" href="/apps/web/dashboard.html#invoices">Open Invoice Workspace <span aria-hidden="true">&rarr;</span></a></div>
+          <div class="story-visual invoice-visual" aria-label="Example EazInvoice draft invoice interface">
+            <div class="product-window-bar"><span class="product-mark">EI</span><strong>Create Invoice</strong><span class="status-chip status-chip--draft">Draft</span></div>
+            <div class="invoice-context"><div><small>CUSTOMER</small><strong>Acme Creative Studio</strong><span>GSTIN on file</span></div><div><small>INVOICE DATE</small><strong>20 Sep 2026</strong><span>Due in 15 days</span></div></div>
+            <div class="invoice-lines"><div class="invoice-line invoice-line--head"><span>Item</span><span>Qty</span><span>Rate</span><span>Amount</span></div><div class="invoice-line"><strong>Brand consulting</strong><span>1</span><span>INR 35,000</span><strong>INR 35,000</strong></div><div class="invoice-line"><strong>Monthly support</strong><span>1</span><span>INR 5,000</span><strong>INR 5,000</strong></div></div>
+            <div class="invoice-footer"><div><small>PAYMENT TERMS</small><strong>Net 15</strong></div><dl><div><dt>Subtotal</dt><dd>INR 40,000</dd></div><div><dt>GST 18%</dt><dd>INR 7,200</dd></div><div class="invoice-grand-total"><dt>Total</dt><dd>INR 47,200</dd></div></dl></div>
+          </div>
+        </article>
+        <article class="feature-story feature-story--reverse" id="feature-purchase-orders">
+          <div class="story-copy"><span>Purchase &amp; Work Orders</span><h3>Keep supplier work and purchase records connected.</h3><p>Create PO/WO drafts, issue approved documents and retain the record beside vendor and payment activity.</p><a class="story-link story-link--gold" href="/apps/web/dashboard.html#purchase-orders">Open Purchase Orders <span aria-hidden="true">&rarr;</span></a></div>
+          <div class="story-visual order-list-visual" aria-label="Example EazInvoice purchase and work order list">
+            <div class="list-head"><div><small>PROCUREMENT</small><strong>Purchase &amp; Work Orders</strong></div><span class="mock-action">New PO / WO</span></div>
+            <div class="order-summary"><div><small>OPEN ORDERS</small><strong>8</strong></div><div><small>ISSUED VALUE</small><strong>INR 1.32L</strong></div><div><small>VENDORS</small><strong>6</strong></div></div>
+            <div class="list-row"><span class="record-type">PO</span><span><b>PO-0184</b><small>ABC Office Supplies</small></span><em>Issued</em><strong>INR 57,230</strong></div>
+            <div class="list-row"><span class="record-type record-type--work">WO</span><span><b>WO-0079</b><small>Metro Services</small></span><em class="draft">Draft</em><strong>INR 28,000</strong></div>
+            <div class="list-row"><span class="record-type">PO</span><span><b>PO-0178</b><small>Northstar Systems</small></span><em class="recorded">Recorded</em><strong>INR 74,400</strong></div>
+          </div>
+        </article>
+        <article class="feature-story" id="feature-payments">
+          <div class="story-copy"><span>Payments &amp; Receivables</span><h3>See what's collected, due and overdue.</h3><p>Record payments against invoices and review receivables, payables and recent activity without maintaining a separate spreadsheet.</p><a class="story-link story-link--green" href="/apps/web/dashboard.html#reports">Review Receivables <span aria-hidden="true">&rarr;</span></a></div>
+          <div class="story-visual chart-visual" aria-label="Example EazInvoice receivables overview">
+            <div class="product-window-bar"><span class="product-mark product-mark--green">IN</span><strong>Receivables overview</strong><span class="period-chip">This quarter</span></div>
+            <div class="chart-summary"><span class="metric-collected"><small>COLLECTED</small><strong>INR 1,82,500</strong><em>+12%</em></span><span class="metric-due"><small>OUTSTANDING</small><strong>INR 84,250</strong><em>6 invoices</em></span><span class="metric-overdue"><small>OVERDUE</small><strong>INR 18,600</strong><em>2 invoices</em></span></div>
+            <div class="receivables-body"><div><small>COLLECTION TREND</small><div class="bar-chart" aria-hidden="true"><i style="height:42%"></i><i style="height:61%"></i><i style="height:53%"></i><i style="height:78%"></i><i style="height:66%"></i><i style="height:90%"></i></div><div class="chart-axis"><span>Apr</span><span>May</span><span>Jun</span><span>Jul</span><span>Aug</span><span>Sep</span></div></div><div class="receivable-rows"><div><span><b>INV-0142</b><small>Acme Creative</small></span><strong>INR 12,500</strong><em class="paid">Paid</em></div><div><span><b>INV-0138</b><small>Northstar</small></span><strong>INR 24,900</strong><em class="due">Due</em></div><div><span><b>INV-0126</b><small>Metro Services</small></span><strong>INR 18,600</strong><em class="overdue">Overdue</em></div></div></div>
+          </div>
+        </article>
+        <article class="feature-story feature-story--reverse" id="feature-reports">
+          <div class="story-copy"><span>Reports &amp; Insights</span><h3>Turn saved business records into practical visibility.</h3><p>Review invoice, revenue, profit and loss, balance and activity reports based on the records available in your workspace.</p><a class="story-link story-link--indigo" href="/apps/web/dashboard.html#reports">Open Business Reports <span aria-hidden="true">&rarr;</span></a></div>
+          <div class="story-visual report-visual" aria-label="Example EazInvoice business report overview">
+            <div class="report-tabs"><b>Overview</b><span>Invoices</span><span>Revenue</span><span class="period-chip">6 months</span></div>
+            <div class="report-grid"><div><small>TOTAL INVOICED</small><strong>INR 2.67L</strong><em>42 invoices</em></div><div><small>OUTSTANDING</small><strong>INR 84,250</strong><em>6 invoices</em></div><div><small>OVERDUE</small><strong>INR 18,600</strong><em>2 invoices</em></div></div>
+            <div class="report-chart"><div class="report-chart-head"><span><small>INVOICE ACTIVITY</small><strong>Records to visibility</strong></span><span class="report-legend"><i></i> Invoiced <i></i> Collected</span></div><div class="report-bars" aria-hidden="true"><span><i style="height:50%"></i><b style="height:34%"></b></span><span><i style="height:64%"></i><b style="height:48%"></b></span><span><i style="height:58%"></i><b style="height:51%"></b></span><span><i style="height:82%"></i><b style="height:67%"></b></span><span><i style="height:72%"></i><b style="height:61%"></b></span><span><i style="height:94%"></i><b style="height:78%"></b></span></div></div>
+          </div>
+        </article>
+        <article class="feature-story" id="feature-ai">
+          <div class="story-copy"><span>AI Agent</span><h3>Prepare drafts and understand records with human review in control.</h3><p>Eligible plans can use the AI Agent for draft preparation and report summaries. Proposed actions remain reviewable before records are created.</p><a class="story-link story-link--indigo" href="/apps/web/dashboard.html#ai-agent">Open AI Agent <span aria-hidden="true">&rarr;</span></a></div>
+          <div class="story-visual ai-story-visual" aria-label="Example AI-assisted purchase order draft review">
+            <div class="ai-story-head"><div class="eazy-avatar" aria-hidden="true"><span></span><span></span><i></i></div><div><strong>AI Agent</strong><small>Draft assistant</small></div><span>Review required</span></div>
+            <div class="ai-conversation"><p class="prompt"><small>YOU</small>Prepare a PO draft for ABC Office Supplies.</p><div class="draft-preview"><small>PROPOSED DRAFT</small><strong>ABC Office Supplies</strong><span>3 line items</span><span>INR 48,500 before tax</span><p>No record has been created yet.</p></div></div>
+            <div class="review-note"><span aria-hidden="true">&#10003;</span><p><strong>Human review stays in control</strong><small>Check the proposal before creating a draft.</small></p></div>
+            <div class="review-actions" aria-hidden="true"><span class="mock-action mock-action--ai">Create Draft</span><span class="mock-action mock-action--secondary">Discard</span></div>
           </div>
         </article>
       </div>
     </section>
 
-    <section class="landing-section audience-section" id="about">
-      <div class="section-title">
-        <h2>Built For Selling Services, Billing Faster, And Staying Organized</h2>
-        <p>Start with a free workspace, then upgrade when you need sharing, collection links, AI drafting, team controls, or API access.</p>
-      </div>
-      <div class="audience-grid">
-        <article>
-          <span>Freelancers and creators</span>
-          <strong>Create GST-ready invoices and track unpaid work.</strong>
-        </article>
-        <article>
-          <span>Agencies and consultants</span>
-          <strong>Manage clients, projects, PO/WO records, and reports.</strong>
-        </article>
-        <article>
-          <span>Shops and service MSMEs</span>
-          <strong>Track customers, vendors, payments, receivables, and payables.</strong>
-        </article>
-        <article>
-          <span>Growing teams</span>
-          <strong>Add Business controls for roles, approvals, API keys, SMTP, and audit history.</strong>
-        </article>
-      </div>
-      <div class="launch-status-grid" aria-label="Current release status">
-        <article>
-          <span class="pill blue">Ready to test</span>
-          <h3>Web workspace</h3>
-          <p>Core billing, PO/WO, customers, vendors, reports, subscriptions, and AI-assisted drafting surfaces are in place.</p>
-        </article>
-        <article>
-          <span class="pill gold">Verification pending</span>
-          <h3>Paid checkout</h3>
-          <p>Plan logic passes locally. Live Razorpay checkout and webhook activation must be verified before broad ads.</p>
-        </article>
-        <article>
-          <span class="pill gold">Signing pending</span>
-          <h3>Android</h3>
-          <p>The mobile app is ready for internal testing, but Play Store availability waits for signed release upload.</p>
-        </article>
-        <article>
-          <span class="pill blue">Package ready</span>
-          <h3>WordPress plugin</h3>
-          <p>Version 1.0.7 is packaged under the canonical slug. WordPress.org listing still needs external validation/upload.</p>
-        </article>
-      </div>
-    </section>
-
-    <section class="landing-section" id="daily-work">
-      <div class="section-title">
-        <h2>Daily Workflows</h2>
-        <p>The first customer path stays practical: set up business details, create documents, collect and track payments, then review reports.</p>
-      </div>
-      <div class="daily-action-grid">
-        <article>
-          <strong>1</strong>
-          <h3>Set Up Business</h3>
-          <p>Add GST/tax details, address, UPI, and bank information once.</p>
-        </article>
-        <article>
-          <strong>2</strong>
-          <h3>Create Documents</h3>
-          <p>Create invoices, purchase orders, work orders, and drafts from the workspace.</p>
-        </article>
-        <article>
-          <strong>3</strong>
-          <h3>Track Money</h3>
-          <p>Review customers, vendors, payments, receivables, payables, and overdue work.</p>
-        </article>
-        <article>
-          <strong>4</strong>
-          <h3>Upgrade When Needed</h3>
-          <p>Add sharing, payment links, AI drafting, reports, team controls, API access, and Business tools.</p>
-        </article>
-      </div>
-    </section>
-
-    <section class="landing-section" id="workflow">
-      <div class="section-title">
-        <h2>Workflow</h2>
-        <p>The visible flow now matches the product direction: signup, profile, invoice or PO creation, reports, and paid automation.</p>
-      </div>
-      <div class="workflow-chart" aria-label="EazInvoice workflow">
-        <article class="workflow-step">
-          <h3>Signup</h3>
-        </article>
-        <article class="workflow-step">
-          <h3>Business Profile</h3>
-        </article>
-        <article class="workflow-step">
-          <h3>Dashboard</h3>
-        </article>
-        <article class="workflow-step">
-          <h3>Invoice Workflow</h3>
-        </article>
-        <article class="workflow-step">
-          <h3>AI Agent</h3>
-        </article>
-      </div>
-      <div class="workflow-content">
-        <div class="workflow-detail-grid">
-          <article class="workflow-detail-card">
-            <h3>Signup and OTP</h3>
-            <p>Create an account with password and email OTP verification. Mobile is registered without SMS verification for now.</p>
-          </article>
-          <article class="workflow-detail-card">
-            <h3>Business profile</h3>
-            <p>Add GST, state, address, UPI, and bank details during onboarding.</p>
-          </article>
-          <article class="workflow-detail-card">
-            <h3>Invoice and PO workspace</h3>
-            <p>Create invoices, purchase orders, work orders, drafts, records, payments, and printable documents.</p>
-          </article>
-          <article class="workflow-detail-card">
-            <h3>AI Agent</h3>
-            <p>Pro and Business users can prepare invoice drafts, PO/WO drafts, and report summaries from paid AI Agent commands.</p>
-          </article>
+    <section class="home-section audience-section" id="about">
+      <div class="page-container">
+        <div class="section-heading centered"><span>Who it helps</span><h2>Built for the way small businesses actually work.</h2><p>Start simply and keep customers, vendors, documents and money activity in one understandable workspace.</p></div>
+        <div class="audience-list">
+          <article class="audience-card audience-card--freelance"><span class="audience-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3" /><path d="M5 21v-2a7 7 0 0 1 14 0v2" /></svg></span><strong>Freelancers</strong><span>Bill projects and track dues.</span></article>
+          <article class="audience-card audience-card--consulting"><span class="audience-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="14" rx="2" /><path d="M8 6V4h8v2M3 11h18" /></svg></span><strong>Consultants</strong><span>Manage clients and professional fees.</span></article>
+          <article class="audience-card audience-card--agency"><span class="audience-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 21V5h10v16M14 10h6v11M8 9h2M8 13h2M8 17h2M17 14h1M17 17h1" /></svg></span><strong>Agencies</strong><span>Connect work, invoices and reports.</span></article>
+          <article class="audience-card audience-card--trader"><span class="audience-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 9h16l-1-5H5zM5 9v11h14V9M9 20v-6h6v6" /></svg></span><strong>Shops / Traders</strong><span>Track purchases, sales and payments.</span></article>
+          <article class="audience-card audience-card--service"><span class="audience-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 6a4 4 0 0 0-5 5L3 17l4 4 6-6a4 4 0 0 0 5-5l-3 3-3-3z" /></svg></span><strong>Service Businesses</strong><span>Organize customers and recurring work.</span></article>
+          <article class="audience-card audience-card--education"><span class="audience-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m2 10 10-5 10 5-10 5zM6 12v5c3 2 9 2 12 0v-5M22 10v6" /></svg></span><strong>Coaching / Education</strong><span>Invoice services and monitor collections.</span></article>
         </div>
-        <aside class="workflow-image-panel" aria-label="Workflow visual">
-          <div>
-            <span>Business Flow</span>
-            <strong>Profile to documents to AI reports</strong>
-          </div>
-        </aside>
       </div>
     </section>
 
-    <section class="landing-section" id="features">
-      <div class="section-title">
-        <h2>Features</h2>
-        <p>Core billing stays simple, while paid tiers unlock automation, AI, gateway, API, and business-team workflows.</p>
-      </div>
-      <div class="feature-grid landing-feature-grid">
-        <article class="feature-card accent-blue">
-          <h3>AI-assisted drafting</h3>
-          <p>Pro and Business unlock AI invoice, PO/WO, and report drafting. Review every output before using it.</p>
-        </article>
-        <article class="feature-card">
-          <h3>Guided invoices</h3>
-          <p>Business, customer, details, items, taxes, preview, print, and share actions.</p>
-        </article>
-        <article class="feature-card">
-          <h3>Reports dashboard</h3>
-          <p>Total invoices, unpaid amount, overdue, monthly revenue, and recent activity.</p>
-        </article>
-        <article class="feature-card">
-          <h3>Indian GST/TDS readiness</h3>
-          <p>GST-ready fields and report views for review. EazInvoice does not file taxes or provide legal advice.</p>
-        </article>
-        <article class="feature-card">
-          <h3>PO / WO and expenses</h3>
-          <p>Create purchase or work orders and link them to expense and profit reporting.</p>
-        </article>
-        <article class="feature-card accent-gold">
-          <h3>Business controls</h3>
-          <p>Business tier adds team access, approvals, API keys, SMTP settings, compliance, and gateway setup.</p>
-        </article>
+    <section class="home-section devices-section">
+      <div class="page-container devices-layout">
+        <div class="section-heading"><span>Web + Mobile</span><h2>Your business moves. EazInvoice moves with you.</h2><p>Use the full workspace on the web and carry essential invoicing, PO/WO and reporting workflows on Android during internal testing.</p><div class="section-actions"><a class="eaz-button eaz-button--primary" href="/apps/web/dashboard.html">Open Web Workspace</a><a class="eaz-button eaz-button--secondary" href="/apps/web/mobile-app.html">View Mobile App</a></div></div>
+        <div class="device-showcase">
+          <div class="device-composition" aria-label="EazInvoice Workspace preview on desktop and mobile">
+            <div class="desktop-frame"><div class="frame-bar"><span></span><span></span><span></span><b>EazInvoice Workspace</b></div><div class="mini-dashboard"><aside><strong>EI</strong><span>Home</span><span>Invoices</span><span>PO / WO</span><span>Payments</span><span>Reports</span></aside><section><div class="mini-heading"><span><small>BUSINESS OVERVIEW</small><strong>Good morning, Jess</strong></span><em>Sep 2026</em></div><div class="mini-metrics"><div><small>INVOICED</small><strong>INR 2.48L</strong></div><div><small>RECEIVED</small><strong>INR 1.12L</strong></div><div><small>OUTSTANDING</small><strong>INR 36,200</strong></div></div><div class="mini-workspace"><div><small>INVOICE TREND</small><div class="mini-bars"><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div><small>QUICK ACTIONS</small><span>Create invoice</span><span>Create PO / WO</span><span>Record payment</span></div></div></section></div></div>
+            <div class="phone-frame"><div class="phone-speaker"></div><div class="phone-brand"><span>EI</span><strong>Workspace</strong></div><small>Payments received</small><strong class="phone-total">INR 1,12,300</strong><div class="phone-actions"><span>Invoice</span><span>PO / WO</span><span>Payment</span><span>Reports</span></div><div class="phone-activity"><small>RECENT ACTIVITY</small><span><i></i>INV-0142 <b>Paid</b></span><span><i></i>PO-0184 <b>Issued</b></span></div><div class="phone-nav"><i></i><i></i><i></i><i></i><i></i></div></div>
+          </div>
+          <div class="device-benefits"><div><span aria-hidden="true">W</span><p><strong>Web workspace</strong><small>Full operational view</small></p></div><div><span aria-hidden="true">M</span><p><strong>Mobile access</strong><small>Essential workflows during testing</small></p></div><div><span aria-hidden="true">B</span><p><strong>Connected business records</strong><small>Work within the same account</small></p></div></div>
+        </div>
       </div>
     </section>
 
-    <section class="landing-section" id="pricing">
-      <div class="section-title">
-        <h2>Simple Plans, Billed Yearly</h2>
-        <p>Start free, then upgrade when sharing, payment collection, AI drafting, or team controls become worth paying for.</p>
+    <section class="home-section trust-section">
+        <div class="page-container trust-layout">
+          <div class="section-heading"><span>Built on clear controls</span><h2>Business records deserve deliberate workflows.</h2><p>EazInvoice helps teams prepare, review and track business documents while keeping financial actions explicit.</p></div>
+          <div class="trust-list">
+          <article class="trust-item trust-item--gst"><span class="trust-icon" aria-hidden="true">GST</span><div><strong>GST-ready workflows</strong><span>Structured fields and report views for review, without claiming filing or tax advice.</span></div></article>
+          <article class="trust-item trust-item--lifecycle"><span class="trust-icon" aria-hidden="true">&#10003;</span><div><strong>Controlled document lifecycle</strong><span>Draft, finalize and issue actions remain distinct where supported.</span></div></article>
+          <article class="trust-item trust-item--business"><span class="trust-icon" aria-hidden="true">ID</span><div><strong>Business separation</strong><span>Records and workspace access stay scoped to the active business context.</span></div></article>
+          <article class="trust-item trust-item--roles"><span class="trust-icon" aria-hidden="true">R</span><div><strong>Role-based controls</strong><span>Business plans support roles, approvals and auditable workspace activity.</span></div></article>
+        </div>
       </div>
-      <div class="pricing-grid">
-        <article class="pricing-card">
-          <div class="pricing-head">
-            <span>Free</span>
-            <strong>INR 0</strong>
-            <small>For trying the workspace</small>
-          </div>
-          <ul>
-            <li>Limited GST-ready invoices</li>
-            <li>PDF-ready print</li>
-            <li>One profile</li>
-            <li>Manual payments and basic reports</li>
-          </ul>
-          <a class="ghost small" href="/apps/web/auth.html">Start Free</a>
-        </article>
-        <article class="pricing-card featured">
-          <div class="pricing-head">
-            <span>Standard</span>
-            <strong>INR 199/mo</strong>
-            <small>INR 2,388 collected yearly</small>
-          </div>
-          <ul>
-            <li>WhatsApp sharing</li>
-            <li>Razorpay collection link readiness</li>
-            <li>Higher limits and recurring drafts</li>
-            <li>One WordPress paid-access site</li>
-          </ul>
-          <a class="primary small" href="/apps/web/subscription.html">Choose Standard</a>
-        </article>
-        <article class="pricing-card">
-          <div class="pricing-head">
-            <span>Pro</span>
-            <strong>INR 499/mo</strong>
-            <small>INR 5,988 collected yearly</small>
-          </div>
-          <ul>
-            <li>AI invoice drafting</li>
-            <li>AI PO/WO drafting</li>
-            <li>Advanced reports</li>
-            <li>Payment tracking and multiple-business support</li>
-          </ul>
-          <a class="ghost small" href="/apps/web/subscription.html">View Pro</a>
-        </article>
-        <article class="pricing-card">
-          <div class="pricing-head">
-            <span>Business</span>
-            <strong>INR 999/mo</strong>
-            <small>INR 11,988 collected yearly</small>
-          </div>
-          <ul>
-            <li>Team access and approvals</li>
-            <li>API access and audit trail</li>
-            <li>SMTP and gateway settings</li>
-            <li>Priority business workflows</li>
-          </ul>
-          <a class="ghost small" href="/apps/web/subscription.html">View Business</a>
-        </article>
-      </div>
-      <p class="pricing-disclaimer">Paid checkout must be live-verified before broad paid advertising. Plan features remain entitlement-controlled by the EazInvoice API.</p>
     </section>
 
-    <section class="landing-section app-center-section" id="android-app">
-      <div class="section-title">
-        <h2>Release Status</h2>
-        <p>Use these cards for Android, WordPress, and manual guidance while external store/listing steps are completed.</p>
+    <section class="home-section pricing-section" id="pricing">
+      <div class="page-container">
+        <div class="section-heading centered"><span>Pricing</span><h2>Simple plans, billed yearly</h2><p>Start free, then upgrade when sharing, payment collection, AI drafting or team controls become useful.</p></div>
+        <div class="pricing-grid">
+          <article class="pricing-card"><div class="pricing-head"><span>Free</span><strong>INR 0</strong><small>For trying the workspace</small></div><ul><li>Limited GST-ready invoices</li><li>PDF-ready print</li><li>One profile</li><li>Manual payments and basic reports</li></ul><a class="ghost small" href="/apps/web/auth.html">Start Free</a></article>
+          <article class="pricing-card featured"><div class="pricing-label">Most popular</div><div class="pricing-head"><span>Standard</span><strong>INR 199/mo</strong><small>INR 2,388 collected yearly</small></div><ul><li>WhatsApp sharing</li><li>Razorpay collection link readiness</li><li>Higher limits and recurring drafts</li><li>One WordPress paid-access site</li></ul><a class="primary small" href="/apps/web/subscription.html">Choose Standard</a></article>
+          <article class="pricing-card"><div class="pricing-head"><span>Pro</span><strong>INR 499/mo</strong><small>INR 5,988 collected yearly</small></div><ul><li>AI invoice drafting</li><li>AI PO/WO drafting</li><li>Advanced reports</li><li>Payment tracking and multiple-business support</li></ul><a class="ghost small" href="/apps/web/subscription.html">View Pro</a></article>
+          <article class="pricing-card"><div class="pricing-head"><span>Business</span><strong>INR 999/mo</strong><small>INR 11,988 collected yearly</small></div><ul><li>Team access and approvals</li><li>API access and audit trail</li><li>SMTP and gateway settings</li><li>Priority business workflows</li></ul><a class="ghost small" href="/apps/web/subscription.html">View Business</a></article>
+        </div>
       </div>
-      <div class="app-center-grid">
-        <article class="app-center-card app-center-featured">
-          <span class="pill blue">Mobile release</span>
-          <h3>EazInvoice Android</h3>
-          <p>Mobile-first invoicing, PO/WO, reports, and tier access in a compact app shell for internal testing.</p>
-          <div class="app-center-actions">
-            <a class="primary" href="/apps/web/mobile-app.html">Open app center</a>
-            <a class="ghost" href="/apps/web/mobile-app.html#release-notes">Release notes</a>
-          </div>
-        </article>
-        <article class="app-center-card">
-          <span class="pill gold">Play Store</span>
-          <h3>Pending signed release</h3>
-          <p>Public download waits for upload-key/versionCode confirmation, signed AAB, and Play testing.</p>
-        </article>
-        <article class="app-center-card">
-          <span class="pill blue">WordPress</span>
-          <h3>Plugin package ready</h3>
-          <p>Version 1.0.7 is packaged for the canonical slug. WordPress.org approval/upload remains external.</p>
-        </article>
+    </section>
+
+    <section class="resources-section">
+      <div class="page-container resources-row">
+        <div><span>Resources &amp; availability</span><strong>Guidance for the web, Android and WordPress experiences.</strong></div>
+        <a href="/apps/web/user-manual-web.html"><span class="resource-icon" aria-hidden="true">?</span><span><strong>User manuals</strong><small>Setup and operating guides</small></span></a>
+        <a href="/apps/web/mobile-app.html"><span class="resource-icon" aria-hidden="true">A</span><span><strong>Android status</strong><small>Internal testing and release notes</small></span></a>
+        <a href="/apps/web/mobile-app.html#release-notes"><span class="resource-icon" aria-hidden="true">i</span><span><strong>Product availability</strong><small>Current mobile release information</small></span></a>
       </div>
+    </section>
+
+    <section class="final-cta">
+      <div class="page-container final-cta-inner"><div><span>Money Managed Easy.</span><h2>Manage your money. Grow your business.</h2></div><div><a class="eaz-button eaz-button--brand" href="/apps/web/auth.html">Get Started</a><a class="eaz-button final-cta-secondary" href="/apps/web/dashboard.html">Open Workspace</a></div></div>
     </section>
   </main>
 
-  <script type="module" src="./home.js?v=20260606-home-anchor"></script>
+  <footer class="site-footer">
+    <div class="page-container footer-grid">
+      <div class="footer-brand"><img src="./assets/logo-header.png?v=20260605-logo-refresh" alt="EazInvoice" /><p>Money Managed Easy.</p></div>
+      <div><strong>Product</strong><a href="/apps/web/dashboard.html">Workspace</a><a href="/apps/web/dashboard.html#reports">Reports</a><a href="/apps/web/dashboard.html#invoices">Invoices</a><a href="/apps/web/dashboard.html#purchase-orders">PO / WO</a><a href="/apps/web/dashboard.html#ai-agent">AI Agent</a></div>
+      <div><strong>Resources</strong><a href="/apps/web/user-manual-web.html">Web manual</a><a href="/apps/web/user-manual-android.html">Android manual</a><a href="/apps/web/mobile-app.html">Mobile app</a></div>
+      <div><strong>Account &amp; legal</strong><a href="/apps/web/access.html">My Account</a><a href="/apps/web/subscription.html">Subscription</a><a href="/apps/web/privacy.html">Privacy</a></div>
+    </div>
+    <div class="page-container footer-bottom"><span>&copy; 2026 EazInvoice</span><span>Business billing and record-management software</span></div>
+  </footer>
+
+  <script src="./home-carousel.js?v=20260919-stage2" defer></script>
+  <script type="module" src="./home.js?v=20260920-stage2c"></script>
 </body>
 </html>

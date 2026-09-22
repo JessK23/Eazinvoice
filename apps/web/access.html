@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Eazinvoice Access</title>
+  <title>Eazinvoice My Account</title>
   <link rel="stylesheet" href="./styles.css?v=20260723-ui-banner-refresh-5" />
   <script src="./nav.js?v=20260614-responsive-menu" defer></script>
 </head>
@@ -14,26 +14,23 @@
     </div>
     <nav class="topnav">
       <a class="ghost" href="/apps/web/index.html">Home</a>
-      <a class="ghost" href="/apps/web/access.html?tab=invoice">Invoice</a>
-      <a class="ghost" href="/apps/web/access.html?tab=po">PO</a>
-      <a class="ghost" href="/apps/web/access.html?tab=dashboard">Dashboard</a>
+      <a class="ghost workspace-nav-link" href="/apps/web/dashboard.html">My Workspace</a>
       <a class="ghost" href="/apps/web/subscription.html">Subscription</a>
+      <a class="ghost" href="/apps/web/mobile-app.html">Mobile App</a>
       <div id="accessProfileMenu" class="profile-menu" hidden>
         <button id="accessProfileButton" class="profile-button" type="button" aria-expanded="false">
           <span id="accessProfileInitials" class="profile-avatar">U</span>
-          <span>
-            <strong id="accessProfileName">User</strong>
-            <small id="accessProfileMeta">Signed in</small>
-          </span>
+          <span><strong id="accessProfileName">User</strong><small id="accessProfileMeta">Signed in</small></span>
         </button>
         <div id="accessProfileDropdown" class="profile-dropdown" hidden>
           <div class="profile-summary">
             <strong id="accessDropdownName">User</strong>
             <span id="accessDropdownEmail">Signed in</span>
           </div>
-          <button class="profile-tab-jump" type="button" data-profile-tab="profile">Account Settings</button>
+          <button class="profile-tab-jump" type="button" data-profile-tab="profile">Account Profile</button>
           <button class="profile-tab-jump" type="button" data-profile-tab="profile">Change Password</button>
-          <a href="/apps/web/access.html?tab=dashboard">Reports</a>
+          <button class="profile-tab-jump" type="button" data-profile-tab="company">Business Profile</button>
+          <a id="accessAdminLink" href="/apps/web/admin.html" hidden>Admin</a>
           <button id="accessLogout" type="button">Sign-out</button>
         </div>
       </div>
@@ -44,81 +41,47 @@
     <section class="access-hero panel">
       <div>
         <span id="accessPlanBadge" class="pill blue">Free Plan</span>
-        <h1 id="accessTitle">Your Eazinvoice Access</h1>
-        <p id="accessIntro">Manage your profile, company profile, invoices, purchase orders, and plan features from one place.</p>
+        <h1>My Account</h1>
+        <p id="accessIntro">Manage your profile, business details, account settings and subscription.</p>
+        <div class="actions">
+          <a class="primary" href="/apps/web/dashboard.html">Go to Workspace</a>
+          <a class="ghost" href="/apps/web/subscription.html">Manage Subscription</a>
+          <a class="ghost" href="/apps/web/mobile-app.html">Mobile App</a>
+        </div>
       </div>
       <div class="access-summary">
         <strong id="accessName">User</strong>
         <span id="accessEmail">email@example.com</span>
-        <span id="accessCompany">No company profile yet</span>
-        <button id="addCompanyAccessBtn" class="ghost small" type="button" hidden>Add a Company</button>
+        <span id="accessCompany">No business profile yet</span>
+        <button id="addCompanyAccessBtn" class="ghost small" type="button" hidden>Add a Business</button>
       </div>
-      <section id="accessTierBanner" class="tier-banner" aria-label="Plan highlights">
+      <section id="accessTierBanner" class="tier-banner" aria-label="Account and plan summary">
         <div class="tier-banner-copy">
-          <span id="accessTierBannerBadge" class="pill blue">Plan Spotlight</span>
-          <h2 id="accessTierBannerTitle">Clean workspace. Clear controls.</h2>
-          <p id="accessTierBannerText">A lighter workspace banner that highlights the current plan, the key features, and the next upgrade path.</p>
+          <span id="accessTierBannerBadge" class="pill blue">Current plan</span>
+          <h2 id="accessTierBannerTitle">Your account and plan</h2>
+          <p id="accessTierBannerText">Keep your account, business identity, and subscription details current.</p>
           <div id="accessTierBannerTags" class="landing-tags tier-banner-tags"></div>
         </div>
         <div class="tier-banner-visual">
-          <div class="tier-banner-card">
-            <strong id="accessTierBannerMetric">Quick access</strong>
-            <span id="accessTierBannerMetricText">Invoices, PO, reports, compliance and AI in one view.</span>
-          </div>
+          <a class="tier-banner-card" href="/apps/web/dashboard.html" aria-label="Open My Workspace">
+            <strong id="accessTierBannerMetric">Workspace</strong>
+            <span id="accessTierBannerMetricText">Open Workspace for invoices, PO/WO, reports, payments, and AI.</span>
+          </a>
         </div>
       </section>
     </section>
 
     <section class="panel access-tabs-wrap">
-      <div class="access-tabs" role="tablist" aria-label="User access sections">
-        <button class="access-tab access-tab-featured" type="button" data-tab="ai">AI Agent</button>
-        <button class="access-tab active" type="button" data-tab="status">Status</button>
-        <button class="access-tab" type="button" data-tab="profile">Update Profile</button>
-        <button id="companyAccessTab" class="access-tab" type="button" data-tab="company">Company Profile</button>
-        <button class="access-tab" type="button" data-tab="invoice">Generate Invoice</button>
-        <button class="access-tab" type="button" data-tab="po">Generate PO</button>
-        <button class="access-tab" type="button" data-tab="dashboard">Dashboard</button>
-        <button class="access-tab" type="button" data-tab="reports">Reports</button>
-        <button class="access-tab" type="button" data-tab="features">Tier Features</button>
-        <button id="adminAccessTab" class="access-tab" type="button" data-tab="admin" hidden>Admin</button>
+      <div class="access-tabs" role="tablist" aria-label="My Account sections">
+        <button class="access-tab active" type="button" data-tab="status">Overview</button>
+        <button class="access-tab" type="button" data-tab="profile">Account Profile</button>
+        <button id="companyAccessTab" class="access-tab" type="button" data-tab="company">Business Profile</button>
       </div>
-
-      <div class="app-center-strip" aria-label="Android app access">
-        <div class="app-center-strip-copy">
-          <span class="pill blue">Android app</span>
-          <h2>Mobile download center</h2>
-          <p>Give users one visible place for the Play Store app, APK testing build, and release notes.</p>
-        </div>
-        <div class="app-center-strip-actions">
-          <a class="primary" href="/apps/web/mobile-app.html">Open app center</a>
-          <a class="ghost" href="/apps/web/mobile-app.html#release-notes">Release notes</a>
-        </div>
-      </div>
-
-      <section class="access-pane" data-pane="ai" hidden>
-        <div class="panel-head compact">
-          <div>
-            <span class="pill blue">Pro AI and Business AI</span>
-            <h2>AI Agent</h2>
-            <p class="hint">Use the EazInvoice AI Agent to draft invoices, PO/WO records, and report summaries from one command workspace.</p>
-          </div>
-          <a class="primary" href="/apps/web/dashboard.html#ai-agent">Open AI Workspace</a>
-        </div>
-        <div class="quick-grid">
-          <article class="quick-card"><strong>Invoice command</strong><span>Generate a draft invoice from customer, service, amount, tax, and due date text.</span></article>
-          <article class="quick-card"><strong>PO / WO command</strong><span>Create purchase order or work order drafts for vendor-side expense workflows.</span></article>
-          <article class="quick-card"><strong>Report command</strong><span>Summarize revenue, expenses, unpaid invoices, and profit from saved records.</span></article>
-          <article class="quick-card"><strong>Plan access</strong><span>Free keeps AI locked. Pro and Business unlock the AI command workspace.</span></article>
-        </div>
-      </section>
 
       <section class="access-pane" data-pane="status">
         <div class="metric-grid">
           <article class="metric-card"><span>Plan</span><strong id="statusPlan">Free</strong></article>
-          <article class="metric-card"><span>Invoices</span><strong id="statusInvoices">0</strong></article>
-          <article class="metric-card"><span>Companies</span><strong id="statusCompanies">0</strong></article>
-          <article class="metric-card"><span>Customers</span><strong id="statusCustomers">0</strong></article>
-          <article class="metric-card"><span>Purchase Orders</span><strong id="statusPo">0</strong></article>
+          <article class="metric-card"><span>Businesses</span><strong id="statusCompanies">0</strong></article>
           <article class="metric-card"><span>Email OTP</span><strong id="statusEmail">Verified</strong></article>
           <article class="metric-card"><span>Mobile</span><strong id="statusMobile">Registered</strong></article>
         </div>
@@ -127,29 +90,34 @@
 
       <section class="access-pane" data-pane="profile" hidden>
         <form id="profileForm" class="stack">
+          <div class="panel-head compact">
+            <div><h2>Account Profile</h2><p class="hint">Manage the identity and contact details associated with your login.</p></div>
+          </div>
           <div class="grid two">
             <label>Name <input name="name" required /></label>
             <label>Email <input name="email" type="email" disabled /></label>
             <label>Mobile <input name="phone" inputmode="tel" /></label>
             <label>Role <input name="role" disabled /></label>
-            <label>PAN Number <input name="panNumber" placeholder="ABCDE1234F" /></label>
-            <label>Aadhaar Number <input name="aadhaarNumber" inputmode="numeric" placeholder="12-digit Aadhaar number" /></label>
           </div>
           <div class="panel soft-panel">
             <div class="panel-head compact">
-              <div>
-                <h2>Account Settings</h2>
-                <p class="hint">Change password only when you want to update your login credentials.</p>
-              </div>
+              <div><h2>Individual / Entity Identity</h2><p class="hint">These identity fields continue to use the existing account profile record.</p></div>
+            </div>
+            <div class="grid two">
+              <label>PAN Number <input name="panNumber" placeholder="ABCDE1234F" /></label>
+              <label>Aadhaar Number <input name="aadhaarNumber" inputmode="numeric" placeholder="12-digit Aadhaar number" /></label>
+            </div>
+          </div>
+          <div class="panel soft-panel">
+            <div class="panel-head compact">
+              <div><h2>Account Security</h2><p class="hint">Change your password only when you want to update your login credentials.</p></div>
             </div>
             <div class="grid two">
               <label>Current Password <input name="currentPassword" type="password" autocomplete="current-password" /></label>
               <label>New Password <input name="newPassword" type="password" autocomplete="new-password" minlength="8" /></label>
             </div>
           </div>
-          <div class="actions">
-            <button class="primary" type="submit">Update Profile</button>
-          </div>
+          <div class="actions"><button class="primary" type="submit">Update Account Profile</button></div>
           <span id="profileStatus" class="status"></span>
         </form>
       </section>
@@ -157,10 +125,7 @@
       <section class="access-pane" data-pane="company" hidden>
         <form id="companyAccessForm" class="stack">
           <div class="panel-head compact">
-            <div>
-              <h2>Add or Update Company</h2>
-              <p id="companyAccessHint" class="hint">Do you want to add a company? Save the company details and your login access will switch to company mode.</p>
-            </div>
+            <div><h2>Business / Entity Profile</h2><p id="companyAccessHint" class="hint">Add or update the business identity associated with this account.</p></div>
           </div>
           <div class="grid two">
             <label>Business Name <input name="name" required /></label>
@@ -184,150 +149,13 @@
             <label class="full">Address <textarea name="address" rows="3"></textarea></label>
             <label class="full">Bank Details <textarea name="bankDetails" rows="3"></textarea></label>
           </div>
-          <div class="actions">
-            <button class="primary" type="submit">Save Company Profile</button>
-          </div>
+          <div class="actions"><button class="primary" type="submit">Save Business Profile</button></div>
           <span id="companyStatus" class="status"></span>
         </form>
-      </section>
-
-      <section class="access-pane" data-pane="invoice" hidden>
-        <div class="panel-head compact">
-          <div>
-            <span class="pill blue">Invoice workspace</span>
-            <h2>Generate Invoice</h2>
-            <p class="hint">Create a new invoice, continue a draft, or open invoices already created for this account.</p>
-          </div>
-          <a class="primary" href="/apps/web/invoice.html">New Invoice</a>
-        </div>
-        <div class="quick-grid">
-          <article class="quick-card"><strong>Create Invoice</strong><span>Start a new tax invoice with customer, currency, goods or services, and auto invoice number.</span><a class="ghost small" href="/apps/web/invoice.html">Create Invoice</a></article>
-          <article class="quick-card"><strong>Draft Invoices</strong><span>Incomplete invoices saved from the form before final creation.</span><strong id="accessDraftInvoiceCount">0</strong></article>
-          <article class="quick-card"><strong>Generated Invoices</strong><span>Created invoice records counted in reports and revenue.</span><strong id="accessCreatedInvoiceCount">0</strong></article>
-          <article class="quick-card"><strong>Edit Invoices</strong><span>Open a draft or generated invoice record to review and update it.</span></article>
-        </div>
-        <div class="grid two invoice-list-grid">
-          <section class="soft-panel">
-            <div class="panel-head compact">
-              <h3>Draft Invoices</h3>
-              <span class="pill gold">Saved Drafts</span>
-            </div>
-            <div id="accessDraftInvoicesList" class="list"></div>
-          </section>
-          <section class="soft-panel">
-            <div class="panel-head compact">
-              <h3>Generated Invoices</h3>
-              <span class="pill blue">Created</span>
-            </div>
-            <div id="accessCreatedInvoicesList" class="list"></div>
-          </section>
-        </div>
-      </section>
-
-      <section class="access-pane" data-pane="po" hidden>
-        <div class="panel-head compact">
-          <div>
-            <span class="pill blue">PO workspace</span>
-            <h2>Generate PO</h2>
-            <p class="hint">Create purchase orders and track draft or generated PO records separately from invoices.</p>
-          </div>
-          <a class="primary" href="/apps/web/invoice.html?type=po">New PO</a>
-        </div>
-        <div class="quick-grid">
-          <article class="quick-card"><strong>Create PO</strong><span>Start a new vendor purchase order.</span><a class="ghost small" href="/apps/web/invoice.html?type=po">Create PO</a></article>
-          <article class="quick-card"><strong>Draft POs</strong><span>Purchase orders saved before final creation.</span><strong id="accessDraftPoCount">0</strong></article>
-          <article class="quick-card"><strong>Generated POs</strong><span>Created purchase order records.</span><strong id="accessCreatedPoCount">0</strong></article>
-        </div>
-      </section>
-
-      <section class="access-pane" data-pane="dashboard" hidden>
-        <div class="panel-head compact">
-          <div>
-            <span class="pill blue">Dashboard</span>
-            <h2>Reports and Summaries</h2>
-            <p class="hint">Use this dashboard for invoice, PO, revenue, profit and loss, and profile reporting.</p>
-          </div>
-          <a class="primary" href="/apps/web/dashboard.html">Open Reports</a>
-        </div>
-        <div class="quick-grid">
-          <article class="quick-card"><strong>Invoice Summary</strong><span>Drafts, created invoices, pending payments, and invoice revenue.</span></article>
-          <article class="quick-card"><strong>PO Summary</strong><span>Purchase order drafts, vendors, and procurement value.</span></article>
-          <article class="quick-card"><strong>Revenue Report</strong><span>Monthly, yearly, and custom period income views.</span></article>
-          <article class="quick-card"><strong>Profit & Loss</strong><span>Income, expenses, tax, and net profit position.</span></article>
-          <article class="quick-card"><strong>Balance Sheet</strong><span>Assets, liabilities, equity, and business position snapshot.</span></article>
-          <article class="quick-card"><strong>Profile Reports</strong><span>User, customer, company, KYC, and plan status reports.</span></article>
-        </div>
-      </section>
-
-      <section class="access-pane" data-pane="reports" hidden>
-        <div class="report-command">
-          <div>
-            <span class="pill blue">Reporting suite</span>
-            <h2>Income, Expenses, Profit and Growth</h2>
-            <p class="hint">Monthly, yearly, and custom period reporting for revenue, expenses, receivables, and profit tracking.</p>
-          </div>
-          <div class="report-filter">
-            <button class="ghost small" type="button">Monthly</button>
-            <button class="ghost small" type="button">Yearly</button>
-            <button class="ghost small" type="button">Custom Period</button>
-          </div>
-        </div>
-        <div class="report-grid">
-          <article class="report-card revenue"><span>Total Revenue</span><strong>INR 0.00</strong><small>Invoice income for selected period</small></article>
-          <article class="report-card expense"><span>Total Expenses</span><strong>INR 0.00</strong><small>Vendor, operating and purchase entries</small></article>
-          <article class="report-card profit"><span>Net Profit</span><strong>INR 0.00</strong><small>Revenue minus expenses</small></article>
-          <article class="report-card pending"><span>Pending Receivables</span><strong>INR 0.00</strong><small>Unpaid and overdue invoices</small></article>
-        </div>
-        <div class="growth-board">
-          <section class="growth-panel">
-            <div class="panel-head"><h3>Revenue vs Expenses</h3><span class="pill gold">Growth</span></div>
-            <div class="growth-bars" aria-label="Revenue and expense graph preview">
-              <span style="height:42%"></span><span style="height:68%"></span><span style="height:54%"></span><span style="height:78%"></span><span style="height:64%"></span><span style="height:88%"></span>
-            </div>
-          </section>
-          <section class="growth-panel">
-            <div class="panel-head"><h3>Expense Entries</h3><span class="pill blue">Ledger</span></div>
-            <div class="expense-entry-row"><span>Date</span><span>Category</span><span>Vendor</span><span>Amount</span></div>
-            <div class="expense-entry-row muted"><span>--</span><span>Office</span><span>Vendor</span><span>INR 0.00</span></div>
-            <div class="expense-entry-row muted"><span>--</span><span>Travel</span><span>Vendor</span><span>INR 0.00</span></div>
-          </section>
-        </div>
-      </section>
-
-      <section class="access-pane" data-pane="features" hidden>
-        <div class="plan-feature-grid" id="accessPlanFeatureGrid">
-          <article class="plan-tile selected"><strong>Free</strong><p>Limited invoices, basic GST invoices, PDF-ready print, one business, no AI.</p></article>
-          <article class="plan-tile"><strong>Standard</strong><p>Branding removal, WhatsApp sharing, Razorpay collection links, recurring drafts, and higher limits. No AI.</p></article>
-          <article class="plan-tile"><strong>Pro</strong><p>Dedicated AI Agent tab for invoice drafts, PO/WO drafts, report summaries, payment tracking, and multiple businesses.</p></article>
-          <article class="plan-tile"><strong>Business</strong><p>Everything in Pro plus team access, approvals, API access, SMTP settings, compliance profile, analytics, and priority support.</p></article>
-        </div>
-      </section>
-
-      <section class="access-pane" data-pane="admin" hidden>
-        <div class="panel-head">
-          <h2>Admin Rights and Reports</h2>
-          <div class="actions">
-            <a class="ghost small" href="/apps/web/admin.html">Open Full Admin Page</a>
-            <a class="ghost small" href="/apps/web/admin.html#gateway">Gateway Management</a>
-          </div>
-        </div>
-        <div class="admin-grid">
-          <div class="admin-card"><span>Total Monetization</span><strong id="accessAdminTotal">0.00</strong></div>
-          <div class="admin-card"><span>Subscriptions</span><strong id="accessAdminCount">0</strong></div>
-          <div class="admin-card"><span>Company Revenue</span><strong id="accessAdminCompany">0.00</strong></div>
-          <div class="admin-card"><span>Individual Revenue</span><strong id="accessAdminIndividual">0.00</strong></div>
-          <div class="admin-card"><span>Group Revenue</span><strong id="accessAdminGroup">0.00</strong></div>
-        </div>
-        <h3>Subscriptions</h3>
-        <div id="accessAdminSubscriptions" class="list"></div>
-        <h3 style="margin-top:18px">Users and Permissions</h3>
-        <div id="accessAdminUsers" class="list"></div>
-        <h3 style="margin-top:18px">KYC Review Queue</h3>
-        <div id="accessAdminKyc" class="list"></div>
       </section>
     </section>
   </main>
 
-  <script src="./access.js?v=20260531-access-tabs"></script>
+  <script src="./access.js?v=20260919-phase2-account-separation"></script>
 </body>
 </html>

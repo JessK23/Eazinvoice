@@ -28,9 +28,6 @@ const dropdownEmail = document.getElementById("homeDropdownEmail");
 const logoutButton = document.getElementById("homeLogoutButton");
 const primaryAction = document.getElementById("homePrimaryAction");
 const secondaryAction = document.getElementById("homeSecondaryAction");
-const loggedPanel = document.getElementById("loggedInHomePanel");
-const loggedName = document.getElementById("loggedInHomeName");
-const loggedMeta = document.getElementById("loggedInHomeMeta");
 
 function cachedUser() {
   try {
@@ -46,14 +43,13 @@ function showLoggedOutHome() {
   accessPlanLink?.setAttribute("hidden", "hidden");
   profileMenu?.setAttribute("hidden", "hidden");
   profileDropdown?.setAttribute("hidden", "hidden");
-  loggedPanel?.setAttribute("hidden", "hidden");
   if (primaryAction) {
-    primaryAction.href = "/apps/web/auth.html";
-    primaryAction.textContent = "Start Free";
+    primaryAction.href = "/apps/web/dashboard.html";
+    primaryAction.textContent = "Open Workspace";
   }
   if (secondaryAction) {
-    secondaryAction.href = "#pricing";
-    secondaryAction.textContent = "See Plans";
+    secondaryAction.href = "#workflow";
+    secondaryAction.textContent = "See How It Works";
   }
 }
 
@@ -62,10 +58,9 @@ function showLoggedInHome(user) {
   signupLink?.setAttribute("hidden", "hidden");
   accessPlanLink?.removeAttribute("hidden");
   profileMenu?.removeAttribute("hidden");
-  loggedPanel?.removeAttribute("hidden");
   const displayName = user?.name || user?.email || "User";
   const plan = String(user?.plan || "free").toLowerCase();
-  const planLabel = `${plan.charAt(0).toUpperCase()}${plan.slice(1)} - User Access`;
+  const planLabel = `${plan.charAt(0).toUpperCase()}${plan.slice(1)} - My Account`;
   const initials = displayName
     .split(/\s+/)
     .filter(Boolean)
@@ -77,8 +72,6 @@ function showLoggedInHome(user) {
   if (dropdownName) dropdownName.textContent = displayName;
   if (dropdownEmail) dropdownEmail.textContent = user?.email || "Signed in";
   if (accessPlanLink) accessPlanLink.textContent = planLabel;
-  if (loggedName) loggedName.textContent = `Welcome, ${displayName}`;
-  if (loggedMeta) loggedMeta.textContent = user?.email || "Signed in";
   if (primaryAction) {
     primaryAction.href = "/apps/web/dashboard.html";
     primaryAction.textContent = "Open Workspace";
