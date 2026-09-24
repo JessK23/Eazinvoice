@@ -202,7 +202,7 @@ function setMode(nextMode) {
   }
   if (signupOnlyFields) signupOnlyFields.hidden = mode !== "signup";
   renderCompanyRegistrantFields();
-  if (googleAuth) googleAuth.hidden = mode !== "signup";
+  if (googleAuth) googleAuth.hidden = mode === "reset";
 }
 
 signupTab?.addEventListener("click", () => setMode("signup"));
@@ -265,7 +265,10 @@ async function requestEmailOtp() {
   }
 }
 
-googleAuth?.addEventListener("click", () => { window.location.href = startGoogleOAuth(mode); });
+googleAuth?.addEventListener("click", () => {
+  const oauthMode = mode === "signup" ? "signup" : "login";
+  window.location.href = startGoogleOAuth(oauthMode);
+});
 requestOtp?.addEventListener("click", requestEmailOtp);
 resendOtp?.addEventListener("click", requestEmailOtp);
 

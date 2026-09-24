@@ -959,7 +959,8 @@ function getEmailOtpExpirySeconds() {
 }
 
 function getPublicBaseUrl() {
-  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/+$/, "");
+  const configured = String(process.env.PUBLIC_BASE_URL || "").trim();
+  if (configured && !/^(undefined|null)$/i.test(configured)) return configured.replace(/\/+$/, "");
   if (process.env.NODE_ENV === "production") return "https://www.eazinvoice.com";
   return "http://localhost:3001";
 }
@@ -2256,9 +2257,12 @@ export function createServer(options = {}) {
         let provider = "local-email";
         if (useSupabaseEmailOtp) {
           try {
+            const configuredBase = getPublicBaseUrl();
+            const safeBase = /localhost|127\.0\.0\.1/i.test(configuredBase) ? "https://www.eazinvoice.com" : configuredBase;
+            const otpTab = mode === "signup" ? "signup" : "login";
             otp = await supabaseEmailOtpRequester({
               email: body.email,
-              redirectTo: body.client === "mobile" ? "https://www.eazinvoice.com/apps/web/auth.html?tab=login" : "",
+              redirectTo: `${safeBase}/apps/web/auth.html?tab=${otpTab}`,
             });
             provider = "supabase";
           } catch (supabaseError) {
@@ -2453,39 +2457,32 @@ export function createServer(options = {}) {
     }
 
     if (url.pathname === "/auth/google" && req.method === "POST") {
-      const body = await readBody(req);
-      const existing = api.getUserByEmail(body.email ?? "");
-      const user = promoteAdmin(existing
-        ? api.updateUserAuthDetails(existing.id, { emailVerified: true })
-        : api.createUser({
-          name: body.name ?? "Google User",
-          email: body.email ?? "google-user@example.com",
-          emailVerified: true,
-          role: adminRoleForEmail(body.email) ? "admin" : "user",
-          permissions: adminPermissionsForEmail(body.email),
-        }));
-      const token = sessions.create(user);
-      sendJson(res, 200, { user, token, provider: "google" });
+      sendJson(res, 410, {
+        error: "Direct Google identity POST is disabled. Use /auth/google/start for verified OAuth.",
+      });
       return;
     }
-
     if (url.pathname === "/auth/admin" && req.method === "POST") {
       sendJson(res, 410, { error: "Admin access now uses the normal signup and login flow." });
       return;
     }
 
     if (url.pathname === "/auth/google/start" && req.method === "GET") {
-      const clientId = process.env.GOOGLE_CLIENT_ID;
-      const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${getPublicBaseUrl()}/auth/google/callback`;
+      const rawClientId = String(process.env.GOOGLE_CLIENT_ID || "").trim();
+      const clientIdLooksPlaceholder = !rawClientId || /your[_-]?google|placeholder|example/i.test(rawClientId);
+      const clientId = clientIdLooksPlaceholder ? "" : rawClientId;
+      const redirectUri = String(process.env.GOOGLE_REDIRECT_URI || `${getPublicBaseUrl()}/auth/google/callback`).trim();
       if (!clientId) {
         sendJson(res, 500, {
-          error: "Google login is not configured yet. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI.",
+          error: "Google login is not configured. Set a valid GOOGLE_CLIENT_ID in Render and keep GOOGLE_CLIENT_SECRET + GOOGLE_REDIRECT_URI aligned with Google OAuth settings.",
         });
         return;
       }
-      const state = oauthStates.create({
-        mode: url.searchParams.get("mode") || "login",
-      });
+      const mode = ["signup", "login"].includes(String(url.searchParams.get("mode") || "").toLowerCase())
+        ? String(url.searchParams.get("mode")).toLowerCase()
+        : "login";
+      const client = String(url.searchParams.get("client") || "web").toLowerCase() === "mobile" ? "mobile" : "web";
+      const state = oauthStates.create({ mode, client });
       const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
       authUrl.searchParams.set("client_id", clientId);
       authUrl.searchParams.set("redirect_uri", redirectUri);
@@ -2504,21 +2501,64 @@ export function createServer(options = {}) {
     }
 
     if (url.pathname === "/auth/google/callback" && req.method === "GET") {
-      const code = url.searchParams.get("code");
-      const state = url.searchParams.get("state");
-      const oauthState = oauthStates.consume(state);
-      if (!code || !oauthState) {
-        sendJson(res, 400, { error: "Invalid Google OAuth callback" });
+      const callbackState = url.searchParams.get("state") || "";
+      const oauthState = oauthStates.consume(callbackState);
+      const callbackError = url.searchParams.get("error") || "";
+      const callbackErrorDescription = url.searchParams.get("error_description") || "";
+      const oauthMode = ["signup", "login"].includes(String(oauthState?.mode || "")) ? oauthState.mode : "login";
+      const oauthClient = oauthState?.client === "mobile" ? "mobile" : "web";
+
+      const failAuth = (message) => {
+        if (oauthClient === "mobile") {
+          const deepLinkBase = String(process.env.MOBILE_APP_URL || "eazinvoice://auth/callback").trim();
+          let deepLink = deepLinkBase;
+          try {
+            const parsedDeepLink = new URL(deepLinkBase);
+            parsedDeepLink.searchParams.set("error", message);
+            parsedDeepLink.searchParams.set("provider", "google");
+            parsedDeepLink.searchParams.set("mode", oauthMode);
+            deepLink = parsedDeepLink.toString();
+          } catch {
+            deepLink = `${deepLinkBase}?error=${encodeURIComponent(message)}&provider=google&mode=${encodeURIComponent(oauthMode)}`;
+          }
+          const fallback = new URL(`${getPublicBaseUrl()}/apps/mobile/index.html`);
+          fallback.searchParams.set("error", message);
+          fallback.searchParams.set("provider", "google");
+          fallback.searchParams.set("mode", oauthMode);
+          const html = `<!doctype html><html><body><script>window.location.href=${JSON.stringify(deepLink)};setTimeout(function(){window.location.href=${JSON.stringify(fallback.toString())};},1200);</script><p>Returning to EazInvoice app…</p></body></html>`;
+          res.writeHead(200, securityHeaders({ "Content-Type": "text/html; charset=utf-8" }));
+          res.end(html);
+          return;
+        }
+        const destination = new URL(`${getPublicBaseUrl()}/apps/web/auth.html`);
+        destination.searchParams.set("tab", oauthMode);
+        destination.searchParams.set("error", message);
+        res.writeHead(302, {
+          ...securityHeaders(),
+          Location: destination.toString(),
+        });
+        res.end();
+      };
+
+      if (callbackError) {
+        const message = callbackErrorDescription || callbackError || "Google sign-in failed.";
+        failAuth(message);
         return;
       }
 
-      const clientId = process.env.GOOGLE_CLIENT_ID;
+      const code = url.searchParams.get("code");
+      if (!code || !oauthState) {
+        failAuth("Invalid Google OAuth callback.");
+        return;
+      }
+
+      const rawClientId = String(process.env.GOOGLE_CLIENT_ID || "").trim();
+      const clientIdLooksPlaceholder = !rawClientId || /your[_-]?google|placeholder|example/i.test(rawClientId);
+      const clientId = clientIdLooksPlaceholder ? "" : rawClientId;
       const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-      const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${getPublicBaseUrl()}/auth/google/callback`;
+      const redirectUri = String(process.env.GOOGLE_REDIRECT_URI || `${getPublicBaseUrl()}/auth/google/callback`).trim();
       if (!clientId || !clientSecret) {
-        sendJson(res, 500, {
-          error: "Google OAuth secrets are not configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.",
-        });
+        failAuth("Google OAuth credentials are not configured.");
         return;
       }
 
@@ -2535,7 +2575,7 @@ export function createServer(options = {}) {
       });
       const tokenPayload = await tokenResponse.json();
       if (!tokenResponse.ok) {
-        sendJson(res, 400, { error: tokenPayload.error_description || tokenPayload.error || "Google token exchange failed" });
+        failAuth(tokenPayload.error_description || tokenPayload.error || "Google token exchange failed.");
         return;
       }
 
@@ -2544,7 +2584,11 @@ export function createServer(options = {}) {
       });
       const profile = await profileResponse.json();
       if (!profileResponse.ok) {
-        sendJson(res, 400, { error: profile.error || "Google userinfo failed" });
+        failAuth(profile.error || "Google userinfo failed.");
+        return;
+      }
+      if (!profile.email || profile.email_verified === false) {
+        failAuth("Google identity is missing a verified email.");
         return;
       }
 
@@ -2559,17 +2603,39 @@ export function createServer(options = {}) {
           permissions: adminPermissionsForEmail(profile.email),
         }));
       const token = sessions.create(user);
+
+      if (oauthClient === "mobile") {
+        const deepLinkBase = String(process.env.MOBILE_APP_URL || "eazinvoice://auth/callback").trim();
+        let deepLink = deepLinkBase;
+        try {
+          const parsedDeepLink = new URL(deepLinkBase);
+          parsedDeepLink.searchParams.set("token", token);
+          parsedDeepLink.searchParams.set("provider", "google");
+          parsedDeepLink.searchParams.set("mode", oauthMode);
+          deepLink = parsedDeepLink.toString();
+        } catch {
+          deepLink = `${deepLinkBase}?token=${encodeURIComponent(token)}&provider=google&mode=${encodeURIComponent(oauthMode)}`;
+        }
+        const fallback = new URL(`${getPublicBaseUrl()}/apps/mobile/index.html`);
+        fallback.searchParams.set("token", token);
+        fallback.searchParams.set("provider", "google");
+        fallback.searchParams.set("mode", oauthMode);
+        const html = `<!doctype html><html><body><script>window.location.href=${JSON.stringify(deepLink)};setTimeout(function(){window.location.href=${JSON.stringify(fallback.toString())};},1200);</script><p>Returning to EazInvoice app…</p></body></html>`;
+        res.writeHead(200, securityHeaders({ "Content-Type": "text/html; charset=utf-8" }));
+        res.end(html);
+        return;
+      }
+
       const destination = new URL(`${getPublicBaseUrl()}/apps/web/index.html`);
       destination.searchParams.set("token", token);
       destination.searchParams.set("provider", "google");
-      destination.searchParams.set("mode", oauthState.mode);
+      destination.searchParams.set("mode", oauthMode);
       const html = `<!doctype html><html><body><script>localStorage.setItem('eazinvoice_token', ${JSON.stringify(token)});window.location.href=${JSON.stringify(destination.toString())};</script></body></html>`;
       res.writeHead(200, securityHeaders({ "Content-Type": "text/html; charset=utf-8" }));
       res.end(html);
       return;
     }
-
-    if (url.pathname === "/wordpress/connection" && req.method === "POST") {
+if (url.pathname === "/wordpress/connection" && req.method === "POST") {
       try {
         const body = await readBody(req);
         sendJson(res, 200, api.validateWordPressConnection(body));

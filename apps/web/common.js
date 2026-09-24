@@ -13,11 +13,32 @@ function cookieToken() {
     .find((part) => part.startsWith("eazinvoice_token="))
     ?.split("=")[1];
 }
+function callbackSearchParams() {
+  return new URLSearchParams(window.location.search);
+}
+
+export function oauthCallbackTokenFromUrl() {
+  return callbackSearchParams().get("token") || "";
+}
+
+export function hasOauthCallbackParams() {
+  const params = callbackSearchParams();
+  return ["token", "provider", "mode", "error"].some((key) => params.has(key));
+}
+
+export function cleanupOauthCallbackUrl() {
+  if (!hasOauthCallbackParams()) return;
+  const url = new URL(window.location.href);
+  ["token", "provider", "mode", "error"].forEach((key) => url.searchParams.delete(key));
+  const cleaned = `${url.pathname}${url.search}${url.hash}`;
+  window.history.replaceState({}, document.title, cleaned);
+}
+
 
 export function getTokenCandidates() {
   const cookie = cookieToken();
   const candidates = [
-    new URLSearchParams(window.location.search).get("token"),
+    oauthCallbackTokenFromUrl(),
     sessionStorage.getItem("eazinvoice_token"),
     localStorage.getItem("eazinvoice_token"),
     cookie ? decodeURIComponent(cookie) : "",
@@ -99,6 +120,7 @@ export function mountAdminPlanPreview(sessionContext, { containerSelector = ".to
 export async function requireSession(redirectTo = "/apps/web/auth.html") {
   const candidates = getTokenCandidates();
   if (!candidates.length) {
+    cleanupOauthCallbackUrl();
     window.location.replace(redirectTo);
     return null;
   }
@@ -111,12 +133,14 @@ export async function requireSession(redirectTo = "/apps/web/auth.html") {
         ...(session.user || {}),
         plan: session.plan?.plan || "free",
       }));
+      cleanupOauthCallbackUrl();
       return { token, session };
     } catch {
       // Try the next possible session source before logging the user out.
     }
   }
 
+  cleanupOauthCallbackUrl();
   clearToken();
   window.location.replace(redirectTo);
   return null;

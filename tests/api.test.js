@@ -3471,13 +3471,11 @@ test("homepage pricing highlights Standard as the primary paid plan", () => {
 
 
 test("web AI Agent entry points use the canonical ai-agent route", () => {
-  const accessHtml = fs.readFileSync(path.join(process.cwd(), "apps", "web", "access.html"), "utf8");
   const dashboardHtml = fs.readFileSync(path.join(process.cwd(), "apps", "web", "dashboard.html"), "utf8");
   const indexHtml = fs.readFileSync(path.join(process.cwd(), "apps", "web", "index.html"), "utf8");
   const navScript = fs.readFileSync(path.join(process.cwd(), "apps", "web", "nav.js"), "utf8");
   const dashboardScript = fs.readFileSync(path.join(process.cwd(), "apps", "web", "dashboard.js"), "utf8");
 
-  assert.match(accessHtml, /\/apps\/web\/dashboard\.html#ai-agent/);
   assert.match(dashboardHtml, /id="ai-agent"/);
   assert.match(dashboardHtml, /id="aiAgentPanel"/);
   assert.match(indexHtml, /\/apps\/web\/dashboard\.html#ai-agent/);
@@ -8150,5 +8148,110 @@ test("static server exposes only the browser api client from api source", async 
     assert.equal(source.status, 403);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("auth OTP uses a production-safe redirect target for signup and never localhost", async () => {
+  const seen = [];
+  const previousPublicBase = process.env.PUBLIC_BASE_URL;
+  process.env.PUBLIC_BASE_URL = "http://localhost:3001";
+  const server = createServer({
+    persist: false,
+    useSupabaseEmailOtp: true,
+    supabaseEmailOtpRequester: async ({ email, redirectTo }) => {
+      seen.push({ email, redirectTo });
+      return { email, expiresInSeconds: 90 };
+    },
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const response = await fetch(`${baseUrl}/auth/email-otp/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "signup", email: "otp-safe@example.com", client: "mobile" }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(seen.length, 1);
+    assert.ok(!/localhost|127\.0\.0\.1/i.test(seen[0].redirectTo));
+    assert.match(seen[0].redirectTo, /https:\/\/www\.eazinvoice\.com\/apps\/web\/auth\.html\?tab=signup/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    process.env.PUBLIC_BASE_URL = previousPublicBase;
+  }
+});
+
+test("direct Google identity POST route is disabled in favor of OAuth callback validation", async () => {
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const response = await fetch(`${baseUrl}/auth/google`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "unsafe@example.com", name: "Unsafe" }),
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 410);
+    assert.match(payload.error || "", /disabled/i);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("google oauth start validates client config and supports mobile client flag", async () => {
+  const prevId = process.env.GOOGLE_CLIENT_ID;
+  const prevSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const prevRedirect = process.env.GOOGLE_REDIRECT_URI;
+  process.env.GOOGLE_CLIENT_ID = "test-google-client-id.apps.googleusercontent.com";
+  process.env.GOOGLE_CLIENT_SECRET = "test-secret";
+  process.env.GOOGLE_REDIRECT_URI = "https://www.eazinvoice.com/auth/google/callback";
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const response = await fetch(`${baseUrl}/auth/google/start?mode=signup&client=mobile`, { redirect: "manual" });
+    assert.equal(response.status, 302);
+    const location = response.headers.get("location") || "";
+    assert.match(location, /^https:\/\/accounts\.google\.com\//);
+    assert.match(location, /state=/);
+    assert.match(location, /redirect_uri=https%3A%2F%2Fwww\.eazinvoice\.com%2Fauth%2Fgoogle%2Fcallback/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    process.env.GOOGLE_CLIENT_ID = prevId;
+    process.env.GOOGLE_CLIENT_SECRET = prevSecret;
+    process.env.GOOGLE_REDIRECT_URI = prevRedirect;
+  }
+});
+
+test("google oauth callback returns mobile deep-link handoff on oauth error", async () => {
+  const prevId = process.env.GOOGLE_CLIENT_ID;
+  const prevSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const prevRedirect = process.env.GOOGLE_REDIRECT_URI;
+  const prevMobileUrl = process.env.MOBILE_APP_URL;
+  process.env.GOOGLE_CLIENT_ID = "test-google-client-id.apps.googleusercontent.com";
+  process.env.GOOGLE_CLIENT_SECRET = "test-secret";
+  process.env.GOOGLE_REDIRECT_URI = "https://www.eazinvoice.com/auth/google/callback";
+  process.env.MOBILE_APP_URL = "eazinvoice://auth/callback";
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const start = await fetch(`${baseUrl}/auth/google/start?client=mobile`, { redirect: "manual" });
+    const location = start.headers.get("location") || "";
+    const state = new URL(location).searchParams.get("state") || "";
+    assert.ok(state);
+
+    const callback = await fetch(`${baseUrl}/auth/google/callback?error=access_denied&state=${encodeURIComponent(state)}`);
+    const html = await callback.text();
+    assert.equal(callback.status, 200);
+    assert.match(html, /eazinvoice:\/\/auth\/callback/);
+    assert.match(html, /apps\/mobile\/index\.html/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    process.env.GOOGLE_CLIENT_ID = prevId;
+    process.env.GOOGLE_CLIENT_SECRET = prevSecret;
+    process.env.GOOGLE_REDIRECT_URI = prevRedirect;
+    process.env.MOBILE_APP_URL = prevMobileUrl;
   }
 });

@@ -27,12 +27,18 @@ const state = {
   reportFinancialYear: "",
   aiConversation: [],
   aiRobotState: "idle",
+  menuOpen: false,
+  profileMenuOpen: false,
+  accountTab: "overview",
+  accountSettingsTab: "api",
+  lastCreatedApiKey: "",
   data: emptyData(),
 };
 
 const dom = {};
 let otpExpiryTimer = null;
 let otpExpiresAt = 0;
+let appUrlOpenBound = false;
 
 function emptyData() {
   return {
@@ -61,6 +67,7 @@ function emptyData() {
     yearEnd: null,
     team: [],
     settings: null,
+    apiKeys: [],
   };
 }
 
@@ -287,6 +294,12 @@ const api = {
   requestOtp(email, mode = "login") {
     return this.request("/auth/email-otp/request", { method: "POST", body: { email, mode, client: "mobile" } });
   },
+  companies(params) {
+    return this.request(`/companies${query(params)}`);
+  },
+  subscriptionsMe() {
+    return this.request("/subscriptions/me");
+  },
   signup(name, email, password, phone, otp) {
     return this.request("/auth/signup", { method: "POST", body: { name, email, password, phone, otp, subscriberType: "individual" } });
   },
@@ -301,6 +314,12 @@ const api = {
   },
   me() {
     return this.request("/me");
+  },
+  updateProfile(body) {
+    return this.request("/me", { method: "PATCH", body });
+  },
+  updateCompany(companyId, body) {
+    return this.request(`/companies/${encodeURIComponent(companyId)}`, { method: "PATCH", body });
   },
   workspaces() {
     return this.request("/business/workspaces");
@@ -431,6 +450,31 @@ const api = {
   businessSettings(params) {
     return this.request(`/business/settings${query(params)}`);
   },
+  updateBusinessSettings(body) {
+    return this.request("/business/settings", { method: "PATCH", body });
+  },
+  testBusinessEmailSettings(body) {
+    return this.request("/business/settings/email/test", { method: "POST", body });
+  },
+  createTeamMember(body) {
+    return this.request("/business/team", { method: "POST", body });
+  },
+  updateTeamMember(memberId, body) {
+    return this.request(`/business/team/${encodeURIComponent(memberId)}`, { method: "PATCH", body });
+  },
+  apiKeys(params) {
+    return this.request(`/business/api-keys${query(params)}`);
+  },
+  createApiKey(body) {
+    return this.request("/business/api-keys", { method: "POST", body });
+  },
+  revokeApiKey(apiKeyId, params = {}) {
+    return this.request(`/business/api-keys/${encodeURIComponent(apiKeyId)}${query(params)}`, { method: "DELETE" });
+  },
+  startGoogleOAuth(mode = "login") {
+    const safeMode = mode === "signup" ? "signup" : "login";
+    return `${state.apiBase}/auth/google/start?mode=${encodeURIComponent(safeMode)}&client=mobile`;
+  },
   complianceDashboard(params) {
     return this.request(`/business/compliance-dashboard${query(params)}`);
   },
@@ -455,6 +499,123 @@ function mapError(error) {
     return error.message;
   }
   return error?.message || "Something went wrong.";
+}
+
+function applyMePayload(payload) {
+  if (payload && typeof payload === "object" && payload.user) {
+    state.user = payload.user || null;
+    state.accountPlan = payload.plan || state.accountPlan || null;
+    return;
+  }
+  state.user = payload || null;
+}
+
+function hasValue(value) {
+  return typeof value === "string" ? Boolean(value.trim()) : value !== null && value !== undefined;
+}
+
+function missingFields(record, requiredFields) {
+  return requiredFields.filter((field) => !hasValue(record?.[field]));
+}
+
+function activeCompany() {
+  if (!Array.isArray(state.companies) || !state.companies.length) return null;
+  if (state.activeWorkspace?.businessId) {
+    const scoped = state.companies.find((entry) => entry.id === state.activeWorkspace.businessId || entry.businessId === state.activeWorkspace.businessId);
+    if (scoped) return scoped;
+  }
+  return state.companies[0] || null;
+}
+
+function profileSetupState() {
+  const accountMissing = missingFields(state.user || {}, ACCOUNT_PROFILE_REQUIRED_FIELDS);
+  const company = activeCompany();
+  const businessMissing = missingFields(company || {}, BUSINESS_PROFILE_REQUIRED_FIELDS);
+  const businessComplete = Boolean(company) && businessMissing.length === 0;
+  return {
+    accountComplete: accountMissing.length === 0,
+    businessComplete,
+    accountMissing,
+    businessMissing,
+    needsSetup: accountMissing.length > 0 || !businessComplete,
+    destination: accountMissing.length > 0 ? "profile" : "business",
+  };
+}
+
+function derivePlan() {
+  const direct = state.accountPlan?.plan || state.accountPlan?.tier || state.accountPlan?.name;
+  if (direct) return String(direct).toLowerCase();
+  const activeSub = (Array.isArray(state.subscriptions) ? state.subscriptions : []).find((entry) => {
+    const status = String(entry.status || "active").toLowerCase();
+    return status === "active" || status === "trial";
+  });
+  return String(activeSub?.plan || activeSub?.tier || "free").toLowerCase();
+}
+
+function planLabel() {
+  const plan = derivePlan();
+  return plan ? `${plan.charAt(0).toUpperCase()}${plan.slice(1)}` : "Free";
+}
+
+function normalizePlanId(value) {
+  return String(value || "free").trim().toLowerCase() || "free";
+}
+
+function subscriptionCatalog() {
+  if (Array.isArray(state.accountPlan?.catalog) && state.accountPlan.catalog.length) {
+    return state.accountPlan.catalog;
+  }
+  return [];
+}
+
+function activeSubscriptionRecord() {
+  const subscriptions = Array.isArray(state.subscriptions) ? state.subscriptions : [];
+  const active = subscriptions.find((entry) => {
+    const normalized = String(entry?.status || "").trim().toLowerCase();
+    return ["active", "trial", "trialing", "past_due"].includes(normalized);
+  });
+  return active || subscriptions[subscriptions.length - 1] || null;
+}
+
+function formatSubscriptionState(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (!normalized) return "";
+  const map = {
+    active: "Active",
+    trial: "Trial",
+    trialing: "Trial",
+    free: "Free",
+    past_due: "Past Due",
+    canceled: "Cancelled",
+    cancelled: "Cancelled",
+    expired: "Expired",
+    unpaid: "Unpaid",
+    paused: "Paused",
+    incomplete: "Incomplete",
+    within_limits: "Within Limits",
+  };
+  if (map[normalized]) return map[normalized];
+  return normalized.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function subscriptionStatusLabel() {
+  const active = activeSubscriptionRecord();
+  const activeStatus = formatSubscriptionState(active?.status);
+  if (activeStatus) return activeStatus;
+
+  const summaryStatus = state.accountPlan?.status;
+  if (summaryStatus && typeof summaryStatus === "object") {
+    if (typeof summaryStatus.reason === "string" && summaryStatus.reason.trim() && summaryStatus.reason !== "within limits") {
+      return summaryStatus.reason.trim();
+    }
+    if (summaryStatus.allowed === true) {
+      return normalizePlanId(derivePlan()) === "free" ? "Free" : "Active";
+    }
+  }
+
+  const fallbackStatus = formatSubscriptionState(state.accountPlan?.subscription?.status || state.accountPlan?.status);
+  if (fallbackStatus) return fallbackStatus;
+  return normalizePlanId(derivePlan()) === "free" ? "Free" : "Active";
 }
 
 function isUnauthorizedError(error) {
@@ -504,9 +665,75 @@ async function saveSession() {
   }));
 }
 
+function oauthCallbackDataFromUrl(urlText = "") {
+  if (!urlText) return null;
+  try {
+    const parsed = new URL(urlText);
+    const token = parsed.searchParams.get("token") || "";
+    if (!token) return null;
+    return {
+      token,
+      provider: parsed.searchParams.get("provider") || "google",
+      mode: parsed.searchParams.get("mode") || "login",
+      error: parsed.searchParams.get("error") || "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function applyExternalOAuth(urlText) {
+  const payload = oauthCallbackDataFromUrl(urlText);
+  if (!payload) return false;
+  if (payload.error) {
+    setStatus(payload.error, "error", "auth");
+    return false;
+  }
+  state.token = payload.token;
+  await saveSession();
+  state.authMode = "login";
+  const refreshed = await refreshSessionAndData({ quietUnauthorized: true });
+  if (!refreshed) {
+    setStatus("Google sign-in did not complete. Please try again.", "error", "auth");
+    render();
+    return false;
+  }
+  setStatus("Signed in with Google.", "success", "home");
+  render();
+  return true;
+}
+
+async function consumeAuthTokenFromCurrentUrl() {
+  const consumed = await applyExternalOAuth(window.location.href);
+  if (!consumed) return;
+  const clean = new URL(window.location.href);
+  clean.searchParams.delete("token");
+  clean.searchParams.delete("provider");
+  clean.searchParams.delete("mode");
+  clean.searchParams.delete("error");
+  window.history.replaceState({}, document.title, `${clean.pathname}${clean.search}${clean.hash}`);
+}
+
+function bindNativeAuthCallback() {
+  if (appUrlOpenBound) return;
+  const appPlugin = window.Capacitor?.Plugins?.App;
+  if (!appPlugin?.addListener) return;
+  appUrlOpenBound = true;
+  appPlugin.addListener("appUrlOpen", (event) => {
+    if (!event?.url) return;
+    void applyExternalOAuth(event.url);
+    const browser = window.Capacitor?.Plugins?.Browser;
+    if (browser?.close) {
+      void browser.close().catch(() => {});
+    }
+  });
+}
+
 async function logout(renderAfter = true) {
   state.token = "";
   state.user = null;
+  state.menuOpen = false;
+  state.profileMenuOpen = false;
   state.workspaces = [];
   state.activeWorkspace = null;
   state.data = emptyData();
@@ -532,10 +759,22 @@ async function withBusy(action, label = "Working...") {
   }
 }
 
-function setStatus(message, tone = "info") {
+function statusVisible(scope) {
+  if (!scope || scope === "global") return true;
+  if (scope === "auth") return !state.token;
+  return scope === state.route;
+}
+
+function renderStatus() {
   if (!dom.status) return;
-  dom.status.textContent = message || "";
-  dom.status.dataset.tone = tone;
+  const payload = state.status || { message: "", tone: "info", scope: "global" };
+  dom.status.textContent = statusVisible(payload.scope) ? (payload.message || "") : "";
+  dom.status.dataset.tone = payload.tone || "info";
+}
+
+function setStatus(message, tone = "info", scope = state.token ? state.route : "auth") {
+  state.status = { message: message || "", tone, scope };
+  renderStatus();
 }
 
 function normalizedAuthMode(mode) {
@@ -555,9 +794,11 @@ function setAuthMode(mode) {
 async function boot() {
   cacheDom();
   bindEvents();
+  bindNativeAuthCallback();
   state.apiBase = normalizeApiBase(state.apiBase);
   dom.apiBase.value = state.apiBase;
   await restoreSession();
+  await consumeAuthTokenFromCurrentUrl();
   state.booted = true;
   if (state.token) {
     const refreshed = await refreshSessionAndData({ quietUnauthorized: true });
@@ -575,7 +816,7 @@ async function refreshSessionAndData({ quietUnauthorized = false } = {}) {
     setStatus("Syncing workspace...");
     renderChrome();
     try {
-      state.user = await api.me();
+      applyMePayload(await api.me());
     } catch (error) {
       if (isUnauthorizedError(error)) {
         await logout(false);
@@ -585,6 +826,7 @@ async function refreshSessionAndData({ quietUnauthorized = false } = {}) {
     }
     try {
       await hydrateWorkspaceData();
+      setStatus("");
       return true;
     } catch (error) {
       if (isUnauthorizedError(error)) {
@@ -597,7 +839,7 @@ async function refreshSessionAndData({ quietUnauthorized = false } = {}) {
     }
   }
   await withBusy(async () => {
-    state.user = await api.me().catch(() => state.user);
+    applyMePayload(await api.me().catch(() => state.user));
     await hydrateWorkspaceData();
   }, "Syncing workspace...");
   return true;
@@ -606,6 +848,8 @@ async function refreshSessionAndData({ quietUnauthorized = false } = {}) {
 async function hydrateWorkspaceData() {
     const workspaces = await api.workspaces().catch(() => []);
     state.workspaces = extractArray(workspaces, ["workspaces", "businesses"]);
+    state.companies = extractArray(await api.companies().catch(() => []), ["companies", "data"]);
+    state.subscriptions = extractArray(await api.subscriptionsMe().catch(() => []), ["subscriptions", "data"]);
     if (!state.workspaces.length && state.user) {
       state.workspaces = [{
         ownerUserId: state.user.id,
@@ -618,6 +862,7 @@ async function hydrateWorkspaceData() {
     state.activeWorkspace = state.workspaces.find((workspace) => (
       (workspace.businessId || workspace.ownerUserId) === activeId
     )) || state.workspaces[0] || null;
+    state.profileSetup = profileSetupState();
     await saveSession();
     await refreshBusinessData();
 }
@@ -727,11 +972,19 @@ function currentFinancialYear() {
 
 function cacheDom() {
   [
-    "authForm", "otpRequestButton", "loginButton", "email", "otp", "apiBase", "apiBaseForm",
-    "logoutButton", "workspaceSelect", "routeTitle", "status", "offlineBanner", "installRisk",
+    "authForm", "authSubmitButton", "otpRequestButton", "loginButton", "email", "otp", "apiBase", "apiBaseForm",
+    "logoutButton", "workspaceSelect", "routeTitle", "status", "offlineBanner", "installRisk", "menuButton", "profileButton", "profileInitial", "mobileMenu", "profileMenu", "profileMenuName", "profileMenuEmail", "menuMyAccountTier",
     "content", "bottomNav", "refreshButton", "profileName", "profileMeta",
   ].forEach((id) => {
     dom[id] = document.getElementById(id);
+  });
+  dom.authForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitAuth();
+  });
+  dom.authSubmitButton?.addEventListener("click", (event) => {
+    event.preventDefault();
+    void submitAuth();
   });
 }
 
@@ -758,8 +1011,34 @@ function bindEvents() {
     event.preventDefault();
     event.stopPropagation();
     routeTo(button.dataset.route);
+    state.menuOpen = false;
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!state.profileMenuOpen) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest("#profileMenu") || target.closest("#profileButton")) return;
+    closeProfileMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    closeProfileMenu();
   });
   document.body.addEventListener("click", (event) => {
+    if (event.target.closest("#menuButton")) {
+      event.preventDefault();
+      state.menuOpen = !state.menuOpen;
+      closeProfileMenu({ renderAfter: false });
+      renderChrome();
+      return;
+    }
+    if (event.target.closest("#profileButton")) {
+      event.preventDefault();
+      state.profileMenuOpen = !state.profileMenuOpen;
+      state.menuOpen = false;
+      renderChrome();
+      return;
+    }
     if (event.target.closest("#otpRequestButton")) {
       event.preventDefault();
       void requestOtp();
@@ -769,11 +1048,6 @@ function bindEvents() {
     if (authModeButton) {
       event.preventDefault();
       setAuthMode(authModeButton.dataset.authMode);
-      return;
-    }
-    if (event.target.closest("#authSubmitButton")) {
-      event.preventDefault();
-      void submitAuth();
       return;
     }
     const routeButton = event.target.closest("[data-route]");
@@ -794,15 +1068,14 @@ function bindEvents() {
     }
     if (routeButton) {
       routeTo(routeButton.dataset.route);
+      state.menuOpen = false;
+      closeProfileMenu({ renderAfter: false });
+      setStatus("");
+      renderChrome();
     }
     if (action) void handleAction(action.dataset.action, action.dataset);
   });
   document.body.addEventListener("submit", (event) => {
-    if (event.target.closest("#authForm")) {
-      event.preventDefault();
-      void submitAuth();
-      return;
-    }
     const form = event.target.closest("[data-form]");
     if (!form) return;
     event.preventDefault();
@@ -833,7 +1106,10 @@ function bindEvents() {
       return;
     }
     state.unsavedForm = false;
+    state.menuOpen = false;
+    closeProfileMenu({ renderAfter: false });
     state.route = location.hash.replace("#", "") || "home";
+    setStatus("");
     render();
   });
   document.addEventListener("visibilitychange", () => {
@@ -978,11 +1254,29 @@ function confirmDiscardMobileChanges() {
   return window.confirm("Discard unsaved changes?\n\nYou have unsaved changes. Going back will discard them.");
 }
 
+function closeProfileMenu({ renderAfter = true } = {}) {
+  if (!state.profileMenuOpen) return;
+  state.profileMenuOpen = false;
+  if (renderAfter) renderChrome();
+}
+
+function syncProfileMenuPosition() {
+  if (!dom.profileMenu || !dom.profileButton || !state.token) return;
+  const rect = dom.profileButton.getBoundingClientRect();
+  const top = Math.max(8, Math.ceil(rect.bottom + 8));
+  const right = Math.max(8, Math.ceil(window.innerWidth - rect.right));
+  dom.profileMenu.style.top = `${top}px`;
+  dom.profileMenu.style.right = `${right}px`;
+}
+
 function routeTo(route, { replace = false } = {}) {
   if (!route || route === state.route) return;
   if (!confirmDiscardMobileChanges()) return;
   state.unsavedForm = false;
+  state.menuOpen = false;
+  closeProfileMenu({ renderAfter: false });
   state.route = route;
+  setStatus("");
   if (replace) history.replaceState({ route }, "", `#${route}`);
   else history.pushState({ route }, "", `#${route}`);
   render();
@@ -996,6 +1290,53 @@ function replaceRecord(records, updated) {
 }
 
 async function handleAction(action, dataset = {}) {
+  if (action === "logout") {
+    state.menuOpen = false;
+    closeProfileMenu({ renderAfter: false });
+    await logout();
+    return;
+  }
+  if (action === "open-account") {
+    state.accountTab = dataset.tab || "overview";
+    state.menuOpen = false;
+    closeProfileMenu({ renderAfter: false });
+    if (state.route === "account") render();
+    else routeTo("account");
+    return;
+  }
+  if (action === "open-account-settings") {
+    state.accountSettingsTab = dataset.tab || "api";
+    state.menuOpen = false;
+    closeProfileMenu({ renderAfter: false });
+    if (state.route === "account-settings") render();
+    else routeTo("account-settings");
+    return;
+  }
+  if (action === "open-change-password") {
+    state.accountTab = "profile";
+    state.menuOpen = false;
+    closeProfileMenu({ renderAfter: false });
+    if (state.route === "account") render();
+    else routeTo("account");
+    return;
+  }
+  if (action === "google-auth") {
+    const mode = state.authMode === "signup" ? "signup" : "login";
+    const authUrl = api.startGoogleOAuth(mode);
+    const browser = window.Capacitor?.Plugins?.Browser;
+    if (browser?.open) {
+      await browser.open({ url: authUrl });
+    } else {
+      window.location.href = authUrl;
+    }
+    return;
+  }
+  if (action === "close-menu") {
+    state.menuOpen = false;
+    closeProfileMenu({ renderAfter: false });
+    renderChrome();
+    return;
+  }
   if (action === "refresh") {
     await refreshSessionAndData();
     return;
@@ -1064,11 +1405,47 @@ async function handleAction(action, dataset = {}) {
       render();
       setStatus("Period readiness loaded.");
     }, "Checking period...");
+    return;
+  }
+  if (action === "revoke-api-key") {
+    const keyId = String(dataset.keyId || "").trim();
+    if (!keyId) return;
+    await withBusy(async () => {
+      await api.revokeApiKey(keyId, workspaceParams());
+      state.data.apiKeys = extractArray(await api.apiKeys(workspaceParams()), ["apiKeys", "keys"]);
+      render();
+      setStatus("API key revoked.", "success", "account-settings");
+    }, "Revoking API key...");
+    return;
+  }
+  if (action === "team-role") {
+    const memberId = String(dataset.memberId || "").trim();
+    const role = String(dataset.role || "").trim();
+    if (!memberId || !role) return;
+    await withBusy(async () => {
+      await api.updateTeamMember(memberId, workspaceParams({ role }));
+      state.data.team = extractArray(await api.team(workspaceParams()), ["team", "members"]);
+      render();
+      setStatus("Team access updated.", "success", "account-settings");
+    }, "Updating team role...");
+    return;
+  }
+  if (action === "team-status") {
+    const memberId = String(dataset.memberId || "").trim();
+    const status = String(dataset.status || "").trim();
+    if (!memberId || !status) return;
+    await withBusy(async () => {
+      await api.updateTeamMember(memberId, workspaceParams({ status }));
+      state.data.team = extractArray(await api.team(workspaceParams()), ["team", "members"]);
+      render();
+      setStatus(status === "removed" ? "Team member removed." : "Team member activated.", "success", "account-settings");
+    }, "Updating team member...");
+    return;
   }
 }
 
 async function handleForm(name, form) {
-  if (!canMutate() && !["settings"].includes(name)) {
+  if (!canMutate() && !["settings", "account-password", "account-profile", "business-profile"].includes(name)) {
     setStatus("Viewer access is read-only.", "error");
     return;
   }
@@ -1222,14 +1599,131 @@ async function handleForm(name, form) {
         const result = await api.aiAgent(command);
         state.aiConversation.push({ role: "agent", result });
         state.aiRobotState = "success";
-        setStatus("Insight ready.");
+        setStatus("Insight ready.", "success", "agent");
       } catch (error) {
         state.aiConversation.push({ role: "error", text: error.message || "The Agent could not complete that request." });
         state.aiRobotState = "error";
-        setStatus("The Agent could not complete that request.", "error");
+        setStatus("The Agent could not complete that request.", "error", "agent");
       }
       render();
     }, "Analysing your business data...");
+  } else if (name === "account-profile") {
+    await withBusy(async () => {
+      const payload = await api.updateProfile({ name: value("name"), phone: value("phone") });
+      applyMePayload(payload);
+      state.profileSetup = profileSetupState();
+      state.unsavedForm = false;
+      setStatus("Account profile updated.", "success", "account");
+      render();
+    }, "Saving profile...");
+  } else if (name === "account-password") {
+    const currentPassword = value("currentPassword");
+    const newPassword = value("newPassword");
+    const confirmPassword = value("confirmPassword");
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      setStatus("Enter current and new password details.", "error", "account");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setStatus("New password and confirmation do not match.", "error", "account");
+      return;
+    }
+    await withBusy(async () => {
+      await api.updateProfile({ currentPassword, newPassword });
+      form.reset();
+      state.unsavedForm = false;
+      setStatus("Password updated.", "success", "account");
+      render();
+    }, "Updating password...");
+  } else if (name === "business-profile") {
+    const company = activeCompany();
+    if (!company?.id) {
+      setStatus("Create your business profile first before editing business details.", "error", "account");
+      return;
+    }
+    await withBusy(async () => {
+      const updated = await api.updateCompany(company.id, {
+        name: value("name"),
+        businessType: value("businessType"),
+        entityType: value("entityType"),
+      });
+      state.companies = [updated, ...state.companies.filter((entry) => entry.id !== updated.id)];
+      state.profileSetup = profileSetupState();
+      state.unsavedForm = false;
+      setStatus("Business profile updated.", "success", "account");
+      render();
+    }, "Saving business profile...");
+  } else if (name === "account-settings-api") {
+    await withBusy(async () => {
+      const response = await api.createApiKey(workspaceParams({
+        companyId: activeCompany()?.id || null,
+        label: value("label") || "Mobile integration",
+        scopes: String(value("scopes") || "").split(",").map((entry) => entry.trim()).filter(Boolean),
+      }));
+      state.lastCreatedApiKey = response.token || "";
+      state.data.apiKeys = extractArray(await api.apiKeys(workspaceParams()), ["apiKeys", "keys"]);
+      state.unsavedForm = false;
+      form.reset();
+      render();
+      setStatus(response.token ? "API key created. Copy it now; it is shown once." : "API key created.", "success", "account-settings");
+    }, "Creating API key...");
+  } else if (name === "account-settings-email") {
+    const payload = workspaceParams({
+      companyId: activeCompany()?.id || null,
+      emailSettings: {
+        smtpHost: value("smtpHost"),
+        smtpPort: Number(value("smtpPort") || 0),
+        smtpUser: value("smtpUser"),
+        smtpPass: value("smtpPass"),
+        smtpSecure: value("smtpSecure") === "on",
+        fromEmail: value("fromEmail"),
+        fromName: value("fromName"),
+        replyToEmail: value("replyToEmail"),
+      },
+    });
+    await withBusy(async () => {
+      const updated = await api.updateBusinessSettings(payload);
+      state.data.settings = updated;
+      state.unsavedForm = false;
+      render();
+      setStatus("Email configuration updated.", "success", "account-settings");
+    }, "Saving email configuration...");
+  } else if (name === "account-settings-email-test") {
+    const payload = workspaceParams({
+      companyId: activeCompany()?.id || null,
+      emailSettings: {
+        smtpHost: value("smtpHost"),
+        smtpPort: Number(value("smtpPort") || 0),
+        smtpUser: value("smtpUser"),
+        smtpPass: value("smtpPass"),
+        smtpSecure: value("smtpSecure") === "on",
+        fromEmail: value("fromEmail"),
+        fromName: value("fromName"),
+        replyToEmail: value("replyToEmail"),
+      },
+      to: value("to"),
+      subject: "EazInvoice SMTP test",
+      body: "This is a test email from EazInvoice Account Settings.",
+    });
+    await withBusy(async () => {
+      await api.testBusinessEmailSettings(payload);
+      state.unsavedForm = false;
+      setStatus("Email test sent.", "success", "account-settings");
+    }, "Sending test email...");
+  } else if (name === "account-settings-team") {
+    await withBusy(async () => {
+      await api.createTeamMember(workspaceParams({
+        companyId: activeCompany()?.id || null,
+        email: value("email"),
+        name: value("name"),
+        role: value("role") || "viewer",
+      }));
+      state.data.team = extractArray(await api.team(workspaceParams()), ["team", "members"]);
+      state.unsavedForm = false;
+      form.reset();
+      render();
+      setStatus("Team member access created.", "success", "account-settings");
+    }, "Adding team member...");
   } else if (name === "settings") {
     state.apiBase = normalizeApiBase(value("apiBase"));
     saveSettings();
@@ -1260,6 +1754,8 @@ function render() {
     money: renderMoney,
     reports: renderReports,
     more: renderMore,
+    account: renderAccount,
+    "account-settings": renderAccountSettings,
     agent: renderAgent,
   };
   dom.content.innerHTML = (renderers[state.route] || renderHome)();
@@ -1271,8 +1767,9 @@ function renderChrome() {
   document.body.dataset.busy = state.busy ? "true" : "false";
   dom.offlineBanner.hidden = state.online;
   dom.installRisk.hidden = !isReleaseUnsafeApiBase(state.apiBase);
-  dom.routeTitle.textContent = routeLabel(state.route);
-  dom.profileName.textContent = state.user?.name || state.user?.email || "";
+  if (dom.routeTitle) dom.routeTitle.textContent = routeLabel(state.route);
+  dom.profileName.textContent = state.activeWorkspace ? workspaceName(state.activeWorkspace) : "Business workspace";
+  dom.profileMeta.hidden = !state.activeWorkspace;
   dom.profileMeta.textContent = state.activeWorkspace ? `${workspaceName(state.activeWorkspace)} - ${titleCase(currentRole())}` : "";
   dom.apiBase.value = state.apiBase;
   dom.logoutButton.hidden = !state.token;
@@ -1282,13 +1779,27 @@ function renderChrome() {
   document.getElementById("topAppBar")?.toggleAttribute("hidden", !state.token);
   document.getElementById("workspaceBar")?.toggleAttribute("hidden", !state.token);
   dom.apiBaseForm.hidden = true;
+  if (dom.profileInitial) dom.profileInitial.textContent = String((state.user?.name || state.user?.email || "U").trim().charAt(0) || "U").toUpperCase();
+  if (dom.mobileMenu) dom.mobileMenu.hidden = !state.menuOpen || !state.token;
+  if (dom.profileMenu) dom.profileMenu.hidden = !state.profileMenuOpen || !state.token;
+  if (state.profileMenuOpen && state.token) syncProfileMenuPosition();
+  if (dom.menuButton) dom.menuButton.setAttribute("aria-expanded", state.menuOpen ? "true" : "false");
+  if (dom.profileButton) dom.profileButton.setAttribute("aria-expanded", state.profileMenuOpen ? "true" : "false");
+  if (dom.menuMyAccountTier) dom.menuMyAccountTier.textContent = planLabel();
+  if (dom.profileMenuName) dom.profileMenuName.textContent = state.user?.name || state.user?.email || "User";
+  if (dom.profileMenuEmail) dom.profileMenuEmail.textContent = state.user?.email || `${planLabel()} plan`;
   if (state.token) {
     dom.workspaceSelect.innerHTML = state.workspaces.map((workspace) => (
       `<option value="${escapeAttr(workspaceKey(workspace))}" ${workspace === state.activeWorkspace ? "selected" : ""}>${escapeHtml(workspaceName(workspace))} - ${escapeHtml(titleCase(workspace.role || "owner"))}</option>`
     )).join("");
   }
+  const activeNavRoute = ["money", "reports", "account", "account-settings", "agent"].includes(state.route) ? "more" : state.route;
+  renderStatus();
   dom.bottomNav.querySelectorAll("[data-route]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.route === state.route);
+    const active = button.dataset.route === activeNavRoute;
+    button.classList.toggle("active", active);
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
   });
 }
 
@@ -1300,6 +1811,8 @@ function routeLabel(route) {
     money: "Money",
     reports: "Reports",
     more: "More",
+    account: "My Account",
+    "account-settings": "Account Settings",
     agent: "AI Agent",
   }[route] || "Home";
 }
@@ -1307,7 +1820,6 @@ function routeLabel(route) {
 function workspaceName(workspace) {
   return text(workspace.businessName || workspace.name || workspace.companyName || workspace.label, "Business Workspace");
 }
-
 function renderLogin() {
   const resetMode = state.authMode === "reset";
   const signupMode = state.authMode === "signup";
@@ -1334,7 +1846,7 @@ function renderLogin() {
         <button type="button" data-auth-mode="signup" class="${signupMode ? "active" : ""}" aria-pressed="${signupMode ? "true" : "false"}">Sign up</button>
         <button type="button" data-auth-mode="reset" class="${resetMode ? "active" : ""}" aria-pressed="${resetMode ? "true" : "false"}">Forgot password?</button>
       </div>
-      <form id="authForm" class="form-stack" data-auth-mode="${resetMode ? "reset" : signupMode ? "signup" : "login"}">
+      <form id="authForm" class="form-stack" novalidate data-auth-mode="${resetMode ? "reset" : signupMode ? "signup" : "login"}">
         <label>Email<input id="email" type="email" autocomplete="email" placeholder="owner@example.com" required /></label>
         ${signupMode ? `
           <label>Name<input id="name" autocomplete="name" placeholder="Your name" required /></label>
@@ -1354,8 +1866,9 @@ function renderLogin() {
         </div>
         <div class="button-row">
           <button id="otpRequestButton" class="secondary" type="button">${otpButtonLabel}</button>
-          <button id="authSubmitButton" class="primary" type="submit">${submitLabel}</button>
+          <button id="authSubmitButton" class="primary" type="submit" formnovalidate>${submitLabel}</button>
         </div>
+        ${resetMode ? "" : `<button class="secondary full google-auth" type="button" data-action="google-auth">Continue with Google</button>`}
         <p class="form-note">${note}</p>
       </form>
     </section>
@@ -1391,16 +1904,33 @@ function renderHome() {
   const receivables = metricValue(["receivables", "accountsReceivable", "arBalance"]);
   const payables = metricValue(["payables", "accountsPayable", "apBalance"]);
   const bank = metricValue(["bank", "cash", "bankCash", "bookBalance"]);
+  const invoices = latestRecords(state.data.invoices, ["createdAt", "invoiceDate", "updatedAt", "issuedAt", "id"]);
+  const purchaseOrders = latestRecords(state.data.purchaseOrders, ["createdAt", "poDate", "updatedAt", "issuedAt", "id"]);
   return `
+    ${homeCarousel()}
+    ${profileSetupPrompt()}
     <section class="dashboard-greeting">
-      <span class="eyebrow">${escapeHtml(workspaceName(state.activeWorkspace))}</span>
-      <h1>Hello${state.user?.name ? `, ${escapeHtml(state.user.name)}` : ""}</h1>
+      <span class="eyebrow">Your business</span>
+      <h1>Hello</h1>
       <p>Your business at a glance</p>
     </section>
     <section class="dashboard-primary" aria-label="Primary financial summary">
-      ${financialCard("sales", "↗", "Total sales", money(revenue), "From backend report")}
-      ${financialCard("receivables", "◎", "Outstanding receivables", money(receivables), `${state.data.invoices.length} invoices`)}
-      ${financialCard("payables", "↓", "Outstanding payables", money(payables), `${state.data.vendorBills.length} bills`)}
+      ${financialCard("sales", "trend", "Total sales", money(revenue), "From backend report", trendMarkup(["salesChangePercent", "revenueChangePercent", "revenueGrowthPercent"]))}
+      ${financialCard("receivables", "users", "Outstanding receivables", money(receivables), `${state.data.invoices.length} invoices`, trendMarkup(["receivablesChangePercent", "arChangePercent", "receivablesGrowthPercent"]))}
+      ${financialCard("payables", "clock", "Outstanding payables", money(payables), `${state.data.vendorBills.length} bills`, trendMarkup(["payablesChangePercent", "apChangePercent", "payablesGrowthPercent"]))}
+    </section>
+    <section class="panel">
+      <div class="section-head"><div><span class="eyebrow">Next steps</span><h2>Quick actions</h2></div><span class="pill">${canMutate() ? "Enabled" : "Read-only"}</span></div>
+      <div class="action-grid">
+        ${actionTile("invoice", "New invoice", "sales", "primary")}
+        ${actionTile("quote", "Quotation", "sales", "disabled", true)}
+        ${actionTile("cart", "Purchase order", "purchases")}
+        ${actionTile("users", "Customers", "sales")}
+        ${actionTile("vendor", "Vendors", "purchases")}
+        ${actionTile("chart", "Reports", "reports")}
+        ${actionTile("bank", "Banking", "money")}
+        ${actionTile("grid", "More", "more")}
+      </div>
     </section>
     <section class="panel">
       <div class="section-head"><div><span class="eyebrow">Business pulse</span><h2>More financials</h2></div></div>
@@ -1410,41 +1940,135 @@ function renderHome() {
         ${metricCard("Bank/Cash", money(bank), `${state.data.bankAccounts.length} accounts`)}
       </div>
     </section>
-    <section class="panel">
-      <div class="section-head"><div><span class="eyebrow">Next steps</span><h2>Quick actions</h2></div><span class="pill">${canMutate() ? "Enabled" : "Read-only"}</span></div>
-      <div class="action-grid">
-        ${actionTile("▣", "New invoice", "sales", "primary")}
-        ${actionTile("₹", "Receivables", "money")}
-        ${actionTile("▤", "Purchase order", "purchases")}
-        ${actionTile("♙", "Customers", "sales")}
-        ${actionTile("♧", "Vendors", "purchases")}
-        ${actionTile("▥", "Reports", "reports")}
-        ${actionTile("⌁", "Banking", "money")}
-        ${actionTile("⋯", "More", "more")}
-      </div>
-    </section>
     <section class="panel attention-panel">
       <div class="section-head"><div><span class="eyebrow">Review</span><h2>Needs attention</h2></div><button class="tiny" type="button" data-route="reports">Review</button></div>
-      <div class="status-grid">
-        ${riskCard("Overdue receivables", state.data.receivables?.overdueTotal || state.data.receivables?.summary?.overdueTotal || 0)}
-        ${riskCard("Payables due", state.data.payables?.dueTotal || state.data.payables?.summary?.dueTotal || 0)}
-        ${riskCard("GST/TDS issues", issueCount(state.data.compliance || state.data.gst || state.data.tds))}
-        ${riskCard("Unreconciled bank", state.data.bankSummary?.unmatchedCount || state.data.bankSummary?.summary?.unmatchedCount || 0)}
-      </div>
+      ${attentionSummary()}
     </section>
     <section class="panel">
-      <div class="section-head compact"><div><span class="eyebrow">Live API</span><h2>Recent activity</h2></div><button class="tiny" type="button" data-route="sales">View all</button></div>
-      ${activityList([...state.data.invoices, ...state.data.vendorBills, ...state.data.creditNotes].slice(0, 8), "No recent records yet.")}
+      <div class="section-head compact"><div><span class="eyebrow">Live API</span><h2>Latest 5 Invoices</h2></div><button class="tiny" type="button" data-route="sales">View all</button></div>
+      ${documentSummaryList(invoices, "invoice", "No invoices yet.")}
+    </section>
+    <section class="panel">
+      <div class="section-head compact"><div><span class="eyebrow">Live API</span><h2>Latest 5 PO/WO</h2></div><button class="tiny" type="button" data-route="purchases">View all</button></div>
+      ${documentSummaryList(purchaseOrders, "po", "No purchase or work orders yet.")}
     </section>
   `;
 }
 
-function financialCard(kind, icon, label, value, hint) {
-  return `<article class="financial-card ${kind}"><span class="metric-icon" aria-hidden="true">${icon}</span><div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(hint)}</small></div></article>`;
+function homeCarousel() {
+  const slides = [
+    { title: "Workspace", copy: "Invoices, purchases, accounting and AI in one workspace.", image: "./assets/home-hero-v2.png" },
+    { title: "PO / WO", copy: "Track purchase and work orders with lifecycle clarity.", image: "./assets/home-slider-po-wo.png" },
+    { title: "AI Agent", copy: "Ask business questions using authorized tenant context.", image: "./assets/home-slider-ai-agent.png" },
+    { title: "Payments", copy: "Record collections and supplier payments with controls.", image: "./assets/home-slider-payments.png" },
+  ];
+  return `<section class="mobile-carousel" aria-label="EazInvoice highlights">${slides.map((slide, index) => `
+    <article class="mobile-carousel-slide" data-slide="${index + 1}" aria-label="Slide ${index + 1} of ${slides.length}">
+      <img src="${escapeAttr(slide.image)}" alt="${escapeAttr(slide.title)}" loading="lazy" />
+      <div class="mobile-carousel-overlay"><span class="eyebrow">EazInvoice</span><h2>${escapeHtml(slide.title)}</h2><p>${escapeHtml(slide.copy)}</p></div>
+    </article>`).join("")}
+  </section>`;
 }
 
-function actionTile(icon, label, route, tone = "") {
-  return `<button class="action-tile ${tone}" type="button" data-route="${escapeAttr(route)}"><span class="metric-icon" aria-hidden="true">${icon}</span><span>${escapeHtml(label)}</span></button>`;
+function profileSetupPrompt() {
+  if (!state.profileSetup?.needsSetup) return "";
+  const needsAccount = !state.profileSetup.accountComplete;
+  const ctaLabel = needsAccount ? "Complete Account Profile" : "Complete Business Profile";
+  const hint = needsAccount
+    ? "Complete your profile to keep your account details current."
+    : "Complete your business profile to unlock cleaner setup checks.";
+  return `<section class="panel profile-setup-prompt"><div><span class="eyebrow">Profile setup</span><h2>Complete your profile</h2><p>${escapeHtml(hint)}</p></div><button class="primary" type="button" data-action="open-account" data-tab="${needsAccount ? "profile" : "business"}">${escapeHtml(ctaLabel)}</button></section>`;
+}
+
+function recordTimestamp(record, keys = []) {
+  for (const key of keys) {
+    const value = record?.[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    const parsed = Date.parse(String(value || ""));
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+function latestRecords(records, orderingKeys = []) {
+  return [...(Array.isArray(records) ? records : [])]
+    .sort((a, b) => recordTimestamp(b, orderingKeys) - recordTimestamp(a, orderingKeys))
+    .slice(0, 5);
+}
+
+function documentSummaryList(records, kind, emptyMessage) {
+  if (!records?.length) return `<div class="empty-state">${escapeHtml(emptyMessage)}</div>`;
+  return `<div class="record-list">${records.map((record) => {
+    const isPo = kind === "po";
+    const type = isPo ? String(record.documentType || "po").toUpperCase() : "Invoice";
+    const numberText = isPo ? (record.poNumber || record.id || "PO") : (record.invoiceNumber || record.id || "Invoice");
+    const party = isPo ? (record.vendorName || record.billToName || "-") : (record.customerName || record.billToName || "-");
+    const amount = record.total || record.amount || record.balanceAmount || 0;
+    const status = titleCase(record.status || record.paymentStatus || "draft");
+    return `<article class="record-row"><div><strong>${escapeHtml(numberText)}</strong><span>${escapeHtml(party)}</span>${isPo ? `<small>${escapeHtml(type)}</small>` : ""}</div><div class="row-end"><strong>${escapeHtml(money(amount, record.currency || "INR"))}</strong><small class="status-badge ${statusClass(status)}">${escapeHtml(status)}</small></div></article>`;
+  }).join("")}</div>`;
+}
+
+function financialCard(kind, icon, label, value, hint, trend = "") {
+  return `<article class="financial-card ${kind}"><span class="metric-icon" aria-hidden="true">${iconSvg(icon)}</span><div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(hint)}</small>${trend}</div></article>`;
+}
+
+function trendMarkup(keys) {
+  const source = state.data.summary || {};
+  const raw = keys.map((key) => source[key] ?? source.summary?.[key]).find((value) => value !== undefined && value !== null && value !== "");
+  if (raw === undefined) return '<small class="trend neutral">\u2014 <span>vs prior period</span></small>';
+  const value = number(raw);
+  const direction = value > 0 ? "up" : value < 0 ? "down" : "neutral";
+  const arrow = value > 0 ? "\u2191" : value < 0 ? "\u2193" : "\u2192";
+  return `<small class="trend ${direction}">${arrow} ${escapeHtml(`${Math.abs(value)}%`)} <span>vs prior period</span></small>`;
+}
+
+function actionTile(icon, label, route, tone = "", disabled = false) {
+  return `<button class="action-tile ${tone}" type="button" data-route="${escapeAttr(route)}" ${disabled ? "disabled aria-disabled=\"true\"" : ""}><span class="metric-icon" aria-hidden="true">${iconSvg(icon)}</span><span>${escapeHtml(label)}</span>${disabled ? '<small class="tile-note">Coming soon</small>' : ""}</button>`;
+}
+
+function iconSvg(name) {
+  const paths = {
+    trend: '<path d="M4 19V5M4 19h16"/><path d="M7 15h2v4H7zm4-5h2v9h-2zm4-4h2v13h-2z"/><path d="m7 9 4-3 3 2 5-5"/>',
+    users: '<path d="M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20"/><circle cx="10" cy="7" r="3"/><path d="M16 8a3 3 0 0 1 0 6m2 6v-1.5a3.5 3.5 0 0 0-2-3.2"/>',
+    clock: '<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>',
+    invoice: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5M9 12h6M9 16h6"/>',
+    wallet: '<path d="M4 7h16v12H4z"/><path d="M4 7V5h13M16 13h4"/><circle cx="16" cy="13" r=".7" fill="currentColor" stroke="none"/>',
+    cart: '<path d="M4 5h2l2 10h9l2-7H7"/><circle cx="10" cy="19" r="1"/><circle cx="17" cy="19" r="1"/>',
+    vendor: '<circle cx="9" cy="8" r="3"/><path d="M3 20v-1a6 6 0 0 1 12 0v1M16 11h5M18.5 8.5v5"/>',
+    chart: '<path d="M4 19V5M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/>',
+    bank: '<path d="m3 10 9-6 9 6H3Z"/><path d="M5 11v6m4-6v6m6-6v6m4-6v6M3 20h18"/>',
+    grid: '<rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/>'
+    ,quote: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5M9 12h6M9 16h4"/>'
+  };
+  const solid = ["users", "cart", "vendor", "bank"].includes(name);
+  return `<svg class="ui-icon ${solid ? "icon-solid" : ""}" viewBox="0 0 24 24" fill="${solid ? "currentColor" : "none"}" stroke="currentColor" stroke-width="${solid ? "1.35" : "1.8"}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.grid}</svg>`;
+}
+
+function statusClass(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (/paid|finalized|issued|completed/.test(normalized)) return "paid";
+  if (/sent|submitted|approved/.test(normalized)) return "sent";
+  if (/draft|open/.test(normalized)) return "draft";
+  if (/overdue|review|due|pending/.test(normalized)) return "review";
+  if (/archived|cancelled|reversed/.test(normalized)) return "archived";
+  return "";
+}
+
+function attentionSummary() {
+  const items = [
+    { label: "Overdue receivables", value: state.data.receivables?.overdueTotal || state.data.receivables?.summary?.overdueTotal || 0, format: "money" },
+    { label: "Payables due", value: state.data.payables?.dueTotal || state.data.payables?.summary?.dueTotal || 0, format: "money" },
+    { label: "GST/TDS issues", value: issueCount(state.data.compliance || state.data.gst || state.data.tds), format: "count" },
+    { label: "Unreconciled bank", value: state.data.bankSummary?.unmatchedCount || state.data.bankSummary?.summary?.unmatchedCount || 0, format: "count" }
+  ];
+  const active = items.filter((item) => number(item.value) > 0);
+  return active.length ? `<div class="status-list">${active.map(riskRow).join("")}</div>` : '<div class="attention-clear"><span class="check-mark" aria-hidden="true">\u2713</span><div><strong>All caught up</strong><span>No overdue, compliance, or reconciliation items need review.</span></div></div>';
+}
+
+function riskRow(item) {
+  const rendered = item.format === "count" ? String(number(item.value)) : money(item.value);
+  return `<div class="status-row"><span class="status-dot" aria-hidden="true"></span><div><strong>${escapeHtml(item.label)}</strong><small>Needs review</small></div><b>${escapeHtml(rendered)}</b></div>`;
 }
 
 function activityList(records, empty) {
@@ -1454,15 +2078,15 @@ function activityList(records, empty) {
     const amount = record.total || record.amount || record.balanceAmount || record.outstandingAmount || 0;
     const status = String(record.status || record.paymentStatus || record.reconciliationStatus || "Review");
     const normalized = status.toLowerCase();
-    const kind = record.vendorName || record.billNumber ? "▤" : record.creditNoteNumber ? "↺" : "▣";
-    const badgeClass = /paid|finalized|issued/.test(normalized) ? "paid" : /overdue|review|due/.test(normalized) ? "review" : /archived/.test(normalized) ? "archived" : "";
-    return `<article class="activity-row"><span class="activity-icon" aria-hidden="true">${kind}</span><div><strong>${escapeHtml(title)}</strong><span>${escapeHtml(record.customerName || record.vendorName || record.description || "Financial record")}</span></div><div class="activity-amount"><strong>${escapeHtml(money(amount, record.currency || "INR"))}</strong><small class="status-badge ${badgeClass}">${escapeHtml(titleCase(status))}</small></div></article>`;
+    const kind = record.vendorName || record.billNumber ? "cart" : record.creditNoteNumber ? "invoice" : "invoice";
+    const badgeClass = statusClass(status);
+    return `<article class="activity-row"><span class="activity-icon" aria-hidden="true">${iconSvg(kind)}</span><div><strong>${escapeHtml(title)}</strong><span>${escapeHtml(record.customerName || record.vendorName || record.description || "Financial record")}</span></div><div class="activity-amount"><strong>${escapeHtml(money(amount, record.currency || "INR"))}</strong><small class="status-badge ${badgeClass}">${escapeHtml(titleCase(status))}</small></div></article>`;
   }).join("")}</div>`;
 }
 
 function renderSales() {
   return `
-    <section class="document-header"><button class="tiny" type="button" data-route="home">← Back</button><div><span class="eyebrow">Sales</span><h1>New Invoice</h1></div><span class="status-badge">Draft</span></section>
+    <section class="document-header"><button class="tiny" type="button" data-route="home">\u2190 Back</button><div><span class="eyebrow">Sales</span><h1>New Invoice</h1></div><span class="status-badge">Draft</span></section>
     <section class="panel document-card">
       <form class="form-stack" data-form="invoice">
         <div class="section-head compact"><div><span class="eyebrow">Document details</span><h2>Customer and dates</h2></div></div>
@@ -1506,7 +2130,7 @@ function renderSales() {
 
 function renderPurchases() {
   return `
-    <section class="document-header"><button class="tiny" type="button" data-route="home">← Back</button><div><span class="eyebrow">Purchases</span><h1>New Purchase Order</h1></div><span class="status-badge">Draft</span></section>
+    <section class="document-header"><button class="tiny" type="button" data-route="home">\u2190 Back</button><div><span class="eyebrow">Purchases</span><h1>New Purchase Order</h1></div><span class="status-badge">Draft</span></section>
     <section class="notice-panel">A Purchase Order records intention only. A vendor bill records the accounting liability.</section>
     <section class="panel document-card">
       <form class="form-stack" data-form="purchase-order">
@@ -1596,6 +2220,13 @@ function renderReports() {
 function renderMore() {
   return `
     <section class="panel agent-entry"><div class="section-head compact"><div><span class="eyebrow">Assistant</span><h2>EazInvoice AI Agent</h2></div><button class="primary compact" type="button" data-route="agent">Open Agent</button></div><p class="form-note">Your business assistant, always ready.</p></section>
+    <section class="panel">
+      ${sectionTitle("Operational Shortcuts", "Secondary workspace modules")}
+      <div class="quick-actions">
+        <button class="secondary" type="button" data-route="reports">Reports</button>
+        <button class="secondary" type="button" data-route="money">Accounting</button>
+      </div>
+    </section>
     <section class="report-header"><div><span class="eyebrow">Review centre</span><h1>Compliance</h1><p>Prepared for review; not filed through EazInvoice.</p></div><label class="period-control">Financial year<select data-report-period>${periodOptions()}</select></label></section>
     <section class="compliance-grid">
       ${complianceCard("GST", state.data.gst, ["outputGst", "inputGst", "netGst", "needsReviewCount", "reconciliationStatus"])}
@@ -1609,37 +2240,99 @@ function renderMore() {
       ${jsonSummary(state.data.yearEnd, ["financialYear", "ready", "blockerCount", "retainedEarningsImpact", "status"])}
       <button class="secondary full" type="button" data-action="preview-year-end">Preview year-end impact</button>
     </section>
-    <section class="panel">${sectionTitle("Business / Team", "Secrets stay Web-preferred")}${businessGovernance()}</section>
-    <section class="panel account-deletion-card">
-      ${sectionTitle("Account", "Access and privacy")}
-      <p class="form-note">Request account deletion from your registered email. Financial, tax, payment and audit records may need to be retained.</p>
-      <a class="secondary full action-link" href="https://www.eazinvoice.com/apps/web/delete-account.html">Review deletion options</a>
-    </section>
-    <section class="panel">
-      ${sectionTitle("API Endpoint", "Development, staging or production")}
-      <form class="form-stack" data-form="settings">
-        <label>API Base URL<input name="apiBase" value="${escapeAttr(state.apiBase)}" placeholder="${DEFAULT_PRODUCTION_API}" /></label>
-        <button class="primary full" type="submit">Save endpoint</button>
-      </form>
-      <p class="form-note">Release builds must use HTTPS and must not use test auth/debug endpoints.</p>
-    </section>
   `;
 }
 
+function renderAccount() {
+  const company = activeCompany();
+  const tab = state.accountTab || "overview";
+  const plan = planLabel();
+  const kycSubmitted = Boolean(company && (company.panNumber || company.gstNumber || company.taxId));
+  const nav = `<div class="account-tabs" role="tablist" aria-label="My account"><button class="tiny ${tab === "overview" ? "active" : ""}" type="button" data-action="open-account" data-tab="overview">Overview</button><button class="tiny ${tab === "profile" ? "active" : ""}" type="button" data-action="open-account" data-tab="profile">Account Profile</button><button class="tiny ${tab === "business" ? "active" : ""}" type="button" data-action="open-account" data-tab="business">Business Profile</button><button class="tiny ${tab === "subscription" ? "active" : ""}" type="button" data-action="open-account" data-tab="subscription">Manage Subscription</button></div>`;
+  const overview = `<section class="panel"><div class="section-head compact"><div><span class="eyebrow">My Account</span><h2>Overview</h2></div><span class="pill">${escapeHtml(plan)}</span></div><div class="status-grid"><article><span>User</span><strong>${escapeHtml(state.user?.name || state.user?.email || "User")}</strong></article><article><span>Email</span><strong>${escapeHtml(state.user?.email || "-")}</strong></article><article><span>Business</span><strong>${escapeHtml(company?.name || workspaceName(state.activeWorkspace))}</strong></article><article><span>KYC</span><strong>${kycSubmitted ? "Submitted" : "Not submitted"}</strong></article></div></section>`;
+  const profile = `<section class="panel"><div class="section-head compact"><div><span class="eyebrow">My Account</span><h2>Account Profile</h2></div></div><form class="form-stack" data-form="account-profile"><label>Name<input name="name" value="${escapeAttr(state.user?.name || "")}" required /></label><label>Email<input value="${escapeAttr(state.user?.email || "")}" disabled /></label><label>Phone<input name="phone" value="${escapeAttr(state.user?.phone || "")}" required /></label><button class="primary full" type="submit">Save Profile</button></form><form class="form-stack" data-form="account-password"><label>Current password<input name="currentPassword" type="password" required /></label><label>New password<input name="newPassword" type="password" required /></label><label>Confirm password<input name="confirmPassword" type="password" required /></label><button class="secondary full" type="submit">Change Password</button></form></section>`;
+  const business = `<section class="panel"><div class="section-head compact"><div><span class="eyebrow">My Account</span><h2>Business Profile</h2></div></div><form class="form-stack" data-form="business-profile"><label>Business name<input name="name" value="${escapeAttr(company?.name || "")}" required /></label><label>Business type<input name="businessType" value="${escapeAttr(company?.businessType || "")}" required /></label><label>Entity type<input name="entityType" value="${escapeAttr(company?.entityType || "company")}" required /></label><button class="primary full" type="submit" ${company?.id ? "" : "disabled"}>Save Business Profile</button></form></section>`;
+  const activePlan = normalizePlanId(derivePlan());
+  const activeStatus = subscriptionStatusLabel();
+  const catalog = subscriptionCatalog();
+  const catalogOrder = catalog.map((entry) => normalizePlanId(entry?.plan || entry?.id));
+  const orderOf = (planId) => {
+    const index = catalogOrder.indexOf(normalizePlanId(planId));
+    return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+  };
+  const currentRank = orderOf(activePlan);
+  const upgradeFlowUrl = "/apps/web/subscription.html";
+  const planCards = catalog.length
+    ? `<div class="subscription-plan-list">${catalog.map((entry) => {
+      const planId = normalizePlanId(entry.plan || entry.id);
+      const label = String(entry.label || planId || "Plan").trim() || "Plan";
+      const currency = String(entry.currency || "INR").trim() || "INR";
+      const monthlyAmount = Number(entry.monthlyAmount ?? entry.amount ?? 0);
+      const annualAmount = Number(entry.annualAmount ?? (monthlyAmount * 12));
+      const isCurrent = planId === activePlan;
+      const isHigher = orderOf(planId) > currentRank;
+      const monthlyLabel = monthlyAmount <= 0 ? `${currency} 0` : `${currency} ${MONEY_FORMATTER.format(monthlyAmount)}/month`;
+      const billedLabel = monthlyAmount <= 0 ? "No billing" : `Billed yearly: ${currency} ${MONEY_FORMATTER.format(annualAmount)}`;
+      const highlights = Array.isArray(entry.highlights) && entry.highlights.length
+        ? entry.highlights.slice(0, 4)
+        : (entry.description ? [entry.description] : []);
+      const actionLabel = isCurrent
+        ? "Current Plan"
+        : isHigher
+          ? `Upgrade to ${label}`
+          : "Managed on Subscription Page";
+      const actionMarkup = isCurrent
+        ? `<button class="secondary full" type="button" disabled>${escapeHtml(actionLabel)}</button>`
+        : `<a class="${isHigher ? "primary" : "secondary"} full action-link" href="${upgradeFlowUrl}">${escapeHtml(actionLabel)}</a>`;
+      return `<article class="panel subscription-plan-card ${isCurrent ? "active" : ""}"><div class="section-head compact"><div><span class="eyebrow">${escapeHtml(label.toUpperCase())}</span><h3>${escapeHtml(label)}</h3></div><span class="pill ${isCurrent ? "green" : ""}">${isCurrent ? "Current" : "Available"}</span></div><p class="subscription-price">${escapeHtml(monthlyLabel)}</p><p class="form-note">${escapeHtml(billedLabel)}</p>${highlights.length ? `<ul class="subscription-feature-list">${highlights.map((item) => `<li>${escapeHtml(String(item || "").trim())}</li>`).join("")}</ul>` : ""}<div class="inline-actions">${actionMarkup}</div></article>`;
+    }).join("")}</div>`
+    : `<div class="empty-state">Plan catalog is unavailable. Use subscription management to view current offers.</div>`;
+  const subscription = `<section class="panel"><div class="section-head compact"><div><span class="eyebrow">My Account</span><h2>Manage Subscription</h2></div></div><div class="status-grid"><article><span>Current Plan</span><strong>${escapeHtml(plan)}</strong></article><article><span>Status</span><strong>${escapeHtml(activeStatus)}</strong></article></div><div class="inline-actions"><a class="secondary full action-link" href="${upgradeFlowUrl}">Open Subscription Management</a></div>${planCards}</section>`;
+  const content = tab === "profile" ? profile : tab === "business" ? business : tab === "subscription" ? subscription : overview;
+  return `${nav}${content}`;
+}
+
+function renderAccountSettings() {
+  const tab = state.accountSettingsTab || "api";
+  const company = activeCompany();
+  const settings = state.data.settings || {};
+  const email = settings.emailSettings || {};
+  const apiKeys = Array.isArray(state.data.apiKeys) ? state.data.apiKeys : [];
+  const team = Array.isArray(state.data.team) ? state.data.team : [];
+  const tabs = `<div class="account-tabs" role="tablist" aria-label="Account settings"><button class="tiny ${tab === "api" ? "active" : ""}" type="button" data-action="open-account-settings" data-tab="api">API Access</button><button class="tiny ${tab === "email" ? "active" : ""}" type="button" data-action="open-account-settings" data-tab="email">Email Config</button><button class="tiny ${tab === "team" ? "active" : ""}" type="button" data-action="open-account-settings" data-tab="team">Business Team</button><button class="tiny ${tab === "security" ? "active" : ""}" type="button" data-action="open-account-settings" data-tab="security">Security</button></div>`;
+
+  const apiPane = `<section class="panel"><div class="section-head compact"><div><span class="eyebrow">Account Settings</span><h2>API Access</h2></div></div>${state.lastCreatedApiKey ? `<p class="form-note">Copy this new key now (shown once): <strong>${escapeHtml(state.lastCreatedApiKey)}</strong></p>` : ""}<form class="form-stack" data-form="account-settings-api"><label>Label<input name="label" placeholder="Website integration" required /></label><label>Scopes (comma separated)<input name="scopes" placeholder="invoices:write, reports:read" /></label><button class="primary full" type="submit" ${canGovern() ? "" : "disabled"}>Create API Key</button></form><div class="record-list">${apiKeys.length ? apiKeys.map((key) => `<article class="record-row"><div><strong>${escapeHtml(key.label || "API Key")}</strong><span>${escapeHtml(key.tokenPreview || key.tokenPrefix || "Token hidden")}</span></div><div class="row-end"><small>${escapeHtml(titleCase(key.status || "active"))}</small>${String(key.status || "").toLowerCase() === "active" ? `<button class="tiny" type="button" data-action="revoke-api-key" data-key-id="${escapeAttr(key.id || "")}">Revoke</button>` : ""}</div></article>`).join("") : `<div class="empty-state">No API keys yet.</div>`}</div></section>`;
+
+  const emailPane = `<section class="panel"><div class="section-head compact"><div><span class="eyebrow">Account Settings</span><h2>Email Configuration</h2></div></div><form class="form-stack" data-form="account-settings-email"><label>SMTP Host<input name="smtpHost" value="${escapeAttr(email.smtpHost || "")}" placeholder="mail.privateemail.com" /></label><div class="split"><label>SMTP Port<input name="smtpPort" type="number" value="${escapeAttr(email.smtpPort || "")}" placeholder="465" /></label><label>Secure SMTP<select name="smtpSecure"><option value="off" ${email.smtpSecure ? "" : "selected"}>Off</option><option value="on" ${email.smtpSecure ? "selected" : ""}>On</option></select></label></div><label>SMTP User<input name="smtpUser" value="${escapeAttr(email.smtpUser || "")}" /></label><label>SMTP Password<input name="smtpPass" type="password" placeholder="Leave blank to keep existing" /></label><label>From Email<input name="fromEmail" value="${escapeAttr(email.fromEmail || "")}" /></label><label>From Name<input name="fromName" value="${escapeAttr(email.fromName || "")}" /></label><label>Reply-To Email<input name="replyToEmail" value="${escapeAttr(email.replyToEmail || "")}" /></label><button class="primary full" type="submit" ${canGovern() ? "" : "disabled"}>Save Email Configuration</button></form><form class="form-stack" data-form="account-settings-email-test"><label>Test Recipient<input name="to" type="email" value="${escapeAttr(state.user?.email || "")}" required /></label><label hidden>SMTP Host<input name="smtpHost" value="${escapeAttr(email.smtpHost || "")}" /></label><label hidden>SMTP Port<input name="smtpPort" value="${escapeAttr(email.smtpPort || "")}" /></label><label hidden>SMTP User<input name="smtpUser" value="${escapeAttr(email.smtpUser || "")}" /></label><label hidden>SMTP Password<input name="smtpPass" value="" /></label><label hidden>From Email<input name="fromEmail" value="${escapeAttr(email.fromEmail || "")}" /></label><label hidden>From Name<input name="fromName" value="${escapeAttr(email.fromName || "")}" /></label><label hidden>Reply-To Email<input name="replyToEmail" value="${escapeAttr(email.replyToEmail || "")}" /></label><label hidden>Secure<select name="smtpSecure"><option value="off" ${email.smtpSecure ? "" : "selected"}>Off</option><option value="on" ${email.smtpSecure ? "selected" : ""}>On</option></select></label><button class="secondary full" type="submit" ${canGovern() ? "" : "disabled"}>Send Test Email</button></form></section>`;
+
+  const teamPane = `<section class="panel"><div class="section-head compact"><div><span class="eyebrow">Account Settings</span><h2>Business Team</h2></div></div><form class="form-stack" data-form="account-settings-team"><label>Name<input name="name" placeholder="Team member" /></label><label>Email<input name="email" type="email" required /></label><label>Role<select name="role"><option value="viewer">Viewer</option><option value="accountant">Accountant</option></select></label><button class="primary full" type="submit" ${canGovern() ? "" : "disabled"}>Add Team Member</button></form><div class="record-list">${team.length ? team.map((member) => `<article class="record-row"><div><strong>${escapeHtml(member.name || member.email || "Member")}</strong><span>${escapeHtml(member.email || "")}</span></div><div class="row-end"><small>${escapeHtml(titleCase(member.role || "viewer"))} · ${escapeHtml(titleCase(member.status || "active"))}</small>${String(member.status || "").toLowerCase() === "removed" ? `<button class="tiny" type="button" data-action="team-status" data-member-id="${escapeAttr(member.id || "")}" data-status="active">Activate</button>` : `<button class="tiny" type="button" data-action="team-status" data-member-id="${escapeAttr(member.id || "")}" data-status="removed">Remove</button>`}</div></article>`).join("") : `<div class="empty-state">No team members yet.</div>`}</div></section>`;
+
+  const securityPane = `<section class="panel"><div class="section-head compact"><div><span class="eyebrow">Account Settings</span><h2>Security</h2></div></div><p class="form-note">Change password continues to use the existing secure account endpoint.</p><button class="secondary full" type="button" data-action="open-change-password">Open Change Password</button><div class="status-grid" style="margin-top:10px"><article><span>Business</span><strong>${escapeHtml(company?.name || workspaceName(state.activeWorkspace))}</strong></article><article><span>Email</span><strong>${escapeHtml(state.user?.email || "-")}</strong></article></div><p class="form-note" style="margin-top:10px">Account deletion is handled through the existing reviewed flow.</p><a class="secondary full action-link" href="/apps/web/delete-account.html">Review deletion options</a></section>`;
+
+  const pane = tab === "email" ? emailPane : tab === "team" ? teamPane : tab === "security" ? securityPane : apiPane;
+  return `${tabs}${pane}`;
+}
 function renderAgent() {
-  const prompts = ["Show my sales summary for this month", "List my unpaid invoices", "Which are my top customers?", "What is my GST position?", "Give me insights to improve cash flow"];
-  return `<section class="agent-header"><button class="tiny" type="button" data-route="home">← Back</button><div><span class="eyebrow">EazInvoice</span><h1>AI Agent</h1><p>Your business assistant, always ready.</p></div></section>
-    <section class="agent-welcome"><div class="robot robot-${escapeAttr(state.aiRobotState)}" aria-hidden="true"><svg viewBox="0 0 120 120" role="presentation"><path class="robot-body" d="M28 48h64a10 10 0 0 1 10 10v36a10 10 0 0 1-10 10H28a10 10 0 0 1-10-10V58a10 10 0 0 1 10-10Z"/><rect class="robot-face" x="30" y="58" width="60" height="34" rx="10"/><circle class="robot-eye" cx="48" cy="75" r="4"/><circle class="robot-eye" cx="72" cy="75" r="4"/><path class="robot-mouth" d="M51 84c6 4 12 4 18 0"/><path class="robot-antenna" d="M60 48V31"/><circle class="robot-dot" cx="60" cy="25" r="6"/></svg></div><div><h2>${state.aiConversation.length ? "What would you like to explore next?" : "Hi! I’m your EazInvoice AI Agent."}</h2><p>${state.aiConversation.length ? "Ask another question about this business." : "How can I help you today?"}</p></div></section>
+  const prompts = [
+    "Show my sales summary for this month",
+    "List my unpaid invoices",
+    "Which are my top 5 customers?",
+    "Show expenses by category",
+    "What is my GST payable?",
+    "Give me insights to improve cash flow"
+  ];
+  return `<section class="agent-header"><button class="tiny" type="button" data-route="home">\u2190 Back</button><div><span class="eyebrow">EazInvoice</span><h1>AI Agent</h1><p>Your business assistant, always ready.</p></div></section>
+    <section class="agent-welcome"><div class="robot robot-${escapeAttr(state.aiRobotState)}" aria-label="Eazy, the EazInvoice AI Agent" role="img"><img class="robot-asset" src="./assets/eazy.png" alt="" /></div><div><h2>${state.aiConversation.length ? "What would you like to explore next?" : "Hi! I\u2019m Eazy, your EazInvoice AI Agent."}</h2><p>${state.aiConversation.length ? "Ask Eazy another question about this business." : "How can Eazy help you today?"}</p></div></section>
     <section class="agent-conversation">${state.aiConversation.map(agentMessage).join("")}</section>
     ${state.aiConversation.length ? "" : `<section class="prompt-grid">${prompts.map((prompt) => `<button class="secondary prompt-chip" type="button" data-agent-prompt="${escapeAttr(prompt)}">${escapeHtml(prompt)}</button>`).join("")}</section>`}
-    <form class="agent-input" data-form="ai-agent"><input name="command" aria-label="Ask about your business" placeholder="Ask about your business…" autocomplete="off" required /><button class="primary" type="submit">Send</button></form>`;
+    <form class="agent-input" data-form="ai-agent"><input name="command" aria-label="Ask about your business" placeholder="Ask about your business\u2026" autocomplete="off" required /><button class="primary" type="submit">Send</button></form>`;
 }
 
 function agentMessage(message) {
   if (message.role === "user") return `<div class="agent-message user-message"><span>You</span><p>${escapeHtml(message.text)}</p></div>`;
   if (message.role === "error") return `<div class="agent-message error-message"><span>Agent</span><p>${escapeHtml(message.text)}</p><button class="secondary" type="button" data-route="agent">Retry</button></div>`;
   const result = message.result || {};
-  return `<div class="agent-message agent-answer"><span>Agent · ${escapeHtml(result.title || "Business insight")}</span><p>${escapeHtml(result.reply || result.summary || "Insight prepared from authorized EazInvoice data.")}</p>${(result.sections || []).map((section) => `<div class="answer-section"><strong>${escapeHtml(section.title || "Details")}</strong>${(section.items || []).map((item) => `<p>${escapeHtml(item)}</p>`).join("")}</div>`).join("")}<small>Facts, calculations and recommendations are based on authorized business context.</small></div>`;
+  return `<div class="agent-message agent-answer"><span>Agent \u00b7 ${escapeHtml(result.title || "Business insight")}</span><p>${escapeHtml(result.reply || result.summary || "Insight prepared from authorized EazInvoice data.")}</p>${(result.sections || []).map((section) => `<div class="answer-section"><strong>${escapeHtml(section.title || "Details")}</strong>${(section.items || []).map((item) => `<p>${escapeHtml(item)}</p>`).join("")}</div>`).join("")}<small>Facts, calculations and recommendations are based on authorized business context.</small></div>`;
 }
 
 function metricCard(label, value, hint) {
@@ -1654,12 +2347,21 @@ function periodOptions() {
 
 function reportValue(source, key) {
   const value = source?.[key] ?? source?.summary?.[key] ?? source?.totals?.[key];
-  return value === undefined ? null : value;
+  if (value === undefined) return null;
+  if (value && typeof value === "object") {
+    if (typeof value.total === "number") return value.total;
+    if (typeof value.amount === "number") return value.amount;
+    if (typeof value.value === "number") return value.value;
+    if (typeof value.closingBalance === "number") return value.closingBalance;
+    if (typeof value.net === "number") return value.net;
+    return source?.totals?.[key] ?? source?.summary?.[key] ?? null;
+  }
+  return value;
 }
 
 function reportCard(title, subtitle, source, keys) {
   const entries = keys.map((key) => [key, reportValue(source, key)]).filter(([, value]) => value !== null);
-  return `<article class="report-summary-card"><span class="metric-icon" aria-hidden="true">▥</span><div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p>${entries.slice(0, 2).map(([key, value]) => `<strong>${escapeHtml(typeof value === "number" ? money(value) : String(value))}</strong><small>${escapeHtml(titleCase(key))}</small>`).join("") || `<small>No data returned</small>`}</div></article>`;
+  return `<article class="report-summary-card"><span class="metric-icon" aria-hidden="true">${iconSvg("chart")}</span><div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p>${entries.slice(0, 2).map(([key, value]) => `<strong>${escapeHtml(typeof value === "number" ? money(value) : String(value))}</strong><small>${escapeHtml(titleCase(key))}</small>`).join("") || `<small>No data returned</small>`}</div></article>`;
 }
 
 function structuredReport(source, keys) {
@@ -1741,7 +2443,7 @@ function selectField(name, label, records, preferredKey) {
 
 function partyList(records, empty) {
   if (!records.length) return `<div class="empty-state">${escapeHtml(empty)}</div>`;
-  return `<div class="record-list">${records.slice(0, 20).map((record) => `
+  return `<div class="record-list party-grid">${records.slice(0, 20).map((record) => `
     <article class="record-row">
       <div><strong>${escapeHtml(record.name || record.businessName || record.partyName || "Unnamed")}</strong><span>${escapeHtml(maskTax(record.gstin || record.pan || record.taxId || ""))}</span></div>
       <small>${escapeHtml(record.email || record.phone || "")}</small>
@@ -1777,7 +2479,7 @@ function recordList(records, empty) {
     return `
       <article class="record-row">
         <div><strong>${escapeHtml(title)}</strong><span>${escapeHtml(record.customerName || record.vendorName || record.billToName || record.description || record.reason || "")}</span></div>
-        <div class="row-end"><strong>${escapeHtml(money(amount, record.currency || "INR"))}</strong><small>${escapeHtml(titleCase(status))}</small></div>
+        <div class="row-end"><strong>${escapeHtml(money(amount, record.currency || "INR"))}</strong>${status ? `<small class="status-badge ${statusClass(status)}">${escapeHtml(titleCase(status))}</small>` : ""}</div>
         ${invoiceActions || poActions ? `<div class="inline-actions">${invoiceActions}${poActions}</div>` : ""}
       </article>
     `;
@@ -1829,8 +2531,8 @@ function maskTax(value) {
 function maskBank(value) {
   const raw = String(value || "").replace(/\s+/g, "");
   if (!raw) return "";
-  if (raw.length <= 4) return `••${raw}`;
-  return `•••• ${raw.slice(-4)}`;
+  if (raw.length <= 4) return `\u2022\u2022${raw}`;
+  return `\u2022\u2022\u2022\u2022 ${raw.slice(-4)}`;
 }
 
 function shareDocument(kind, id) {

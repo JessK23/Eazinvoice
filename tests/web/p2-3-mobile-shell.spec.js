@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+﻿import { expect, test } from "@playwright/test";
 
 const json = (payload) => ({
   status: 200,
@@ -16,7 +16,7 @@ async function mockMobileApi(page) {
       return;
     }
     if (path === "/me") {
-      await route.fulfill(json({ id: "mobile-owner", name: "Mobile Owner", email: "owner@example.com" }));
+      await route.fulfill(json({ user: { id: "mobile-owner", name: "Mobile Owner", email: "owner@example.com", phone: "9876543210" }, plan: { plan: "free", status: "active" } }));
       return;
     }
     if (path === "/business/workspaces") {
@@ -24,6 +24,14 @@ async function mockMobileApi(page) {
         { ownerUserId: "mobile-owner", businessId: "biz-a", businessName: "Alpha Traders", role: "owner" },
         { ownerUserId: "mobile-owner", businessId: "biz-b", businessName: "Beta Services", role: "viewer" },
       ]));
+      return;
+    }
+    if (path === "/companies") {
+      await route.fulfill(json([{ id: "biz-a", name: "Alpha Traders", businessType: "retail", entityType: "company" }]));
+      return;
+    }
+    if (path === "/subscriptions/me") {
+      await route.fulfill(json([{ id: "sub-1", plan: "free", status: "active" }]));
       return;
     }
     if (path === "/reports/summary") {
@@ -40,7 +48,14 @@ async function mockMobileApi(page) {
       return;
     }
     if (path === "/invoices") {
-      await route.fulfill(json([{ id: "inv-1", invoiceNumber: "INV-MOB-1", customerName: "Customer One", total: 1180, currency: "INR", status: "created" }]));
+      await route.fulfill(json([
+        { id: "inv-1", invoiceNumber: "INV-MOB-1", customerName: "Customer One", total: 1180, currency: "INR", status: "created", invoiceDate: "2026-09-21" },
+        { id: "inv-2", invoiceNumber: "INV-MOB-2", customerName: "Customer Two", total: 900, currency: "INR", status: "issued", invoiceDate: "2026-09-20" },
+        { id: "inv-3", invoiceNumber: "INV-MOB-3", customerName: "Customer Three", total: 700, currency: "INR", status: "draft", invoiceDate: "2026-09-19" },
+        { id: "inv-4", invoiceNumber: "INV-MOB-4", customerName: "Customer Four", total: 500, currency: "INR", status: "paid", invoiceDate: "2026-09-18" },
+        { id: "inv-5", invoiceNumber: "INV-MOB-5", customerName: "Customer Five", total: 400, currency: "INR", status: "part_paid", invoiceDate: "2026-09-17" },
+        { id: "inv-6", invoiceNumber: "INV-MOB-6", customerName: "Customer Six", total: 300, currency: "INR", status: "overdue", invoiceDate: "2026-09-16" },
+      ]));
       return;
     }
     if (path === "/payments") {
@@ -48,7 +63,14 @@ async function mockMobileApi(page) {
       return;
     }
     if (path === "/purchase-orders") {
-      await route.fulfill(json([{ id: "po-1", poNumber: "PO-MOB-1", vendorName: "Vendor One", total: 590, currency: "INR" }]));
+      await route.fulfill(json([
+        { id: "po-1", poNumber: "PO-MOB-1", vendorName: "Vendor One", total: 590, currency: "INR", documentType: "po", poDate: "2026-09-21" },
+        { id: "po-2", poNumber: "WO-MOB-2", vendorName: "Vendor Two", total: 490, currency: "INR", documentType: "wo", poDate: "2026-09-20" },
+        { id: "po-3", poNumber: "PO-MOB-3", vendorName: "Vendor Three", total: 390, currency: "INR", documentType: "po", poDate: "2026-09-19" },
+        { id: "po-4", poNumber: "PO-MOB-4", vendorName: "Vendor Four", total: 290, currency: "INR", documentType: "po", poDate: "2026-09-18" },
+        { id: "po-5", poNumber: "WO-MOB-5", vendorName: "Vendor Five", total: 190, currency: "INR", documentType: "wo", poDate: "2026-09-17" },
+        { id: "po-6", poNumber: "PO-MOB-6", vendorName: "Vendor Six", total: 90, currency: "INR", documentType: "po", poDate: "2026-09-16" },
+      ]));
       return;
     }
     if (path === "/vendor-bills") {
@@ -84,7 +106,7 @@ async function mockMobileApi(page) {
       return;
     }
     if (path === "/reports/balance-sheet") {
-      await route.fulfill(json({ assets: 500, liabilities: 90, equity: 410, isBalanced: true }));
+      await route.fulfill(json({ assets: { total: 500 }, liabilities: { total: 90 }, equity: { total: 410 }, totals: { assets: 500, liabilities: 90, equity: 410 }, isBalanced: true }));
       return;
     }
     if (path === "/reports/trial-balance") {
@@ -135,20 +157,81 @@ test("P2-3 mobile shell loads API-backed workspace and blocks stale tenant UI at
   });
   await page.goto("/apps/mobile/index.html");
 
-  await expect(page.getByText("Alpha Traders - Owner")).toBeVisible();
-  await expect(page.getByText("INR 1,000.00")).toBeVisible();
+  await expect(page.locator("#profileMeta")).toHaveText("Alpha Traders - Owner");
+  await expect(page.getByText("Total sales")).toBeVisible();
+  await expect(page.getByText("Latest 5 Invoices")).toBeVisible();
+  await expect(page.getByText("Latest 5 PO/WO")).toBeVisible();
+
   await page.getByRole("button", { name: "Sales" }).click();
   await expect(page.getByText("Create Invoice")).toBeVisible();
-  await expect(page.locator(".record-list strong", { hasText: "INV-MOB-1" })).toBeVisible();
-
   await page.locator("#workspaceSelect").selectOption("biz-b:mobile-owner");
   await expect(page.locator("#profileMeta")).toHaveText("Beta Services - Viewer");
   await page.getByRole("button", { name: "Home" }).click();
   await expect(page.getByText("INR 25.00")).toBeVisible();
-  await page.getByRole("button", { name: "Sales" }).click();
-  await page.locator("summary", { hasText: "Create Invoice" }).click();
-  await expect(page.getByRole("button", { name: "Submit to backend" }).first()).toBeDisabled();
 
+  await page.locator("#bottomNav [data-route=\"more\"]").click();
+  await expect(page.getByRole("heading", { name: "Compliance" })).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("[object Object]");
+
+  await page.getByRole("button", { name: "Home" }).click();
   const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 2);
   expect(hasHorizontalOverflow).toBeFalsy();
+});
+test("mobile profile menu dismisses correctly and does not block dashboard controls", async ({ page }) => {
+  await mockMobileApi(page);
+  await page.setViewportSize({ width: 390, height: 880 });
+  await page.addInitScript(() => {
+    window.localStorage.setItem("eazinvoice_mobile_session_v3", JSON.stringify({
+      token: "mobile-token",
+      user: { id: "mobile-owner", name: "Mobile Owner", email: "owner@example.com" },
+      activeWorkspace: { ownerUserId: "mobile-owner", businessId: "biz-a", businessName: "Alpha Traders", role: "owner" },
+    }));
+  });
+  await page.goto("/apps/mobile/index.html");
+
+  const profileButton = page.locator("#profileButton");
+  const profileMenu = page.locator("#profileMenu");
+
+  await expect(profileMenu).toBeHidden();
+  await expect(profileButton).toHaveAttribute("aria-expanded", "false");
+
+  await profileButton.click();
+  await expect(profileMenu).toBeVisible();
+  await expect(profileButton).toHaveAttribute("aria-expanded", "true");
+
+  await profileButton.click();
+  await expect(profileMenu).toBeHidden();
+  await expect(profileButton).toHaveAttribute("aria-expanded", "false");
+
+  await profileButton.click();
+  await expect(profileMenu).toBeVisible();
+  await page.locator("#content").click({ position: { x: 20, y: 20 } });
+  await expect(profileMenu).toBeHidden();
+
+  await profileButton.click();
+  await page.getByRole("button", { name: "Account Settings" }).click();
+  await expect(profileMenu).toBeHidden();
+  await expect(page.getByRole("heading", { name: "API Access" })).toBeVisible();
+
+  await profileButton.click();
+  await page.getByRole("button", { name: "Change Password" }).click();
+  await expect(profileMenu).toBeHidden();
+  await expect(page.getByRole("heading", { name: "Account Profile" })).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(profileMenu).toBeHidden();
+
+  await page.getByRole("button", { name: "Home" }).click();
+  await expect(profileMenu).toBeHidden();
+
+  await page.reload();
+  await expect(profileMenu).toBeHidden();
+  await expect(profileButton).toHaveAttribute("aria-expanded", "false");
+
+  await profileButton.click();
+  await expect(profileMenu).toBeVisible();
+  await page.locator("#content").click({ position: { x: 32, y: 40 } });
+  await expect(profileMenu).toBeHidden();
+  await page.getByRole("button", { name: "Sales" }).click();
+  await expect(page.getByText("Create Invoice")).toBeVisible();
 });

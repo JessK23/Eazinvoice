@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EazInvoice Account Settings</title>
+  <link rel="stylesheet" href="./styles.css?v=20260723-ui-banner-refresh-5" />
+  <link rel="stylesheet" href="./design-system-v1.css?v=20260919-stage1" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><div class="mark"><img src="./assets/logo-mark.png?v=20260605-logo-refresh" alt="EazInvoice" /></div></div>
+    <nav class="topnav">
+      <a class="ghost" href="/apps/web/dashboard.html">Workspace</a>
+      <a class="ghost" href="/apps/web/access.html">My Account</a>
+      <button id="settingsLogout" class="ghost" type="button">Logout</button>
+    </nav>
+  </header>
+
+  <main class="layout" style="max-width:1100px;margin:18px auto;padding:0 16px">
+    <section class="panel" style="margin-bottom:12px">
+      <div class="panel-head compact">
+        <div><h1>Account Settings</h1><p class="hint">Configuration, security and administration for your active business workspace.</p></div>
+        <label>Business workspace
+          <select id="settingsWorkspace"></select>
+        </label>
+      </div>
+      <div id="settingsStatus" class="status"></div>
+    </section>
+
+    <section class="panel" style="margin-bottom:12px">
+      <div class="panel-head compact"><div><h2>API Access / API Keys</h2></div></div>
+      <form id="apiKeyForm" class="grid two" style="margin-bottom:10px">
+        <label>Label <input name="label" required placeholder="Website integration" /></label>
+        <label>Scopes (comma separated) <input name="scopes" placeholder="invoices:write,reports:read" /></label>
+        <div class="actions"><button class="primary" type="submit">Create API Key</button></div>
+      </form>
+      <div id="apiKeySecret" class="note-box" hidden></div>
+      <div id="apiKeysList" class="list"></div>
+    </section>
+
+    <section class="panel" style="margin-bottom:12px">
+      <div class="panel-head compact"><div><h2>Email Configuration</h2></div></div>
+      <form id="emailSettingsForm" class="grid two">
+        <label>SMTP Host <input name="smtpHost" /></label>
+        <label>SMTP Port <input name="smtpPort" type="number" /></label>
+        <label>SMTP User <input name="smtpUser" /></label>
+        <label>SMTP Password <input name="smtpPass" type="password" placeholder="Leave blank to keep existing" /></label>
+        <label>From Email <input name="fromEmail" type="email" /></label>
+        <label>From Name <input name="fromName" /></label>
+        <label>Reply-To Email <input name="replyToEmail" type="email" /></label>
+        <label>Secure SMTP
+          <select name="smtpSecure"><option value="off">Off</option><option value="on">On</option></select>
+        </label>
+        <div class="actions"><button class="primary" type="submit">Save Email Configuration</button></div>
+      </form>
+      <form id="emailTestForm" class="grid two" style="margin-top:8px">
+        <label>Test recipient <input name="to" type="email" required /></label>
+        <div class="actions"><button class="ghost" type="submit">Send Test Email</button></div>
+      </form>
+    </section>
+
+    <section class="panel" style="margin-bottom:12px">
+      <div class="panel-head compact"><div><h2>Business Team</h2></div></div>
+      <form id="teamForm" class="grid two" style="margin-bottom:10px">
+        <label>Name <input name="name" /></label>
+        <label>Email <input name="email" type="email" required /></label>
+        <label>Role
+          <select name="role"><option value="viewer">Viewer</option><option value="accountant">Accountant</option></select>
+        </label>
+        <div class="actions"><button class="primary" type="submit">Add Team Member</button></div>
+      </form>
+      <div id="teamList" class="list"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head compact"><div><h2>Security</h2></div></div>
+      <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap">
+        <a class="ghost" href="/apps/web/access.html?tab=profile">Change Password</a>
+        <a class="ghost" href="/apps/web/delete-account.html">Review Account Deletion</a>
+      </div>
+    </section>
+  </main>
+
+  <script src="./account-settings.js?v=20260923-account-settings-1"></script>
+</body>
+</html>

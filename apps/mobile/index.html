@@ -14,24 +14,43 @@
 
   <main class="mobile-shell">
     <header id="topAppBar" class="top-app-bar" hidden>
+      <button id="menuButton" class="icon-action menu-button" type="button" aria-label="Open menu" aria-expanded="false"><span aria-hidden="true">☰</span></button>
       <div class="brand-lockup">
-        <img src="./assets/logo-icon.png" alt="" />
-        <div>
-          <span id="routeTitle">Home</span>
-          <strong>EazInvoice</strong>
-        </div>
+        <img src="./assets/logo-icon.png" alt="" aria-hidden="true" />
+        <div class="brand-wordmark"><strong>EazInvoice</strong><span>Money Managed Easy.</span></div>
       </div>
-      <button id="refreshButton" class="icon-action" type="button" aria-label="Refresh workspace" hidden>↻</button>
+      <div class="top-actions"><button id="refreshButton" class="icon-action" type="button" aria-label="Refresh workspace" hidden>↻</button><button id="profileButton" class="profile-button" type="button" aria-label="Open profile"><span id="profileInitial">U</span></button></div>
     </header>
 
     <section id="workspaceBar" class="workspace-bar" aria-label="Current business workspace" hidden>
       <div>
-        <strong id="profileName">Not signed in</strong>
-        <span id="profileMeta">Configure API and sign in</span>
+        <strong id="profileName">Business workspace</strong>
+        <span id="profileMeta" hidden></span>
       </div>
       <select id="workspaceSelect" aria-label="Switch business" hidden></select>
       <button id="logoutButton" class="text-action" type="button" hidden>Logout</button>
     </section>
+
+    <aside id="mobileMenu" class="mobile-menu" hidden aria-label="Workspace menu">
+      <div class="menu-heading"><div><span class="eyebrow">Workspace</span><strong>Explore EazInvoice</strong></div><button class="icon-action" type="button" data-action="close-menu" aria-label="Close menu">×</button></div>
+      <button class="menu-home" type="button" data-route="home"><span class="menu-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg></span>Dashboard</button>
+      <button class="menu-sales" type="button" data-route="sales"><span class="menu-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5M9 12h6M9 16h6"/></svg></span>Sales &amp; invoices</button>
+      <button class="menu-purchases" type="button" data-route="purchases"><span class="menu-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h2l2 10h9l2-7H7"/><circle cx="10" cy="19" r="1.5"/><circle cx="17" cy="19" r="1.5"/></svg></span>Purchases &amp; work orders</button>
+      <button class="menu-reports" type="button" data-route="reports"><span class="menu-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/></svg></span>Reports &amp; compliance</button>
+      <button class="menu-agent" type="button" data-route="agent"><span class="menu-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h8a4 4 0 0 1 4 4v3a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4v-3a4 4 0 0 1 4-4Z"/><path d="M12 8V5M10 5h4"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/></svg></span>AI Agent</button>
+      <button class="menu-account" type="button" data-action="open-account" data-tab="overview"><span class="menu-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Z"/><path d="M5 20a7 7 0 0 1 14 0"/></svg></span><span>My Account</span><small id="menuMyAccountTier">Free</small></button>
+      <button class="menu-logout" type="button" data-action="logout"><span class="menu-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h5"/><path d="m14 8 4 4-4 4M9 12h9"/></svg></span>Log out</button>
+    </aside>
+
+    <aside id="profileMenu" class="profile-menu" hidden aria-label="User actions">
+      <div class="profile-menu-head">
+        <strong id="profileMenuName">User</strong>
+        <small id="profileMenuEmail">Account</small>
+      </div>
+      <button type="button" data-action="open-account-settings" data-tab="api">Account Settings</button>
+      <button type="button" data-action="open-change-password">Change Password</button>
+      <button type="button" data-action="logout">Logout</button>
+    </aside>
 
     <form id="apiBaseForm" class="endpoint-form" hidden>
       <label>
@@ -46,11 +65,11 @@
     <section id="content" class="content-area"></section>
 
     <nav id="bottomNav" class="bottom-nav" aria-label="Primary mobile navigation">
-      <button class="active" type="button" data-route="home"><span aria-hidden="true">⌂</span><small>Home</small></button>
-      <button type="button" data-route="sales"><span aria-hidden="true">▣</span><small>Sales</small></button>
-      <button type="button" data-route="purchases"><span aria-hidden="true">▤</span><small>Purchases</small></button>
-      <button type="button" data-route="money"><span aria-hidden="true">₹</span><small>Accounting</small></button>
-      <button type="button" data-route="more"><span aria-hidden="true">⋯</span><small>More</small></button>
+      <button class="active" type="button" data-route="home"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="m3 11 9-7 9 7v9H3z"/><path d="M9 20v-6h6v6"/></svg></span><small>Home</small></button>
+      <button type="button" data-route="sales"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5M9 12h6M9 16h6"/></svg></span><small>Sales</small></button>
+      <button type="button" data-route="purchases"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 5h2l2 10h9l2-7H7"/><circle cx="10" cy="19" r="1"/><circle cx="17" cy="19" r="1"/></svg></span><small>Purchases</small></button>
+      <button type="button" data-route="money"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 19V5M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/></svg></span><small>Accounting</small></button>
+      <button type="button" data-route="more"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg></span><small>More</small></button>
     </nav>
     <span data-route="reports" hidden aria-hidden="true"></span>
   </main>

@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
@@ -68,7 +68,7 @@ test("surrounding Web navigation consistently calls the surface My Account", () 
   }
   assert.match(homeHtml, /href="\/apps\/web\/access\.html">My Account<\/a>/);
   assert.match(navJs, /title: "My Account"/);
-  assert.match(dashboardHtml, /href="\/apps\/web\/access\.html\?tab=profile">Account Settings<\/a>/);
+  assert.match(dashboardHtml, /href="\/apps\/web\/account-settings\.html">Account Settings<\/a>/);
   assert.match(dashboardHtml, /href="\/apps\/web\/dashboard\.html" data-page-link="home">Dashboard<\/a>/);
   assert.match(dashboardHtml, /href="\/apps\/web\/dashboard\.html#reports" data-page-link="reports">Reports<\/a>/);
 });
