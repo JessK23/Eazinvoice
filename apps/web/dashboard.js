@@ -1,4 +1,4 @@
-import { apiClient, clearToken, money, mountAdminPlanPreview, requireSession } from "./common.js?v=20260601-session";
+﻿import { apiClient, clearToken, money, mountAdminPlanPreview, requireSession } from "./common.js?v=20260924-oauth-cleanup";
 import { getProfileSetupState, showProfileSetupDialog } from "./profile-setup.js?v=20260920-stage2a";
 
 const sessionContext = await requireSession();
@@ -1755,7 +1755,7 @@ function renderAppContext(user, organization) {
   renderBusinessSwitcher(globalBusinessSwitcher);
   if (contextBusinessMeta) {
     contextBusinessMeta.textContent = organization
-      ? `${String(entityType).replace(/_/g, " ")} · ${organization.state || organization.address || "Profile saved"}`
+      ? `${String(entityType).replace(/_/g, " ")} Â· ${organization.state || organization.address || "Profile saved"}`
       : "No business profile selected";
   }
   if (contextGstin) contextGstin.textContent = gstin || pan || "Not added";
@@ -3193,7 +3193,7 @@ function renderAccountingSummary(payload = {}) {
         <div class="mini-table-row" data-ledger-account-id="${escapeHtml(account.id || "")}">
           <span>${escapeHtml(account.accountCode)}</span>
           <strong>${escapeHtml(account.accountName)}</strong>
-          <small>${escapeHtml(account.accountType)}${account.systemAccount ? " · system" : ""}</small>
+          <small>${escapeHtml(account.accountType)}${account.systemAccount ? " Â· system" : ""}</small>
         </div>
       `).join("")
       : "<p class=\"hint\">No ledger accounts available yet.</p>";
@@ -3245,7 +3245,7 @@ async function refreshAccountingSummary() {
           <div class="mini-table-row">
             <span>${escapeHtml(journal.journalDate || "")}</span>
             <strong>${escapeHtml(journal.journalNumber || "Journal")}</strong>
-            <small>${escapeHtml(journal.currency || "INR")} ${money(journal.totalDebit || 0)} · ${escapeHtml(journal.narration || "")}</small>
+            <small>${escapeHtml(journal.currency || "INR")} ${money(journal.totalDebit || 0)} Â· ${escapeHtml(journal.narration || "")}</small>
           </div>
         `).join("")
         : "<p class=\"hint\">No manual journals posted yet.</p>";
@@ -6133,9 +6133,9 @@ async function initializeDashboard() {
   renderProfile(currentUser, activeOrg);
   if (activeOrg) {
     if (orgName) orgName.textContent = activeOrg.entityType === "freelancer" || activeOrg.entityType === "consultant" ? activeOrg.name : activeOrg.legalName || activeOrg.name;
-    if (orgMeta) orgMeta.textContent = `${activeOrg.entityType.toUpperCase()} · ${activeOrg.address || "No address saved"}`;
+    if (orgMeta) orgMeta.textContent = `${activeOrg.entityType.toUpperCase()} Â· ${activeOrg.address || "No address saved"}`;
     if (orgKyc) {
-      orgKyc.textContent = `KYC: ${activeOrg.kycStatus || "pending"} · Review: ${activeOrg.reviewStatus || "pending"} · Mode: ${activeOrg.kycMode || "document-review"}`;
+      orgKyc.textContent = `KYC: ${activeOrg.kycStatus || "pending"} Â· Review: ${activeOrg.reviewStatus || "pending"} Â· Mode: ${activeOrg.kycMode || "document-review"}`;
     }
     if (activeOrg.logoUrl && orgLogo) {
       orgLogo.src = activeOrg.logoUrl;
@@ -6152,7 +6152,7 @@ async function initializeDashboard() {
       ? reports.map((report) => `
         <div class="report-card">
           <strong>${report.title}</strong>
-          <div class="hint">${report.reportType} · Invoices: ${report.totalInvoices} · POs: ${report.totalPurchaseOrders}</div>
+          <div class="hint">${report.reportType} Â· Invoices: ${report.totalInvoices} Â· POs: ${report.totalPurchaseOrders}</div>
         </div>
       `).join("")
       : "<p>No reports yet for this organization.</p>";

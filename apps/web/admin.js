@@ -1,4 +1,4 @@
-import { apiClient, money, mountAdminPlanPreview, requireSession } from "./common.js?v=20260601-session";
+﻿import { apiClient, money, mountAdminPlanPreview, requireSession } from "./common.js?v=20260924-oauth-cleanup";
 
 const sessionContext = await requireSession("/apps/web/auth.html");
 const token = sessionContext?.token;

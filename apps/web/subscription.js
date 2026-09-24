@@ -1,4 +1,4 @@
-import { apiClient, money, requireSession } from "./common.js?v=20260601-session";
+﻿import { apiClient, money, requireSession } from "./common.js?v=20260924-oauth-cleanup";
 
 const form = document.getElementById("subscriptionForm");
 const status = document.getElementById("subscriptionStatus");

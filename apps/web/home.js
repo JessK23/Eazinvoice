@@ -1,4 +1,12 @@
-import { apiClient, clearToken, getTokenCandidates, mountAdminPlanPreview, saveToken } from "./common.js?v=20260601-session";
+﻿import {
+  apiClient,
+  cleanupOauthCallbackUrl,
+  clearToken,
+  getTokenCandidates,
+  hasOauthCallbackParams,
+  mountAdminPlanPreview,
+  saveToken,
+} from "./common.js?v=20260924-oauth-cleanup";
 
 const navLinks = document.querySelectorAll(".landing-nav a[href^='#']");
 navLinks.forEach((link) => {
@@ -14,7 +22,6 @@ navLinks.forEach((link) => {
   });
 });
 
-const tokenCandidates = getTokenCandidates();
 const loginLink = document.getElementById("homeLoginLink");
 const signupLink = document.getElementById("homeSignupLink");
 const accessPlanLink = document.getElementById("homeAccessPlanLink");
@@ -101,24 +108,65 @@ logoutButton?.addEventListener("click", () => {
   window.location.href = "/apps/web/index.html";
 });
 
-if (tokenCandidates.length) {
-  showLoggedInHome(cachedUser() || { name: "User", email: "Signed in" });
-  let matchedSession = false;
-  for (const candidate of tokenCandidates) {
-    try {
-      const session = await apiClient.me(candidate);
-      const user = { ...(session.user || {}), plan: session.plan?.plan || "free" };
-      saveToken(candidate);
-      localStorage.setItem("eazinvoice_user", JSON.stringify(user));
-      showLoggedInHome(user);
-      mountAdminPlanPreview({ token: candidate, session }, { containerSelector: ".landing-nav" });
-      matchedSession = true;
-      break;
-    } catch {
-      // Keep checking the remaining token sources; one stale token should not hide a valid login.
+export async function resolveHomeAuthSession({
+  tokenCandidates,
+  callbackParamsPresent,
+  readCachedUser,
+  verifyToken,
+  persistToken,
+  persistUser,
+  onAuthenticated,
+  onLoggedOut,
+  onFallbackAuthenticated,
+  onMountAdminPlanPreview,
+  cleanupCallbackUrl,
+  clearPersistedToken,
+}) {
+  const fallbackUser = readCachedUser?.() || { name: "User", email: "Signed in" };
+  if (tokenCandidates.length) {
+    onFallbackAuthenticated?.(fallbackUser);
+    for (const candidate of tokenCandidates) {
+      try {
+        const session = await verifyToken(candidate);
+        const user = { ...(session.user || {}), plan: session.plan?.plan || "free" };
+        persistToken(candidate);
+        persistUser(user);
+        cleanupCallbackUrl();
+        onAuthenticated?.(user, { token: candidate, session });
+        onMountAdminPlanPreview?.({ token: candidate, session });
+        return { status: "authenticated", user };
+      } catch {
+        // Keep checking remaining sources; one stale token should not hide a valid login.
+      }
     }
+
+    if (callbackParamsPresent) {
+      clearPersistedToken();
+      cleanupCallbackUrl();
+      onLoggedOut?.();
+      return { status: "oauth-callback-invalid" };
+    }
+
+    onFallbackAuthenticated?.(fallbackUser);
+    return { status: "fallback-cached", user: fallbackUser };
   }
-  if (!matchedSession) showLoggedInHome(cachedUser() || { name: "User", email: "Signed in" });
-} else {
-  showLoggedOutHome();
+
+  if (callbackParamsPresent) cleanupCallbackUrl();
+  onLoggedOut?.();
+  return { status: "logged-out" };
 }
+
+await resolveHomeAuthSession({
+  tokenCandidates: getTokenCandidates(),
+  callbackParamsPresent: hasOauthCallbackParams(),
+  readCachedUser: cachedUser,
+  verifyToken: (token) => apiClient.me(token),
+  persistToken: saveToken,
+  persistUser: (user) => localStorage.setItem("eazinvoice_user", JSON.stringify(user)),
+  onAuthenticated: (user) => showLoggedInHome(user),
+  onLoggedOut: () => showLoggedOutHome(),
+  onFallbackAuthenticated: (user) => showLoggedInHome(user),
+  onMountAdminPlanPreview: (context) => mountAdminPlanPreview(context, { containerSelector: ".landing-nav" }),
+  cleanupCallbackUrl: cleanupOauthCallbackUrl,
+  clearPersistedToken: clearToken,
+});

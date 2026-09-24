@@ -1,4 +1,4 @@
-import { apiClient, money, requireSession } from "./common.js?v=20260601-session";
+﻿import { apiClient, money, requireSession } from "./common.js?v=20260924-oauth-cleanup";
 
 const sessionContext = await requireSession();
 const token = sessionContext?.token;
@@ -148,10 +148,10 @@ function currentCurrencyRule() {
 
 function currencySymbol(currency = selectedCurrency()) {
   return ({
-    INR: "₹",
+    INR: "â‚¹",
     USD: "$",
-    EUR: "€",
-    GBP: "£",
+    EUR: "â‚¬",
+    GBP: "Â£",
     AED: "AED",
   })[currency] || currency;
 }
