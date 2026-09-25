@@ -1,4 +1,4 @@
-import http from "node:http";
+﻿import http from "node:http";
 import crypto from "node:crypto";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
@@ -29,6 +29,11 @@ import { hasPostgresConfig, validatePostgresConnection, validatePostgresSchema, 
 import { assertProductionConfig } from "./production-config.js";
 import { createSessionStore } from "./session-store.js";
 import { getFeatureRequirement, PLAN_CATALOG, resolvePlanUsageStatus } from "./plans.js";
+import {
+  REQUIREMENT_PURPOSES,
+  resolveFeatureEligibility,
+  resolveProfileRequirements,
+} from "./profile-requirements.js";
 import { sendSmtpMail } from "./smtp.js";
 
 function loadLocalEnv() {
@@ -976,15 +981,66 @@ function getAdminPlanPreview(req, user) {
 }
 
 function hasSubmittedKyc(company) {
-  return Boolean(
-    String(company.panNumber || "").trim() ||
-    String(company.gstNumber || "").trim() ||
-    String(company.taxId || "").trim() ||
-    String(company.registrationNumber || "").trim() ||
-    String(company.addressProof || "").trim() ||
-    (Array.isArray(company.documentNames) && company.documentNames.length) ||
-    (Array.isArray(company.documentFiles) && company.documentFiles.length)
-  );
+  const requirement = resolveProfileRequirements({
+    business: company,
+    purpose: REQUIREMENT_PURPOSES.KYC_PAID_FEATURE,
+  });
+  return requirement.complete && requirement.submitted;
+}
+
+function hasVerifiedKyc(company) {
+  return resolveProfileRequirements({
+    business: company,
+    purpose: REQUIREMENT_PURPOSES.KYC_PAID_FEATURE,
+  }).verified;
+}
+function evaluatePaidSubscriptionKycEligibility(api, user, { companyId = "", requireSpecificCompany = false } = {}) {
+  const companies = api.listCompanies(user);
+  const normalizedCompanyId = String(companyId || "").trim();
+  const scopedCompanies = requireSpecificCompany && normalizedCompanyId
+    ? companies.filter((company) => company.id === normalizedCompanyId)
+    : companies;
+
+  if (!scopedCompanies.length) {
+    return {
+      ok: false,
+      statusCode: 400,
+      code: "KYC_REQUIRED",
+      error: "Complete verification to continue. KYC documents or identity/business verification are required to activate paid EazInvoice features.",
+    };
+  }
+
+  const kycProfile = scopedCompanies.find((company) => hasSubmittedKyc(company));
+  if (!kycProfile) {
+    return {
+      ok: false,
+      statusCode: 400,
+      code: "KYC_REQUIRED",
+      error: "Complete verification to continue. KYC documents or identity/business verification are required to activate paid EazInvoice features.",
+    };
+  }
+
+  if (kycProfile.kycStatus === "rejected" || kycProfile.reviewStatus === "rejected") {
+    return {
+      ok: false,
+      statusCode: 403,
+      error: "KYC documents were rejected. Update documents before choosing a paid plan.",
+    };
+  }
+
+  if (!hasVerifiedKyc(kycProfile)) {
+    return {
+      ok: false,
+      statusCode: 409,
+      code: "KYC_VERIFICATION_REQUIRED",
+      error: "Complete verification to continue. Your submitted verification must be approved before paid features can be activated.",
+    };
+  }
+
+  return {
+    ok: true,
+    companyId: kycProfile.id,
+  };
 }
 
 function normalizeKycCountry(value) {
@@ -1945,6 +2001,21 @@ export function createServer(options = {}) {
     });
 
     if (orderMeta.kind === "subscription") {
+      const subscriptionUser = api.getUserById(orderMeta.userId);
+      const eligibility = evaluatePaidSubscriptionKycEligibility(api, subscriptionUser, {
+        companyId: orderMeta.companyId || "",
+        requireSpecificCompany: Boolean(orderMeta.companyId),
+      });
+      if (!eligibility.ok) {
+        return {
+          ok: false,
+          type: "subscription",
+          error: eligibility.error,
+          code: eligibility.code || "KYC_REQUIRED",
+          statusCode: eligibility.statusCode || 409,
+        };
+      }
+
       const existing = api.listSubscriptions().find((subscription) => (
         subscription.gatewayOrderId === orderId || subscription.gatewayPaymentId === paymentId
       ));
@@ -1952,11 +2023,10 @@ export function createServer(options = {}) {
         const entitlementSync = await syncUserSubscriptionEntitlements(existing.userId, "razorpay-duplicate-verification");
         return { ok: true, type: "subscription", subscription: existing, duplicate: true, entitlementSync };
       }
-      const subscriptionUser = api.getUserById(orderMeta.userId);
       const subscription = api.createSubscription({
         subscriberType: "individual",
         subscriberName: subscriptionUser?.name || subscriptionUser?.email || "Subscriber",
-        companyId: orderMeta.companyId || null,
+        companyId: orderMeta.companyId || eligibility.companyId || null,
         userId: orderMeta.userId,
         amount: orderMeta.amount,
         monthlyAmount: orderMeta.monthlyAmount,
@@ -2152,6 +2222,41 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/profile/requirements" && req.method === "GET") {
+      const companies = api.listCompanies(user);
+      const requestedBusinessId = String(url.searchParams.get("businessId") || "").trim();
+      const business = companies.find((company) => company.id === requestedBusinessId || company.businessId === requestedBusinessId)
+        || companies[0]
+        || {};
+      const planSummary = await resolvePlanSummary(api, user, previewPlan, options);
+      const subscription = currentUserPlan(api, user);
+      const documentType = String(url.searchParams.get("documentType") || "").trim();
+      const featureRequiresPaidPlan = url.searchParams.get("paid") === "true";
+      const featureRequiresKyc = url.searchParams.get("kyc") === "true";
+      sendJson(res, 200, {
+        businessId: business.id || business.businessId || null,
+        core: resolveProfileRequirements({ user, business, purpose: REQUIREMENT_PURPOSES.CORE_PROFILE }),
+        document: documentType
+          ? resolveProfileRequirements({ business, purpose: REQUIREMENT_PURPOSES.DOCUMENT, documentType })
+          : null,
+        kyc: resolveProfileRequirements({ business, purpose: REQUIREMENT_PURPOSES.KYC_PAID_FEATURE }),
+        subscription: {
+          plan: String(subscription.plan || planSummary.plan || "free").toLowerCase(),
+          status: String(subscription.status || "inactive").toLowerCase(),
+        },
+        featureEligibility: resolveFeatureEligibility({
+          user,
+          business,
+          plan: subscription.plan || planSummary.plan || "free",
+          subscriptionStatus: subscription.status || "inactive",
+          featureRequiresPaidPlan,
+          featureRequiresKyc,
+          documentType,
+        }),
+      });
+      return;
+    }
+
     if (url.pathname === "/favicon.ico" && (req.method === "GET" || req.method === "HEAD")) {
       const favicon = await fs.readFile(path.join(ROOT, "apps", "web", "assets", "favicon-32.png"));
       res.writeHead(200, {
@@ -2208,6 +2313,13 @@ export function createServer(options = {}) {
           const activated = await activateVerifiedRazorpayOrder(orderMeta, paymentId, orderId);
           if (!activated) {
             sendJson(res, 404, { error: "Razorpay order could not be activated" });
+            return;
+          }
+          if (activated.ok === false) {
+            sendJson(res, activated.statusCode || 409, {
+              ...(activated.code ? { code: activated.code } : {}),
+              error: activated.error || "Razorpay order could not be activated.",
+            });
             return;
           }
           sendJson(res, 200, activated);
@@ -2525,7 +2637,7 @@ export function createServer(options = {}) {
           fallback.searchParams.set("error", message);
           fallback.searchParams.set("provider", "google");
           fallback.searchParams.set("mode", oauthMode);
-          const html = `<!doctype html><html><body><script>window.location.href=${JSON.stringify(deepLink)};setTimeout(function(){window.location.href=${JSON.stringify(fallback.toString())};},1200);</script><p>Returning to EazInvoice app…</p></body></html>`;
+          const html = `<!doctype html><html><body><script>window.location.href=${JSON.stringify(deepLink)};setTimeout(function(){window.location.href=${JSON.stringify(fallback.toString())};},1200);</script><p>Returning to EazInvoice appâ€¦</p></body></html>`;
           res.writeHead(200, securityHeaders({ "Content-Type": "text/html; charset=utf-8" }));
           res.end(html);
           return;
@@ -2620,7 +2732,7 @@ export function createServer(options = {}) {
         fallback.searchParams.set("token", token);
         fallback.searchParams.set("provider", "google");
         fallback.searchParams.set("mode", oauthMode);
-        const html = `<!doctype html><html><body><script>window.location.href=${JSON.stringify(deepLink)};setTimeout(function(){window.location.href=${JSON.stringify(fallback.toString())};},1200);</script><p>Returning to EazInvoice app…</p></body></html>`;
+        const html = `<!doctype html><html><body><script>window.location.href=${JSON.stringify(deepLink)};setTimeout(function(){window.location.href=${JSON.stringify(fallback.toString())};},1200);</script><p>Returning to EazInvoice appâ€¦</p></body></html>`;
         res.writeHead(200, securityHeaders({ "Content-Type": "text/html; charset=utf-8" }));
         res.end(html);
         return;
@@ -3278,11 +3390,21 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
           const companies = api.listCompanies(user);
           const kycProfile = companies.find((company) => hasSubmittedKyc(company));
           if (!kycProfile) {
-            sendJson(res, 400, { error: "Paid plans require KYC documents. Submit your organization or identity documents first." });
+            sendJson(res, 409, {
+              code: "KYC_REQUIRED",
+              error: "Complete verification to continue. KYC documents or identity/business verification are required to activate paid EazInvoice features.",
+            });
             return;
           }
           if (kycProfile.kycStatus === "rejected" || kycProfile.reviewStatus === "rejected") {
             sendJson(res, 403, { error: "KYC documents were rejected. Update documents before choosing a paid plan." });
+            return;
+          }
+          if (!hasVerifiedKyc(kycProfile)) {
+            sendJson(res, 409, {
+              code: "KYC_VERIFICATION_REQUIRED",
+              error: "Complete verification to continue. Your submitted verification must be approved before paid features can be activated.",
+            });
             return;
           }
           orderContext = {
@@ -3388,6 +3510,13 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
           sendJson(res, 404, { error: "Razorpay order could not be activated." });
           return;
         }
+        if (activated.ok === false) {
+          sendJson(res, activated.statusCode || 409, {
+            ...(activated.code ? { code: activated.code } : {}),
+            error: activated.error || "Razorpay order could not be activated.",
+          });
+          return;
+        }
         sendJson(res, 200, activated);
       } catch (error) {
         sendJson(res, 400, { error: error.message });
@@ -3402,7 +3531,8 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
         const kycProfile = companies.find((company) => hasSubmittedKyc(company));
         if (!kycProfile) {
           sendJson(res, 400, {
-            error: "Paid plans require KYC documents. Submit your organization or identity documents first.",
+            code: "KYC_REQUIRED",
+            error: "Complete verification to continue. KYC documents or identity/business verification are required to activate paid EazInvoice features.",
           });
           return;
         }
@@ -3470,6 +3600,24 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
         }
         if (action === "renew") {
           const plan = PLAN_CATALOG[String(existing.plan || "free").toLowerCase()] || PLAN_CATALOG.free;
+          const renewingPaidPlan = isPaidPlan({
+            plan: plan.plan,
+            amount: annualPlanCharge(plan),
+          });
+          if (renewingPaidPlan) {
+            const subscriptionUser = api.getUserById(existing.userId);
+            const eligibility = evaluatePaidSubscriptionKycEligibility(api, subscriptionUser, {
+              companyId: existing.companyId || body.companyId || "",
+              requireSpecificCompany: Boolean(existing.companyId || body.companyId),
+            });
+            if (!eligibility.ok) {
+              sendJson(res, eligibility.statusCode, {
+                ...(eligibility.code ? { code: eligibility.code } : {}),
+                error: eligibility.error,
+              });
+              return;
+            }
+          }
           const renewed = api.renewSubscription(subscriptionId, {
             ...body,
             amount: body.amount ?? annualPlanCharge(plan),
@@ -3487,6 +3635,20 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
           if (!targetPlan) {
             sendJson(res, 400, { error: "Choose a valid target plan." });
             return;
+          }
+          if (isPaidPlan({ plan: targetPlan.plan, amount: annualPlanCharge(targetPlan) })) {
+            const subscriptionUser = api.getUserById(existing.userId);
+            const eligibility = evaluatePaidSubscriptionKycEligibility(api, subscriptionUser, {
+              companyId: existing.companyId || body.companyId || "",
+              requireSpecificCompany: Boolean(existing.companyId || body.companyId),
+            });
+            if (!eligibility.ok) {
+              sendJson(res, eligibility.statusCode, {
+                ...(eligibility.code ? { code: eligibility.code } : {}),
+                error: eligibility.error,
+              });
+              return;
+            }
           }
           const downgraded = api.createSubscription({
             subscriberType: existing.subscriberType || "individual",
@@ -6142,3 +6304,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   console.log(`Eazinvoice API running on http://localhost:${process.env.PORT || 3001}`);
 }
+
+
+
+

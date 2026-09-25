@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -4286,6 +4286,27 @@ test("razorpay subscription activation requires verified signature and is idempo
   }
 
   try {
+    const adminOtpResult = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: {
+        mode: "signup",
+        email: TEST_ADMIN_EMAIL,
+        phone: "9776655443",
+      },
+    });
+    const adminSignupResult = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "Support Admin",
+        email: TEST_ADMIN_EMAIL,
+        password: "AdminSecure123",
+        phone: "9776655443",
+        otp: adminOtpResult.payload.devOtp,
+      },
+    });
+    assert.equal(adminSignupResult.response.status, 201);
+    const adminToken = adminSignupResult.payload.token;
+
     const otpResult = await request("/auth/email-otp/request", {
       method: "POST",
       body: {
@@ -4314,11 +4335,20 @@ test("razorpay subscription activation requires verified signature and is idempo
         name: "Razorpay Co",
         entityType: "company",
         address: "1 Billing Street",
+        addressProof: "billing-address.pdf",
         panNumber: "ABCDE1234F",
         documentNames: ["pan.pdf"],
       },
     });
     assert.equal(companyResult.response.status, 201);
+
+    const approved = await request("/admin/kyc-review/" + companyResult.payload.id + "?action=approve", {
+      method: "PATCH",
+      token: adminToken,
+      body: { notes: "Approved for razorpay activation test" },
+    });
+    assert.equal(approved.response.status, 200);
+    assert.equal(approved.payload.kycStatus, "verified");
 
     const orderResult = await request("/billing/razorpay/order", {
       method: "POST",
@@ -4460,8 +4490,9 @@ test("razorpay paid checkout shows KYC blocker before gateway order creation", a
         token: signupResult.payload.token,
         body: { kind: "subscription", plan },
       });
-      assert.equal(orderResult.response.status, 400);
-      assert.match(orderResult.payload.error, /KYC documents/i);
+      assert.equal(orderResult.response.status, 409);
+      assert.equal(orderResult.payload.code, "KYC_REQUIRED");
+      assert.match(orderResult.payload.error, /verification|KYC documents/i);
     }
     assert.equal(razorpayCalls, 0);
   } finally {
@@ -4581,6 +4612,151 @@ test("manual paid subscription requests remain pending even when kyc is verified
   }
 });
 
+
+test("paid subscription renewal requires authoritative KYC verification", async () => {
+  const restoreAdminEmail = useTestAdminEmail();
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  async function signup({ name, email, password, phone }) {
+    const otpResult = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email, phone },
+    });
+    const signupResult = await request("/auth/signup", {
+      method: "POST",
+      body: { name, email, password, phone, otp: otpResult.payload.devOtp },
+    });
+    assert.equal(signupResult.response.status, 201);
+    return signupResult.payload;
+  }
+
+  async function createPendingPaidSubscription(token, namePrefix) {
+    const companyResult = await request("/companies", {
+      method: "POST",
+      token,
+      body: {
+        name: `${namePrefix} Co`,
+        entityType: "company",
+        address: "1 Renewal Street",
+        addressProof: "address-proof.pdf",
+        panNumber: "ABCDE1234F",
+        documentNames: ["pan.pdf"],
+      },
+    });
+    assert.equal(companyResult.response.status, 201);
+
+    const subscriptionResult = await request("/subscriptions", {
+      method: "POST",
+      token,
+      body: {
+        plan: "standard",
+        amount: 199,
+        subscriberType: "company",
+      },
+    });
+    assert.equal(subscriptionResult.response.status, 201);
+    assert.equal(subscriptionResult.payload.status, "kyc_pending");
+    return { company: companyResult.payload, subscription: subscriptionResult.payload };
+  }
+
+  try {
+    const admin = await signup({
+      name: "Support Admin",
+      email: TEST_ADMIN_EMAIL,
+      password: "AdminSecure123",
+      phone: "9665444001",
+    });
+
+    const pendingUser = await signup({
+      name: "Pending Renewal",
+      email: "pending-renewal@example.com",
+      password: "Secure123",
+      phone: "9665444002",
+    });
+    const pendingContext = await createPendingPaidSubscription(pendingUser.token, "Pending Renewal");
+
+    const pendingRenew = await request(`/subscriptions/${pendingContext.subscription.id}/renew`, {
+      method: "POST",
+      token: pendingUser.token,
+    });
+    assert.equal(pendingRenew.response.status, 409);
+    assert.equal(pendingRenew.payload.code, "KYC_VERIFICATION_REQUIRED");
+
+    const pendingPlan = await request("/plans", { token: pendingUser.token });
+    assert.equal(pendingPlan.response.status, 200);
+    assert.equal(pendingPlan.payload.active.plan, "free");
+
+    const verifiedUser = await signup({
+      name: "Verified Renewal",
+      email: "verified-renewal@example.com",
+      password: "Secure123",
+      phone: "9665444003",
+    });
+    const verifiedContext = await createPendingPaidSubscription(verifiedUser.token, "Verified Renewal");
+
+    const approved = await request(`/admin/kyc-review/${verifiedContext.company.id}?action=approve`, {
+      method: "PATCH",
+      token: admin.token,
+      body: { notes: "Approve for renewal eligibility" },
+    });
+    assert.equal(approved.response.status, 200);
+
+    const verifiedRenew = await request(`/subscriptions/${verifiedContext.subscription.id}/renew`, {
+      method: "POST",
+      token: verifiedUser.token,
+    });
+    assert.equal(verifiedRenew.response.status, 200);
+    assert.equal(verifiedRenew.payload.status, "active");
+    assert.equal(verifiedRenew.payload.plan, "standard");
+
+    const verifiedPlan = await request("/plans", { token: verifiedUser.token });
+    assert.equal(verifiedPlan.response.status, 200);
+    assert.equal(verifiedPlan.payload.active.plan, "standard");
+
+    const rejectedUser = await signup({
+      name: "Rejected Renewal",
+      email: "rejected-renewal@example.com",
+      password: "Secure123",
+      phone: "9665444004",
+    });
+    const rejectedContext = await createPendingPaidSubscription(rejectedUser.token, "Rejected Renewal");
+
+    const rejectedReview = await request(`/admin/kyc-review/${rejectedContext.company.id}?action=reject`, {
+      method: "PATCH",
+      token: admin.token,
+      body: { notes: "Reject for renewal enforcement" },
+    });
+    assert.equal(rejectedReview.response.status, 200);
+
+    const rejectedRenew = await request(`/subscriptions/${rejectedContext.subscription.id}/renew`, {
+      method: "POST",
+      token: rejectedUser.token,
+    });
+    assert.ok([400, 403, 409].includes(rejectedRenew.response.status));
+    assert.match(String(rejectedRenew.payload.error || ""), /verification|kyc|reject/i);
+
+    const rejectedPlan = await request("/plans", { token: rejectedUser.token });
+    assert.equal(rejectedPlan.response.status, 200);
+    assert.equal(rejectedPlan.payload.active.plan, "free");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    restoreAdminEmail();
+  }
+});
 test("razorpay webhooks require configured signature verification", async () => {
   const previousWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
   process.env.RAZORPAY_WEBHOOK_SECRET = "webhook_secret_for_signature";

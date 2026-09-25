@@ -887,11 +887,15 @@ export function createStore(seed = {}, options = {}) {
       "email",
       "upiId",
       "bankDetails",
+      "aadhaarLast4",
+      "addressProof",
     ].forEach((field) => {
       if (updates[field] !== undefined) company[field] = String(updates[field] || "").trim();
     });
     if (updates.entityType !== undefined) company.entityType = String(updates.entityType || company.entityType);
     if (updates.gstRegistered !== undefined) company.gstRegistered = Boolean(updates.gstRegistered);
+    if (Array.isArray(updates.documentNames)) company.documentNames = updates.documentNames;
+    if (Array.isArray(updates.documentFiles)) company.documentFiles = updates.documentFiles;
     persist();
     return clone(company);
   }
@@ -5660,6 +5664,3 @@ export function createStore(seed = {}, options = {}) {
     exportState,
   };
 }
-
-
-
