@@ -7576,9 +7576,9 @@ test("security hardening blocks public uploads and cross-user business records",
       token: owner.token,
       body: {
         files: [{
-          fileName: "kyc-proof.txt",
-          mimeType: "text/plain",
-          dataUrl: `data:text/plain;base64,${Buffer.from("private kyc").toString("base64")}`,
+          fileName: "kyc-proof.pdf",
+          mimeType: "application/pdf",
+          dataUrl: `data:application/pdf;base64,${Buffer.from("%PDF-1.4\nprivate kyc").toString("base64")}`,
         }],
       },
     });
@@ -7616,6 +7616,164 @@ test("security hardening blocks public uploads and cross-user business records",
   }
 });
 
+test("upload hardening validates size, type, signatures, and filename safety", async () => {
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const api = createApi({ store });
+  const server = createServer({ store, persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  async function signup(name, email, phone) {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email, phone },
+    });
+    const created = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name,
+        email,
+        password: "SecurePass123",
+        phone,
+        otp: otp.payload.devOtp,
+      },
+    });
+    assert.equal(created.response.status, 201);
+    return created.payload;
+  }
+
+  try {
+    const owner = await signup("Upload Owner", "upload-owner@example.com", "9100001001");
+
+    const unauthenticated = await request("/uploads", {
+      method: "POST",
+      body: { files: [] },
+    });
+    assert.equal(unauthenticated.response.status, 401);
+
+    const validPdf = await request("/uploads", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        files: [{
+          fileName: "kyc-proof.pdf",
+          mimeType: "application/pdf",
+          dataUrl: `data:application/pdf;base64,${Buffer.from("%PDF-1.4\nsecure payload").toString("base64")}`,
+        }],
+      },
+    });
+    assert.equal(validPdf.response.status, 201);
+    assert.match(validPdf.payload.files[0].storedName, /^[0-9]+_[a-f0-9]{16}_[A-Za-z0-9._-]+\.pdf$/);
+
+    const traversalFile = await request("/uploads", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        files: [{
+          fileName: "..\\..\\secrets\\proof.pdf",
+          mimeType: "application/pdf",
+          dataUrl: `data:application/pdf;base64,${Buffer.from("%PDF-1.4\ntraversal attempt").toString("base64")}`,
+        }],
+      },
+    });
+    assert.equal(traversalFile.response.status, 201);
+    assert.doesNotMatch(traversalFile.payload.files[0].storedName, /\.\./);
+    assert.doesNotMatch(traversalFile.payload.files[0].storedName, /[\\/]/);
+
+    const disallowedType = await request("/uploads", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        files: [{
+          fileName: "notes.txt",
+          mimeType: "text/plain",
+          dataUrl: `data:text/plain;base64,${Buffer.from("not supported").toString("base64")}`,
+        }],
+      },
+    });
+    assert.equal(disallowedType.response.status, 400);
+    assert.match(disallowedType.payload.error, /Unsupported document type/i);
+
+    const mismatchContent = await request("/uploads", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        files: [{
+          fileName: "proof.png",
+          mimeType: "image/png",
+          dataUrl: `data:image/png;base64,${Buffer.from("%PDF-1.7\nwrong type").toString("base64")}`,
+        }],
+      },
+    });
+    assert.equal(mismatchContent.response.status, 400);
+    assert.match(mismatchContent.payload.error, /content does not match/i);
+
+    const emptyPayload = await request("/uploads", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        files: [{
+          fileName: "proof.pdf",
+          mimeType: "application/pdf",
+          dataUrl: "data:application/pdf;base64,",
+        }],
+      },
+    });
+    assert.equal(emptyPayload.response.status, 400);
+
+    const oversizedBytes = Buffer.alloc(5 * 1024 * 1024 + 1, 0x41);
+    Buffer.from("%PDF-").copy(oversizedBytes, 0);
+    const oversized = await request("/uploads", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        files: [{
+          fileName: "huge.pdf",
+          mimeType: "application/pdf",
+          dataUrl: `data:application/pdf;base64,${oversizedBytes.toString("base64")}`,
+        }],
+      },
+    });
+    assert.equal(oversized.response.status, 413);
+
+    api.createCompany({
+      name: "KYC Status Company",
+      ownerUserId: owner.user.id,
+      kycStatus: "verified",
+      reviewStatus: "approved",
+      entityType: "company",
+      panNumber: "ABCDE1234F",
+    });
+    await request("/uploads", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        files: [{
+          fileName: "proof2.pdf",
+          mimeType: "application/pdf",
+          dataUrl: `data:application/pdf;base64,${Buffer.from("%PDF-1.4\nstatus unchanged").toString("base64")}`,
+        }],
+      },
+    });
+    const postUploadCompany = await request("/companies", { token: owner.token });
+    assert.equal(postUploadCompany.response.status, 200);
+    assert.equal(postUploadCompany.payload[0].kycStatus, "verified");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
 test("P0-2 tenant isolation protects business membership resources and direct IDs", async () => {
   const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
   const api = createApi({ store });

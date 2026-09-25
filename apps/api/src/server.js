@@ -38,6 +38,7 @@ import {
   resolveProfileRequirements,
 } from "./profile-requirements.js";
 import { sendSmtpMail } from "./smtp.js";
+import { UploadValidationError, validateUploadInput } from "./upload-security.js";
 
 function loadLocalEnv() {
   const envPath = [".env", ".env.example"]
@@ -801,23 +802,16 @@ async function ensureDir(dirPath) {
   await fs.mkdir(dirPath, { recursive: true });
 }
 
-async function saveBase64File({ fileName, mimeType, dataUrl }) {
+async function saveBase64File(input) {
   const uploadsDir = path.join(ROOT, "data", "uploads");
   await ensureDir(uploadsDir);
-  const match = String(dataUrl || "").match(/^data:(.*?);base64,(.*)$/);
-  if (!match) throw new Error("Invalid upload payload");
-  const [, detectedMime, base64] = match;
-  const safeName = String(fileName || "document")
-    .replace(/[^A-Za-z0-9._-]+/g, "_")
-    .slice(0, 80);
-  const extension = (String(mimeType || detectedMime).split("/")[1] || "bin").replace(/[^A-Za-z0-9]/g, "");
-  const storedName = `${Date.now()}_${safeName}.${extension}`;
-  const filePath = path.join(uploadsDir, storedName);
-  await fs.writeFile(filePath, Buffer.from(base64, "base64"));
+  const validated = validateUploadInput(input);
+  const filePath = path.join(uploadsDir, validated.storedName);
+  await fs.writeFile(filePath, validated.bytes, { flag: "wx" });
   return {
-    storedName,
-    filePath: path.posix.join("/data/uploads", storedName),
-    mimeType: mimeType || detectedMime,
+    storedName: validated.storedName,
+    filePath: validated.filePath,
+    mimeType: validated.mimeType,
   };
 }
 
@@ -3139,7 +3133,15 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
       }
       const stored = [];
       for (const file of files) {
-        stored.push(await saveBase64File(file));
+        try {
+          stored.push(await saveBase64File(file));
+        } catch (error) {
+          const status = error instanceof UploadValidationError
+            ? Number(error.statusCode || 400)
+            : 400;
+          sendJson(res, status, { error: error.message || "Invalid upload payload" });
+          return;
+        }
       }
       sendJson(res, 201, { files: stored });
       return;
