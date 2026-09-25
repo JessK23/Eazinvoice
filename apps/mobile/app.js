@@ -1,10 +1,12 @@
-const SESSION_KEY = "eazinvoice_mobile_session_v3";
+﻿const SESSION_KEY = "eazinvoice_mobile_session_v3";
 const SETTINGS_KEY = "eazinvoice_mobile_settings_v3";
 const DEFAULT_PRODUCTION_API = "https://www.eazinvoice.com";
 const OTP_IDLE_LABEL = "Request OTP";
 const OTP_SENT_LABEL = "Sent Successfully";
 const OTP_CODE_LENGTH = 6;
 const DEFAULT_OTP_EXPIRES_SECONDS = 90;
+const ACCOUNT_PROFILE_REQUIRED_FIELDS = ["name", "email", "phone"];
+const BUSINESS_PROFILE_REQUIRED_FIELDS = ["name", "businessType", "entityType"];
 const MONEY_FORMATTER = new Intl.NumberFormat("en-IN", {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
@@ -32,6 +34,10 @@ const state = {
   accountTab: "overview",
   accountSettingsTab: "api",
   lastCreatedApiKey: "",
+  oauthInFlight: false,
+  lastConsumedOauthToken: "",
+  profilePromptDismissed: false,
+  businessProfileDraft: null,
   data: emptyData(),
 };
 
@@ -297,6 +303,9 @@ const api = {
   companies(params) {
     return this.request(`/companies${query(params)}`);
   },
+  createCompany(body) {
+    return this.request("/companies", { method: "POST", body });
+  },
   subscriptionsMe() {
     return this.request("/subscriptions/me");
   },
@@ -530,7 +539,18 @@ function activeCompany() {
 function profileSetupState() {
   const accountMissing = missingFields(state.user || {}, ACCOUNT_PROFILE_REQUIRED_FIELDS);
   const company = activeCompany();
-  const businessMissing = missingFields(company || {}, BUSINESS_PROFILE_REQUIRED_FIELDS);
+  const entityType = String(company?.entityType || "company").trim().toLowerCase();
+  const country = normalizeBusinessCountry(company?.country);
+  const rules = businessIdentityRules({ country, entityType });
+  const requiredBusinessFields = ["name", "businessType", "entityType", "country", "bankDetails"];
+  const businessMissing = missingFields(company || {}, requiredBusinessFields);
+  if (rules.requiresPan && !hasValue(company?.panNumber)) businessMissing.push("panNumber");
+  if (rules.requiresGst && !hasValue(company?.gstNumber)) businessMissing.push("gstNumber");
+  if (rules.requiresAadhaar && !hasValue(company?.aadhaarLast4)) businessMissing.push("aadhaarLast4");
+  if (rules.requiresTaxId && !hasValue(company?.taxId)) businessMissing.push("taxId");
+  if (rules.requiresAnyTaxOrRegistration && !hasValue(company?.taxId) && !hasValue(company?.registrationNumber)) {
+    businessMissing.push("taxIdOrRegistration");
+  }
   const businessComplete = Boolean(company) && businessMissing.length === 0;
   return {
     accountComplete: accountMissing.length === 0,
@@ -540,6 +560,17 @@ function profileSetupState() {
     needsSetup: accountMissing.length > 0 || !businessComplete,
     destination: accountMissing.length > 0 ? "profile" : "business",
   };
+}
+
+function documentProfileGuard(documentLabel) {
+  const company = activeCompany() || {};
+  const missing = missingFields(company, ["name", "entityType"]);
+  if (!missing.length) return true;
+  const labels = { name: "business or issuer name", entityType: "legal entity type" };
+  state.accountTab = "business";
+  if (state.route !== "account") routeTo("account");
+  setStatus(`${documentLabel} needs ${missing.map((field) => labels[field] || field).join(" and ")}. Complete those business profile fields; full KYC is not required.`, "error", "account");
+  return false;
 }
 
 function derivePlan() {
@@ -652,6 +683,8 @@ async function restoreSession() {
     state.token = saved.token || "";
     state.user = saved.user || null;
     state.activeWorkspace = saved.activeWorkspace || null;
+    state.lastConsumedOauthToken = saved.lastConsumedOauthToken || "";
+    state.oauthInFlight = Boolean(saved.oauthInFlight);
   } catch {
     await mobileStore.remove(SESSION_KEY);
   }
@@ -662,6 +695,8 @@ async function saveSession() {
     token: state.token,
     user: state.user,
     activeWorkspace: state.activeWorkspace,
+    lastConsumedOauthToken: state.lastConsumedOauthToken,
+    oauthInFlight: state.oauthInFlight,
   }));
 }
 
@@ -670,12 +705,13 @@ function oauthCallbackDataFromUrl(urlText = "") {
   try {
     const parsed = new URL(urlText);
     const token = parsed.searchParams.get("token") || "";
-    if (!token) return null;
+    const error = parsed.searchParams.get("error") || "";
+    if (!token && !error) return null;
     return {
       token,
       provider: parsed.searchParams.get("provider") || "google",
       mode: parsed.searchParams.get("mode") || "login",
-      error: parsed.searchParams.get("error") || "",
+      error,
     };
   } catch {
     return null;
@@ -686,10 +722,26 @@ async function applyExternalOAuth(urlText) {
   const payload = oauthCallbackDataFromUrl(urlText);
   if (!payload) return false;
   if (payload.error) {
+    state.oauthInFlight = false;
     setStatus(payload.error, "error", "auth");
     return false;
   }
+  if (!payload.token) {
+    state.oauthInFlight = false;
+    setStatus("Google sign-in callback is missing a session token.", "error", "auth");
+    return false;
+  }
+  if (!state.oauthInFlight) {
+    setStatus("Google sign-in session expired. Please try again.", "error", "auth");
+    return false;
+  }
+  if (payload.token === state.lastConsumedOauthToken) {
+    setStatus("Google sign-in callback was already used. Please retry if needed.", "error", "auth");
+    return false;
+  }
   state.token = payload.token;
+  state.lastConsumedOauthToken = payload.token;
+  state.oauthInFlight = false;
   await saveSession();
   state.authMode = "login";
   const refreshed = await refreshSessionAndData({ quietUnauthorized: true });
@@ -731,6 +783,7 @@ function bindNativeAuthCallback() {
 
 async function logout(renderAfter = true) {
   state.token = "";
+  state.oauthInFlight = false;
   state.user = null;
   state.menuOpen = false;
   state.profileMenuOpen = false;
@@ -1025,41 +1078,44 @@ function bindEvents() {
     closeProfileMenu();
   });
   document.body.addEventListener("click", (event) => {
-    if (event.target.closest("#menuButton")) {
+    const sourceTarget = event.target;
+    const target = sourceTarget instanceof Element ? sourceTarget : sourceTarget?.parentElement;
+    if (!(target instanceof Element)) return;
+    if (target.closest("#menuButton")) {
       event.preventDefault();
       state.menuOpen = !state.menuOpen;
       closeProfileMenu({ renderAfter: false });
       renderChrome();
       return;
     }
-    if (event.target.closest("#profileButton")) {
+    if (target.closest("#profileButton")) {
       event.preventDefault();
       state.profileMenuOpen = !state.profileMenuOpen;
       state.menuOpen = false;
       renderChrome();
       return;
     }
-    if (event.target.closest("#otpRequestButton")) {
+    if (target.closest("#otpRequestButton")) {
       event.preventDefault();
       void requestOtp();
       return;
     }
-    const authModeButton = event.target.closest("[data-auth-mode]");
+    const authModeButton = target.closest(".auth-mode-toggle [data-auth-mode]");
     if (authModeButton) {
       event.preventDefault();
       setAuthMode(authModeButton.dataset.authMode);
       return;
     }
-    const routeButton = event.target.closest("[data-route]");
-    const action = event.target.closest("[data-action]");
-    const promptButton = event.target.closest("[data-agent-prompt]");
+    const routeButton = target.closest("[data-route]");
+    const action = target.closest("[data-action]");
+    const promptButton = target.closest("[data-agent-prompt]");
     if (promptButton) {
       const input = document.querySelector('[data-form="ai-agent"] input[name="command"]');
       if (input) input.value = promptButton.dataset.agentPrompt || "";
       if (input) input.form.requestSubmit();
       return;
     }
-    const addItem = event.target.closest("[data-add-item]");
+    const addItem = target.closest("[data-add-item]");
     if (addItem) {
       event.preventDefault();
       const editor = addItem.closest("[data-item-editor]");
@@ -1073,7 +1129,10 @@ function bindEvents() {
       setStatus("");
       renderChrome();
     }
-    if (action) void handleAction(action.dataset.action, action.dataset);
+    if (action) {
+      event.preventDefault();
+      void handleAction(action.dataset.action, action.dataset);
+    }
   });
   document.body.addEventListener("submit", (event) => {
     const form = event.target.closest("[data-form]");
@@ -1090,6 +1149,15 @@ function bindEvents() {
       void refreshBusinessData();
     }
     if (event.target?.closest("[data-form]")) state.unsavedForm = true;
+    const businessForm = event.target?.closest?.("[data-form=\"business-profile\"]");
+    if (businessForm && ["country", "entityType"].includes(String(event.target?.name || ""))) {
+      const formData = new FormData(businessForm);
+      state.businessProfileDraft = {
+        country: normalizeBusinessCountry(formData.get("country")),
+        entityType: String(formData.get("entityType") || "company").trim().toLowerCase() || "company",
+      };
+      render();
+    }
   });
   window.addEventListener("online", () => {
     state.online = true;
@@ -1113,7 +1181,9 @@ function bindEvents() {
     render();
   });
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && state.token) void refreshBusinessData();
+    if (document.visibilityState === "visible" && state.token && !state.unsavedForm) {
+      void refreshBusinessData();
+    }
   });
 }
 
@@ -1239,6 +1309,7 @@ async function switchWorkspace(key) {
   if (!workspace) return;
   state.requestEpoch += 1;
   state.activeWorkspace = workspace;
+  state.profilePromptDismissed = false;
   state.data = emptyData();
   await saveSession();
   render();
@@ -1298,10 +1369,16 @@ async function handleAction(action, dataset = {}) {
   }
   if (action === "open-account") {
     state.accountTab = dataset.tab || "overview";
+    if (state.accountTab !== "business") state.businessProfileDraft = null;
     state.menuOpen = false;
     closeProfileMenu({ renderAfter: false });
     if (state.route === "account") render();
     else routeTo("account");
+    return;
+  }
+  if (action === "dismiss-profile-prompt") {
+    state.profilePromptDismissed = true;
+    render();
     return;
   }
   if (action === "open-account-settings") {
@@ -1324,25 +1401,26 @@ async function handleAction(action, dataset = {}) {
     const mode = state.authMode === "signup" ? "signup" : "login";
     const authUrl = api.startGoogleOAuth(mode);
     const browser = window.Capacitor?.Plugins?.Browser;
+    state.oauthInFlight = true;
+    await saveSession();
     if (browser?.open) {
-      await browser.open({ url: authUrl });
-    } else {
-      window.location.href = authUrl;
+      try {
+        await browser.open({ url: authUrl });
+      } catch (error) {
+        state.oauthInFlight = false;
+        await saveSession();
+        setStatus("Google sign-in could not open. Please retry.", "error", "auth");
+      }
+      return;
     }
-    return;
-  }
-  if (action === "close-menu") {
-    state.menuOpen = false;
-    closeProfileMenu({ renderAfter: false });
-    renderChrome();
-    return;
-  }
-  if (action === "refresh") {
-    await refreshSessionAndData();
-    return;
-  }
-  if (action === "share-document") {
-    shareDocument(dataset.kind, dataset.id);
+    const isCapacitorShell = location.protocol === "capacitor:" || location.hostname === "localhost" || Boolean(window.Capacitor);
+    if (isCapacitorShell) {
+      state.oauthInFlight = false;
+      await saveSession();
+      setStatus("Google sign-in is unavailable on this device. Please retry.", "error", "auth");
+      return;
+    }
+    window.location.href = authUrl;
     return;
   }
   if (action === "finalize-invoice") {
@@ -1466,6 +1544,7 @@ async function handleForm(name, form) {
   } else if (name === "vendor") {
     await run(() => api.createVendor({ ...workspaceParams(), name: value("name"), email: value("email"), gstin: value("gstin") }), "Vendor saved.");
   } else if (name === "invoice") {
+    if (!documentProfileGuard("Invoice")) return;
     const items = documentItems(data);
     await run(() => api.createInvoice({
       ...workspaceParams(),
@@ -1474,7 +1553,7 @@ async function handleForm(name, form) {
       invoiceDate: value("invoiceDate") || today(),
       dueDate: value("dueDate") || value("invoiceDate") || today(),
       status: value("status") || "draft",
-      currency: "INR",
+      currency: businessDefaultCurrency(),
       items,
       idempotencyKey: idempotencyKey("invoice"),
     }), "Invoice sent to backend. Totals shown are server-authoritative.");
@@ -1516,6 +1595,7 @@ async function handleForm(name, form) {
       idempotencyKey: idempotencyKey("payment-reversal"),
     }), "Payment reversal recorded. This is not a refund.");
   } else if (name === "purchase-order") {
+    if (!documentProfileGuard("Purchase order")) return;
     const items = documentItems(data);
     await run(() => api.createPurchaseOrder({
       ...workspaceParams(),
@@ -1523,11 +1603,12 @@ async function handleForm(name, form) {
       billToName: value("vendorName"),
       poDate: value("poDate") || today(),
       status: "draft",
-      currency: "INR",
+      currency: businessDefaultCurrency(),
       items,
       idempotencyKey: idempotencyKey("purchase-order"),
     }), "PO draft saved. Issue it when ready; it has no accounting impact.");
   } else if (name === "work-order") {
+    if (!documentProfileGuard("Work order")) return;
     const items = documentItems(data);
     await run(() => api.createPurchaseOrder({
       ...workspaceParams(),
@@ -1536,7 +1617,7 @@ async function handleForm(name, form) {
       billToName: value("vendorName"),
       poDate: value("poDate") || today(),
       status: "draft",
-      currency: "INR",
+      currency: businessDefaultCurrency(),
       items,
       idempotencyKey: idempotencyKey("work-order"),
     }), "Work order draft saved. Issue it when ready; it has no accounting impact.");
@@ -1548,7 +1629,7 @@ async function handleForm(name, form) {
       billDate: value("billDate") || today(),
       dueDate: value("dueDate") || value("billDate") || today(),
       expenseAccountName: value("expenseAccountName") || "Operating Expense",
-      currency: "INR",
+      currency: businessDefaultCurrency(),
       items: [{
         description: value("description"),
         quantity: amount("quantity") || 1,
@@ -1635,22 +1716,99 @@ async function handleForm(name, form) {
       setStatus("Password updated.", "success", "account");
       render();
     }, "Updating password...");
-  } else if (name === "business-profile") {
+    } else if (name === "business-profile") {
     const company = activeCompany();
-    if (!company?.id) {
-      setStatus("Create your business profile first before editing business details.", "error", "account");
+    const entityType = value("entityType").toLowerCase();
+    const country = normalizeBusinessCountry(value("country"));
+    const rules = businessIdentityRules({ country, entityType });
+    const panNumber = value("panNumber").toUpperCase();
+    const bankDetails = value("bankDetails");
+    const gstNumber = value("gstNumber").toUpperCase();
+    const aadhaarDigits = String(data.get("aadhaarNumber") || "").replace(/\D/g, "");
+    const aadhaarLast4 = aadhaarDigits ? aadhaarDigits.slice(-4) : "";
+    const taxId = value("taxId").toUpperCase();
+    const registrationNumber = value("registrationNumber").toUpperCase();
+    const address = value("address");
+    const addressProof = value("addressProof");
+    const supportingDocs = Array.from(form.querySelector("input[name=\"documentFiles\"]")?.files || [])
+      .map((file) => String(file?.name || "").trim())
+      .filter(Boolean);
+    if (!value("name")) {
+      setStatus("Business/Consultant/Individual name is required.", "error", "account");
+      return;
+    }
+    if (!value("businessType")) {
+      setStatus("Business type is required.", "error", "account");
+      return;
+    }
+    if (!country) {
+      setStatus("Country is required.", "error", "account");
+      return;
+    }
+    if (!entityType) {
+      setStatus("Entity type is required.", "error", "account");
+      return;
+    }
+    if (!bankDetails) {
+      setStatus("Bank account details are required.", "error", "account");
+      return;
+    }
+    if (!address) {
+      setStatus("Business address is required.", "error", "account");
+      return;
+    }
+    if (!addressProof && !supportingDocs.length) {
+      setStatus("Address proof reference or supporting document is required.", "error", "account");
+      return;
+    }
+    if (rules.requiresPan && !panNumber) {
+      setStatus("PAN number is required for this profile.", "error", "account");
+      return;
+    }
+    if (rules.requiresGst && !gstNumber) {
+      setStatus("GST number is required for Company or Group profiles in India.", "error", "account");
+      return;
+    }
+    if (rules.requiresAadhaar && aadhaarLast4.length < 4) {
+      setStatus("Aadhaar number is required for Individual, Freelancer, and Consultant profiles in India.", "error", "account");
+      return;
+    }
+    if (rules.requiresTaxId && !taxId) {
+      setStatus("Country Tax ID or National ID is required for this non-India profile.", "error", "account");
+      return;
+    }
+    if (rules.requiresAnyTaxOrRegistration && !taxId && !registrationNumber) {
+      setStatus("Provide Country Tax ID or Business Registration Number for this non-India business profile.", "error", "account");
       return;
     }
     await withBusy(async () => {
-      const updated = await api.updateCompany(company.id, {
+      const payload = {
+        profilePurpose: company?.id ? "account-settings" : "onboarding",
         name: value("name"),
         businessType: value("businessType"),
-        entityType: value("entityType"),
-      });
+        entityType,
+        country,
+        panNumber: rules.requiresPan ? panNumber : "",
+        bankDetails,
+        gstNumber: rules.requiresGst ? gstNumber : "",
+        aadhaarLast4: rules.requiresAadhaar ? aadhaarLast4 : "",
+        taxId: !rules.india ? taxId : "",
+        registrationNumber: !rules.india && !rules.individual ? registrationNumber : "",
+        address,
+        addressProof,
+        aadhaarNumber: rules.requiresAadhaar ? aadhaarDigits : "",
+        kycCountry: country,
+        documentNames: supportingDocs,
+        documentFiles: supportingDocs,
+      };
+      const updated = company?.id
+        ? await api.updateCompany(company.id, payload)
+        : await api.createCompany(payload);
       state.companies = [updated, ...state.companies.filter((entry) => entry.id !== updated.id)];
       state.profileSetup = profileSetupState();
       state.unsavedForm = false;
-      setStatus("Business profile updated.", "success", "account");
+      state.businessProfileDraft = null;
+      setStatus(company?.id ? "Business profile updated." : "Business profile created.", "success", "account");
       render();
     }, "Saving business profile...");
   } else if (name === "account-settings-api") {
@@ -1770,14 +1928,20 @@ function renderChrome() {
   if (dom.routeTitle) dom.routeTitle.textContent = routeLabel(state.route);
   dom.profileName.textContent = state.activeWorkspace ? workspaceName(state.activeWorkspace) : "Business workspace";
   dom.profileMeta.hidden = !state.activeWorkspace;
-  dom.profileMeta.textContent = state.activeWorkspace ? `${workspaceName(state.activeWorkspace)} - ${titleCase(currentRole())}` : "";
+  dom.profileMeta.textContent = state.activeWorkspace ? titleCase(currentRole()) : "";
   dom.apiBase.value = state.apiBase;
   dom.logoutButton.hidden = !state.token;
   dom.refreshButton.hidden = !state.token;
   dom.workspaceSelect.hidden = !state.token || state.workspaces.length <= 1;
   dom.bottomNav.hidden = !state.token;
-  document.getElementById("topAppBar")?.toggleAttribute("hidden", !state.token);
+  document.getElementById("topAppBar")?.toggleAttribute("hidden", false);
   document.getElementById("workspaceBar")?.toggleAttribute("hidden", !state.token);
+  if (dom.menuButton) dom.menuButton.hidden = !state.token;
+  if (dom.profileButton) dom.profileButton.hidden = !state.token;
+  if (!state.token) {
+    state.menuOpen = false;
+    state.profileMenuOpen = false;
+  }
   dom.apiBaseForm.hidden = true;
   if (dom.profileInitial) dom.profileInitial.textContent = String((state.user?.name || state.user?.email || "U").trim().charAt(0) || "U").toUpperCase();
   if (dom.mobileMenu) dom.mobileMenu.hidden = !state.menuOpen || !state.token;
@@ -1820,27 +1984,132 @@ function routeLabel(route) {
 function workspaceName(workspace) {
   return text(workspace.businessName || workspace.name || workspace.companyName || workspace.label, "Business Workspace");
 }
+
+function isIndividualEntityType(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["individual", "freelancer", "consultant", "sole proprietorship", "sole proprietor", "proprietor"].includes(normalized);
+}
+
+function requiresGstEntityType(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["company", "group"].includes(normalized);
+}
+
+function normalizeBusinessCountry(value) {
+  const normalized = String(value || "IN").trim().toUpperCase();
+  return normalized || "IN";
+}
+
+function isIndiaCountry(value) {
+  const country = normalizeBusinessCountry(value);
+  return country === "IN" || country === "INDIA";
+}
+
+function businessIdentityRules({ country = "IN", entityType = "company" } = {}) {
+  const india = isIndiaCountry(country);
+  const individual = isIndividualEntityType(entityType);
+  if (india && individual) {
+    return {
+      india,
+      individual,
+      requiresPan: true,
+      requiresGst: false,
+      requiresAadhaar: true,
+      requiresTaxId: false,
+      requiresAnyTaxOrRegistration: false,
+      guidance: "For India individual, freelancer, or consultant profiles, provide PAN, Aadhaar last 4, address proof, and supporting identity documents. GST is not applicable for this profile type; use Company or Group for GST/company registration.",
+    };
+  }
+  if (india) {
+    return {
+      india,
+      individual,
+      requiresPan: true,
+      requiresGst: true,
+      requiresAadhaar: false,
+      requiresTaxId: false,
+      requiresAnyTaxOrRegistration: false,
+      guidance: "For India company or group profiles, provide company PAN and GST details where applicable, plus address proof and business registration/tax documents.",
+    };
+  }
+  if (individual) {
+    return {
+      india,
+      individual,
+      requiresPan: false,
+      requiresGst: false,
+      requiresAadhaar: false,
+      requiresTaxId: true,
+      requiresAnyTaxOrRegistration: false,
+      guidance: "For non-India individual, freelancer, or consultant profiles, provide the country tax ID or national ID, address proof, and identity documents accepted in your country.",
+    };
+  }
+  return {
+    india,
+    individual,
+    requiresPan: false,
+    requiresGst: false,
+    requiresAadhaar: false,
+    requiresTaxId: false,
+    requiresAnyTaxOrRegistration: true,
+    guidance: "For non-India company or group profiles, provide business registration, country tax ID where available, address proof, and company registration documents.",
+  };
+}
+
+function defaultCurrencyForCountry(value) {
+  const country = normalizeBusinessCountry(value);
+  const map = {
+    IN: "INR",
+    US: "USD",
+    AE: "AED",
+    SG: "SGD",
+    GB: "GBP",
+    AU: "AUD",
+    CA: "CAD",
+    OTHER: "USD",
+  };
+  return map[country] || "USD";
+}
+
+function businessDefaultCurrency() {
+  const company = activeCompany();
+  return defaultCurrencyForCountry(company?.country);
+}
+
+function dashboardBusinessName() {
+  const company = activeCompany();
+  if (company && isIndividualEntityType(company.entityType || company.businessType)) {
+    return text(state.user?.name || state.user?.email, "Your Business");
+  }
+  return text(company?.name || workspaceName(state.activeWorkspace) || state.user?.name || state.user?.email, "Your Business");
+}
 function renderLogin() {
   const resetMode = state.authMode === "reset";
   const signupMode = state.authMode === "signup";
   const eyebrow = resetMode ? "Account recovery" : signupMode ? "Create account" : "Secure sign in";
-  const heading = resetMode ? "Reset your password" : signupMode ? "Create your EazInvoice account" : "Sign in to EazInvoice";
-  const description = resetMode
-    ? "Request a reset OTP for your registered business email, verify it, then set a new password before signing in."
-    : signupMode ? "Create an account with email verification to access your EazInvoice workspace."
-      : "Use your email OTP and password to access your EazInvoice workspace.";
+  const heading = resetMode ? "Reset your password" : signupMode ? "Create your EazInvoice account" : "Sign in to&nbsp;<span class=\"auth-heading-brand\">EazInvoice</span>";
   const otpLabel = resetMode ? "Reset OTP" : signupMode ? "Signup OTP" : "Login OTP";
   const otpPlaceholder = resetMode ? "Enter reset OTP" : signupMode ? "Enter signup OTP" : "Enter login OTP";
   const otpButtonLabel = resetMode ? "Request reset OTP" : signupMode ? "Request signup OTP" : "Request OTP";
   const submitLabel = resetMode ? "Reset password" : signupMode ? "Create account" : "Sign in";
-  const note = resetMode
-    ? "After resetting, switch back to Sign in, request a login OTP, and use your new password."
-    : "OTP verification protects your account. Do not share your code.";
   return `
     <section class="panel auth-panel">
+      <div class="auth-hero" aria-hidden="true">
+        <img class="auth-hero-eazy" src="./assets/eazy.png" alt="" />
+        <div class="auth-hero-growth">
+          <span class="auth-growth-bar bar-1"></span>
+          <span class="auth-growth-bar bar-2"></span>
+          <span class="auth-growth-bar bar-3"></span>
+          <span class="auth-growth-bar bar-4"></span>
+          <span class="auth-growth-bar bar-5"></span>
+          <svg viewBox="0 0 180 86" class="auth-growth-line" role="presentation" focusable="false" aria-hidden="true">
+            <path d="M8 72 L40 63 L70 56 L100 44 L128 33 L168 14" />
+            <circle cx="168" cy="14" r="5" />
+          </svg>
+        </div>
+      </div>
       <span class="eyebrow">${eyebrow}</span>
       <h1>${heading}</h1>
-      <p>${description}</p>
       <div class="auth-mode-toggle" role="tablist" aria-label="Authentication options">
         <button type="button" data-auth-mode="login" class="${!resetMode && !signupMode ? "active" : ""}" aria-pressed="${!resetMode && !signupMode ? "true" : "false"}">Sign in</button>
         <button type="button" data-auth-mode="signup" class="${signupMode ? "active" : ""}" aria-pressed="${signupMode ? "true" : "false"}">Sign up</button>
@@ -1868,8 +2137,7 @@ function renderLogin() {
           <button id="otpRequestButton" class="secondary" type="button">${otpButtonLabel}</button>
           <button id="authSubmitButton" class="primary" type="submit" formnovalidate>${submitLabel}</button>
         </div>
-        ${resetMode ? "" : `<button class="secondary full google-auth" type="button" data-action="google-auth">Continue with Google</button>`}
-        <p class="form-note">${note}</p>
+        ${resetMode ? "" : `<button class="secondary full google-auth" type="button" data-action="google-auth"><img class="google-icon" src="./assets/google-logo-g.webp" alt="" aria-hidden="true" /><span>Continue with Google</span></button>`}
       </form>
     </section>
   `;
@@ -1911,7 +2179,7 @@ function renderHome() {
     ${profileSetupPrompt()}
     <section class="dashboard-greeting">
       <span class="eyebrow">Your business</span>
-      <h1>Hello</h1>
+      <h1>${escapeHtml(dashboardBusinessName())}</h1>
       <p>Your business at a glance</p>
     </section>
     <section class="dashboard-primary" aria-label="Primary financial summary">
@@ -1971,13 +2239,9 @@ function homeCarousel() {
 }
 
 function profileSetupPrompt() {
-  if (!state.profileSetup?.needsSetup) return "";
+  if (!state.profileSetup?.needsSetup || state.profilePromptDismissed) return "";
   const needsAccount = !state.profileSetup.accountComplete;
-  const ctaLabel = needsAccount ? "Complete Account Profile" : "Complete Business Profile";
-  const hint = needsAccount
-    ? "Complete your profile to keep your account details current."
-    : "Complete your business profile to unlock cleaner setup checks.";
-  return `<section class="panel profile-setup-prompt"><div><span class="eyebrow">Profile setup</span><h2>Complete your profile</h2><p>${escapeHtml(hint)}</p></div><button class="primary" type="button" data-action="open-account" data-tab="${needsAccount ? "profile" : "business"}">${escapeHtml(ctaLabel)}</button></section>`;
+  return `<section class="panel profile-setup-prompt"><div><span class="eyebrow">Profile setup</span><h2>Complete your profile</h2><p>Add the information needed for your EazInvoice documents.</p></div><div class="button-row"><button class="primary" type="button" data-action="open-account" data-tab="${needsAccount ? "profile" : "business"}">Complete profile</button><button class="secondary" type="button" data-action="dismiss-profile-prompt">Remind me later</button></div></section>`;
 }
 
 function recordTimestamp(record, keys = []) {
@@ -2247,11 +2511,34 @@ function renderAccount() {
   const company = activeCompany();
   const tab = state.accountTab || "overview";
   const plan = planLabel();
-  const kycSubmitted = Boolean(company && (company.panNumber || company.gstNumber || company.taxId));
+  const normalizedKycStatus = String(company?.kycStatus || company?.reviewStatus || "not_started").trim().toLowerCase();
+  const kycStatus = ["verified", "approved"].includes(normalizedKycStatus)
+    ? "Verified"
+    : ["pending", "submitted", "under_review", "kyc_pending"].includes(normalizedKycStatus)
+      ? "Submitted"
+      : normalizedKycStatus === "rejected"
+        ? "Rejected"
+        : normalizePlanId(derivePlan()) === "free" ? "Required for paid features" : "Action required";
   const nav = `<div class="account-tabs" role="tablist" aria-label="My account"><button class="tiny ${tab === "overview" ? "active" : ""}" type="button" data-action="open-account" data-tab="overview">Overview</button><button class="tiny ${tab === "profile" ? "active" : ""}" type="button" data-action="open-account" data-tab="profile">Account Profile</button><button class="tiny ${tab === "business" ? "active" : ""}" type="button" data-action="open-account" data-tab="business">Business Profile</button><button class="tiny ${tab === "subscription" ? "active" : ""}" type="button" data-action="open-account" data-tab="subscription">Manage Subscription</button></div>`;
-  const overview = `<section class="panel"><div class="section-head compact"><div><span class="eyebrow">My Account</span><h2>Overview</h2></div><span class="pill">${escapeHtml(plan)}</span></div><div class="status-grid"><article><span>User</span><strong>${escapeHtml(state.user?.name || state.user?.email || "User")}</strong></article><article><span>Email</span><strong>${escapeHtml(state.user?.email || "-")}</strong></article><article><span>Business</span><strong>${escapeHtml(company?.name || workspaceName(state.activeWorkspace))}</strong></article><article><span>KYC</span><strong>${kycSubmitted ? "Submitted" : "Not submitted"}</strong></article></div></section>`;
+  const overview = `<section class="panel"><div class="section-head compact"><div><span class="eyebrow">My Account</span><h2>Overview</h2></div><span class="pill">${escapeHtml(plan)}</span></div><div class="status-grid"><article><span>User</span><strong>${escapeHtml(state.user?.name || state.user?.email || "User")}</strong></article><article><span>Email</span><strong>${escapeHtml(state.user?.email || "-")}</strong></article><article><span>Business</span><strong>${escapeHtml(company?.name || workspaceName(state.activeWorkspace))}</strong></article><article><span>Identity verification</span><strong>${escapeHtml(kycStatus)}</strong></article></div></section>`;
   const profile = `<section class="panel"><div class="section-head compact"><div><span class="eyebrow">My Account</span><h2>Account Profile</h2></div></div><form class="form-stack" data-form="account-profile"><label>Name<input name="name" value="${escapeAttr(state.user?.name || "")}" required /></label><label>Email<input value="${escapeAttr(state.user?.email || "")}" disabled /></label><label>Phone<input name="phone" value="${escapeAttr(state.user?.phone || "")}" required /></label><button class="primary full" type="submit">Save Profile</button></form><form class="form-stack" data-form="account-password"><label>Current password<input name="currentPassword" type="password" required /></label><label>New password<input name="newPassword" type="password" required /></label><label>Confirm password<input name="confirmPassword" type="password" required /></label><button class="secondary full" type="submit">Change Password</button></form></section>`;
-  const business = `<section class="panel"><div class="section-head compact"><div><span class="eyebrow">My Account</span><h2>Business Profile</h2></div></div><form class="form-stack" data-form="business-profile"><label>Business name<input name="name" value="${escapeAttr(company?.name || "")}" required /></label><label>Business type<input name="businessType" value="${escapeAttr(company?.businessType || "")}" required /></label><label>Entity type<input name="entityType" value="${escapeAttr(company?.entityType || "company")}" required /></label><button class="primary full" type="submit" ${company?.id ? "" : "disabled"}>Save Business Profile</button></form></section>`;
+    const businessDisplayName = dashboardBusinessName();
+  const businessDraft = state.businessProfileDraft || {};
+  const selectedEntityType = String(businessDraft.entityType || company?.entityType || "company").toLowerCase();
+  const selectedCountry = normalizeBusinessCountry(businessDraft.country || company?.country);
+  const rules = businessIdentityRules({ country: selectedCountry, entityType: selectedEntityType });
+  const complianceGuidance = rules.guidance;
+  const defaultCurrency = defaultCurrencyForCountry(selectedCountry);
+  const indiaFields = `
+    <label>PAN Number<input name="panNumber" value="${escapeAttr(company?.panNumber || "")}" placeholder="ABCDE1234F" ${rules.requiresPan ? "required" : ""} /></label>
+    ${rules.requiresGst ? `<label>GST Number<input name="gstNumber" value="${escapeAttr(company?.gstNumber || "")}" placeholder="GST number" required /></label>` : ""}
+    ${rules.requiresAadhaar ? `<label>Aadhaar Number<input name="aadhaarNumber" inputmode="numeric" value="${escapeAttr(company?.aadhaarLast4 || "")}" placeholder="Enter Aadhaar (last 4 used)" required /></label>` : ""}
+  `;
+  const internationalFields = `
+    <label>Country Tax ID / National ID<input name="taxId" value="${escapeAttr(company?.taxId || "")}" placeholder="Tax ID or National ID" ${rules.requiresTaxId ? "required" : ""} /></label>
+    ${!rules.individual ? `<label>Business Registration Number<input name="registrationNumber" value="${escapeAttr(company?.registrationNumber || "")}" placeholder="Registration number" /></label>` : ""}
+  `;
+  const business = `<section class="panel"><div class="section-head compact"><div><span class="eyebrow">My Account</span><h2>Business Profile - ${escapeHtml(businessDisplayName)}</h2></div></div><form class="form-stack" data-form="business-profile" novalidate><label>Business name<input name="name" value="${escapeAttr(company?.name || "")}" required /></label><label>Business type<input name="businessType" value="${escapeAttr(company?.businessType || "")}" required /></label><label>Country<select name="country" required><option value="IN" ${selectedCountry === "IN" ? "selected" : ""}>India</option><option value="US" ${selectedCountry === "US" ? "selected" : ""}>United States</option><option value="AE" ${selectedCountry === "AE" ? "selected" : ""}>United Arab Emirates</option><option value="SG" ${selectedCountry === "SG" ? "selected" : ""}>Singapore</option><option value="GB" ${selectedCountry === "GB" ? "selected" : ""}>United Kingdom</option><option value="AU" ${selectedCountry === "AU" ? "selected" : ""}>Australia</option><option value="CA" ${selectedCountry === "CA" ? "selected" : ""}>Canada</option><option value="OTHER" ${!["IN","US","AE","SG","GB","AU","CA"].includes(selectedCountry) ? "selected" : ""}>Other country</option></select></label><label>Default currency<input value="${escapeAttr(defaultCurrency)}" disabled /></label><label>Entity type<select name="entityType" required><option value="individual" ${selectedEntityType === "individual" ? "selected" : ""}>Individual</option><option value="freelancer" ${selectedEntityType === "freelancer" ? "selected" : ""}>Freelancer</option><option value="consultant" ${selectedEntityType === "consultant" ? "selected" : ""}>Consultant</option><option value="company" ${selectedEntityType === "company" ? "selected" : ""}>Company</option><option value="group" ${selectedEntityType === "group" ? "selected" : ""}>Group</option></select></label>${rules.india ? indiaFields : internationalFields}<label>Business address<textarea name="address" rows="3" placeholder="Street, city, state, postal code" required>${escapeHtml(company?.address || "")}</textarea></label><label>Address proof reference<input name="addressProof" value="${escapeAttr(company?.addressProof || "")}" placeholder="Document reference (or upload below)" /></label><label>Supporting document(s)<input name="documentFiles" type="file" multiple /></label><label>Bank account details<textarea name="bankDetails" rows="3" placeholder="Account name, bank, account number, IFSC/SWIFT" required>${escapeHtml(company?.bankDetails || "")}</textarea></label><p class="form-note">${escapeHtml(complianceGuidance)}</p><button class="primary full" type="submit">Save Business Profile</button></form></section>`;
   const activePlan = normalizePlanId(derivePlan());
   const activeStatus = subscriptionStatusLabel();
   const catalog = subscriptionCatalog();

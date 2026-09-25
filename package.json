@@ -39,6 +39,8 @@
     "@playwright/test": "^1.62.1"
   },
   "dependencies": {
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/browser": "^8.0.4",
     "pg": "^8.22.0"
   }
 }

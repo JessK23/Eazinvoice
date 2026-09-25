@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
@@ -22,6 +22,30 @@ test("mobile document workflows use the SaaS API instead of local accounting", (
   assert.match(mobileMarkup, /data-route="sales"/);
 });
 
+
+test("mobile business profile includes entity-aware tax and bank details fields", () => {
+  assert.match(mobileScript, /data-form="business-profile"/);
+  assert.match(mobileScript, /name="country"/);
+  assert.match(mobileScript, /Other country/);
+  assert.match(mobileScript, /name="entityType"/);
+  assert.match(mobileScript, /<option value="individual"/);
+  assert.match(mobileScript, /<option value="freelancer"/);
+  assert.match(mobileScript, /<option value="consultant"/);
+  assert.match(mobileScript, /<option value="company"/);
+  assert.match(mobileScript, /<option value="group"/);
+  assert.match(mobileScript, /name="panNumber"/);
+  assert.match(mobileScript, /name="gstNumber"/);
+  assert.match(mobileScript, /name="aadhaarNumber"/);
+  assert.match(mobileScript, /name="bankDetails"/);
+  assert.match(mobileScript, /name="taxId"/);
+  assert.match(mobileScript, /name="registrationNumber"/);
+  assert.match(mobileScript, /aadhaarLast4/);
+  assert.match(mobileScript, /requiresGstEntityType/);
+  assert.match(mobileScript, /isIndiaCountry/);
+  assert.match(mobileScript, /businessIdentityRules/);
+  assert.match(mobileScript, /defaultCurrencyForCountry/);
+  assert.match(mobileScript, /currency: businessDefaultCurrency\(\)/);
+});
 test("mobile auth exposes forgot password recovery using the shared reset API", () => {
   assert.match(mobileScript, /authMode/);
   assert.match(mobileScript, /data-auth-mode="reset"/);
