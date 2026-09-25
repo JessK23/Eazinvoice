@@ -896,6 +896,10 @@ export function createStore(seed = {}, options = {}) {
     if (updates.gstRegistered !== undefined) company.gstRegistered = Boolean(updates.gstRegistered);
     if (Array.isArray(updates.documentNames)) company.documentNames = updates.documentNames;
     if (Array.isArray(updates.documentFiles)) company.documentFiles = updates.documentFiles;
+    if (typeof updates.kycStatus === "string") company.kycStatus = updates.kycStatus;
+    if (typeof updates.reviewStatus === "string") company.reviewStatus = updates.reviewStatus;
+    if (typeof updates.reviewNotes === "string") company.reviewNotes = updates.reviewNotes;
+    if (typeof updates.reviewedAt === "string") company.reviewedAt = updates.reviewedAt;
     persist();
     return clone(company);
   }

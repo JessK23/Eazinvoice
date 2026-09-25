@@ -49,6 +49,7 @@ import {
 import { buildAiCommand } from "./ai-assistant.js";
 import { runEazInvoiceAiAgent } from "./ai-agent.js";
 import { tryBuildAiCommandWithLlm } from "./ai-llm.js";
+import { shouldReevaluateVerifiedKyc } from "./kyc-materiality.js";
 
 function normalizeUsageMonth(input) {
   const value = String(input || "").trim();
@@ -325,15 +326,65 @@ export function createApi(deps = {}) {
       return store.updateCompanyKyc(companyId, updates);
     },
     updateCompany(companyId, updates, options = {}) {
+      let workspace = null;
+      const company = store.listCompanies().find((entry) => entry.id === companyId);
       if (options.user) {
-        const workspace = this.resolveRecordsWorkspaceAccess(options.user, {
+        workspace = this.resolveRecordsWorkspaceAccess(options.user, {
           ...options,
           workspaceOwnerUserId: options.workspaceOwnerUserId || updates.workspaceOwnerUserId || null,
         }, "manageSettings");
-        const company = store.listCompanies().find((entry) => entry.id === companyId);
         if (!company || !((workspace.businessId && company.businessId === workspace.businessId) || company.ownerUserId === workspace.ownerUserId)) return null;
       }
-      return store.updateCompany(companyId, updates);
+      if (!company) return null;
+
+      const merged = {
+        ...company,
+        ...updates,
+      };
+      const reevaluation = shouldReevaluateVerifiedKyc(company, merged);
+      const reevaluationUpdates = reevaluation.shouldReevaluate
+        ? {
+          kycStatus: "pending",
+          reviewStatus: "pending",
+          reviewedAt: "",
+          reviewNotes: "KYC re-evaluation required after material identity details changed.",
+        }
+        : {};
+
+      const updated = store.updateCompany(companyId, {
+        ...updates,
+        ...reevaluationUpdates,
+      });
+
+      if (updated && reevaluation.shouldReevaluate && options.user) {
+        try {
+          store.recordBusinessAuditEvent(options.user, {
+            ownerUserId: workspace?.ownerUserId || updated.ownerUserId || null,
+            businessId: workspace?.businessId || updated.businessId || null,
+            companyId: updated.id,
+            category: "kyc",
+            action: "kyc.material_identity_change_reverification_required",
+            outcome: "info",
+            targetType: "company",
+            targetId: updated.id,
+            targetLabel: updated.name || updated.companyCode || updated.id,
+            message: "KYC moved back to pending because material identity details changed.",
+            metadata: {
+              fromKycStatus: company.kycStatus || "",
+              toKycStatus: updated.kycStatus || "",
+              fromReviewStatus: company.reviewStatus || "",
+              toReviewStatus: updated.reviewStatus || "",
+              changedMaterialFields: reevaluation.changedFields,
+              requirementContextChanged: reevaluation.requirementContextChanged,
+              previousRequirementContext: reevaluation.previousContext,
+              nextRequirementContext: reevaluation.nextContext,
+            },
+          });
+        } catch {
+        }
+      }
+
+      return updated;
     },
 
     createCustomer(input, options = {}) {

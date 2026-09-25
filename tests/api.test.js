@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -4759,6 +4759,266 @@ test("paid subscription renewal requires authoritative KYC verification", async 
   }
 });
 
+test("F-005 material identity changes trigger KYC re-evaluation without rewriting subscription history", async () => {
+  const restoreAdminEmail = useTestAdminEmail();
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const api = createApi({ store });
+  const server = createServer({ store, persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  async function signup({ name, email, phone }) {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email, phone },
+    });
+    const created = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name,
+        email,
+        password: "Secure123",
+        phone,
+        otp: otp.payload.devOtp,
+      },
+    });
+    assert.equal(created.response.status, 201);
+    return created.payload;
+  }
+
+  async function createVerifiedCompany({ token, adminToken, name, country = "IN", entityType = "company" }) {
+    const created = await request("/companies", {
+      method: "POST",
+      token,
+      body: {
+        name,
+        entityType,
+        country,
+        address: "10 Identity Road",
+        addressProof: "address-proof.pdf",
+        panNumber: "ABCDE1234F",
+        gstNumber: entityType === "company" ? "27ABCDE1234F1Z5" : "",
+        documentNames: ["kyc-proof.pdf"],
+      },
+    });
+    assert.equal(created.response.status, 201);
+    const approved = await request(`/admin/kyc-review/${created.payload.id}?action=approve`, {
+      method: "PATCH",
+      token: adminToken,
+      body: { notes: "Approve for materiality test" },
+    });
+    assert.equal(approved.response.status, 200);
+    assert.equal(approved.payload.kycStatus, "verified");
+    return approved.payload;
+  }
+
+  try {
+    const admin = await signup({
+      name: "Support Admin",
+      email: TEST_ADMIN_EMAIL,
+      phone: "9333300001",
+    });
+    const owner = await signup({
+      name: "Material Owner",
+      email: "material-owner@example.com",
+      phone: "9333300002",
+    });
+    const other = await signup({
+      name: "Other Tenant",
+      email: "material-other@example.com",
+      phone: "9333300003",
+    });
+    const freeUser = await signup({
+      name: "Free Material User",
+      email: "free-material@example.com",
+      phone: "9333300004",
+    });
+
+    const verifiedCompany = await createVerifiedCompany({
+      token: owner.token,
+      adminToken: admin.token,
+      name: "Material Verified Co",
+      country: "IN",
+      entityType: "company",
+    });
+
+    const activeSubscription = api.createSubscription({
+      userId: owner.user.id,
+      companyId: verifiedCompany.id,
+      subscriberType: "company",
+      subscriberName: "Material Verified Co",
+      plan: "standard",
+      amount: 2388,
+      monthlyAmount: 199,
+      annualAmount: 2388,
+      currency: "INR",
+      status: "active",
+      billingCycle: "yearly",
+    });
+    const ownerSubscriptionCountBefore = api.listSubscriptions().filter((entry) => entry.userId === owner.user.id).length;
+
+    const nonMaterial = await request(`/companies/${verifiedCompany.id}`, {
+      method: "PATCH",
+      token: owner.token,
+      body: { logoUrl: "https://example.com/logo.png" },
+    });
+    assert.equal(nonMaterial.response.status, 200);
+    assert.equal(nonMaterial.payload.kycStatus, "verified");
+
+    const kycAuditBefore = store.listBusinessAuditEventsForWorkspace(owner.user.id, { category: "kyc", limit: 100 }).length;
+    const sameMaterial = await request(`/companies/${verifiedCompany.id}`, {
+      method: "PATCH",
+      token: owner.token,
+      body: { panNumber: "  ABCDE1234F  " },
+    });
+    assert.equal(sameMaterial.response.status, 200);
+    assert.equal(sameMaterial.payload.kycStatus, "verified");
+    const kycAuditAfterSame = store.listBusinessAuditEventsForWorkspace(owner.user.id, { category: "kyc", limit: 100 }).length;
+    assert.equal(kycAuditAfterSame, kycAuditBefore);
+
+    const materialAddress = await request(`/companies/${verifiedCompany.id}`, {
+      method: "PATCH",
+      token: owner.token,
+      body: { address: "22 Material Avenue" },
+    });
+    assert.equal(materialAddress.response.status, 200);
+    assert.equal(materialAddress.payload.kycStatus, "pending");
+    assert.equal(materialAddress.payload.reviewStatus, "pending");
+
+    const pendingMaterial = await request(`/companies/${verifiedCompany.id}`, {
+      method: "PATCH",
+      token: owner.token,
+      body: { country: "US" },
+    });
+    assert.equal(pendingMaterial.response.status, 200);
+    assert.equal(pendingMaterial.payload.kycStatus, "pending");
+
+    const reApprovedForCountry = await request(`/admin/kyc-review/${verifiedCompany.id}?action=approve`, {
+      method: "PATCH",
+      token: admin.token,
+      body: { notes: "Re-approve before country switch" },
+    });
+    assert.equal(reApprovedForCountry.response.status, 200);
+    assert.equal(reApprovedForCountry.payload.kycStatus, "verified");
+
+    const countryChange = await request(`/companies/${verifiedCompany.id}`, {
+      method: "PATCH",
+      token: owner.token,
+      body: { country: "US", kycCountry: "US" },
+    });
+    assert.equal(countryChange.response.status, 200);
+    assert.equal(countryChange.payload.kycStatus, "pending");
+
+    const renewalBlocked = await request(`/subscriptions/${activeSubscription.id}/renew`, {
+      method: "POST",
+      token: owner.token,
+    });
+    assert.equal(renewalBlocked.response.status, 409);
+    assert.equal(renewalBlocked.payload.code, "KYC_VERIFICATION_REQUIRED");
+
+    const unchangedSubscription = api.getSubscription(activeSubscription.id);
+    assert.equal(unchangedSubscription.status, "active");
+    assert.equal(unchangedSubscription.amount, 2388);
+    assert.equal(api.listSubscriptions().filter((entry) => entry.userId === owner.user.id).length, ownerSubscriptionCountBefore);
+
+    const reApprovedForEntity = await request(`/admin/kyc-review/${verifiedCompany.id}?action=approve`, {
+      method: "PATCH",
+      token: admin.token,
+      body: { notes: "Re-approve before entity switch" },
+    });
+    assert.equal(reApprovedForEntity.response.status, 200);
+    assert.equal(reApprovedForEntity.payload.kycStatus, "verified");
+
+    const entityChange = await request(`/companies/${verifiedCompany.id}`, {
+      method: "PATCH",
+      token: owner.token,
+      body: { entityType: "individual" },
+    });
+    assert.equal(entityChange.response.status, 200);
+    assert.equal(entityChange.payload.kycStatus, "pending");
+
+    const rejected = await request(`/admin/kyc-review/${verifiedCompany.id}?action=reject`, {
+      method: "PATCH",
+      token: admin.token,
+      body: { notes: "Reject before non-verified material edit" },
+    });
+    assert.equal(rejected.response.status, 200);
+    assert.equal(rejected.payload.kycStatus, "rejected");
+
+    const rejectedMaterial = await request(`/companies/${verifiedCompany.id}`, {
+      method: "PATCH",
+      token: owner.token,
+      body: { registrationNumber: "US-REG-7788" },
+    });
+    assert.equal(rejectedMaterial.response.status, 200);
+    assert.equal(rejectedMaterial.payload.kycStatus, "rejected");
+
+    const crossTenant = await request(`/companies/${verifiedCompany.id}`, {
+      method: "PATCH",
+      token: other.token,
+      body: { address: "Cross Tenant Update" },
+    });
+    assert.equal(crossTenant.response.status, 404);
+    const ownerCompaniesAfterCross = await request("/companies", { token: owner.token });
+    assert.equal(ownerCompaniesAfterCross.response.status, 200);
+    const ownerCompanyAfterCross = ownerCompaniesAfterCross.payload.find((entry) => entry.id === verifiedCompany.id);
+    assert.equal(ownerCompanyAfterCross.kycStatus, "rejected");
+
+    const freeCompany = await request("/companies", {
+      method: "POST",
+      token: freeUser.token,
+      body: {
+        name: "Free Material Co",
+        entityType: "company",
+        address: "1 Free Lane",
+        addressProof: "free-address.pdf",
+        panNumber: "ABCDE1234F",
+        documentNames: ["free-doc.pdf"],
+      },
+    });
+    assert.equal(freeCompany.response.status, 201);
+
+    const freeMaterialEdit = await request(`/companies/${freeCompany.payload.id}`, {
+      method: "PATCH",
+      token: freeUser.token,
+      body: { country: "US", taxId: "US-TAX-1111" },
+    });
+    assert.equal(freeMaterialEdit.response.status, 200);
+
+    const freeInvoice = await request("/invoices", {
+      method: "POST",
+      token: freeUser.token,
+      body: {
+        billToName: "Free Client",
+        invoiceDate: "2026-09-25",
+        currency: "INR",
+        items: [{ description: "Free work", quantity: 1, rate: 1000, gstRate: 18 }],
+      },
+    });
+    assert.equal(freeInvoice.response.status, 201);
+
+    const kycAuditEvents = store.listBusinessAuditEventsForWorkspace(owner.user.id, { category: "kyc", limit: 100 });
+    const reevalAudit = kycAuditEvents.find((event) => event.action === "kyc.material_identity_change_reverification_required");
+    assert.ok(reevalAudit);
+    assert.ok(Array.isArray(reevalAudit.metadata.changedMaterialFields));
+    assert.ok(reevalAudit.metadata.changedMaterialFields.length >= 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    restoreAdminEmail();
+  }
+});
 test("profile requirements endpoint stays aligned with authoritative resolver", async () => {
   const server = createServer({ persist: false, useSupabaseEmailOtp: false });
   await new Promise((resolve) => server.listen(0, resolve));
