@@ -54,6 +54,17 @@
       </div>
       <span id="subscriptionStatus" class="status checkout-status" aria-live="polite"></span>
       <div id="subscriptionPlanCards" class="plan-feature-grid"></div>
+      <section id="verificationGate" class="subscription-box" hidden aria-labelledby="verificationGateTitle">
+        <div class="subscription-head">
+          <strong id="verificationGateTitle">Complete verification to continue</strong>
+          <span class="pill gold">Paid features</span>
+        </div>
+        <p>Identity or business verification is required to activate paid EazInvoice features.</p>
+        <div class="actions">
+          <button id="startVerification" class="primary" type="button">Start verification</button>
+          <button id="dismissVerification" class="ghost" type="button">Not now</button>
+        </div>
+      </section>
       <form id="subscriptionForm" class="stack">
         <div class="subscription-box">
           <div class="subscription-head">

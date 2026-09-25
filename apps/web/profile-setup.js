@@ -48,7 +48,7 @@ export function showProfileSetupDialog(state, { documentRef = document } = {}) {
   setStatus(businessStatus, state.businessComplete);
   if (action) {
     action.href = state.destination;
-    action.textContent = state.accountComplete ? "Complete Business Profile" : "Complete Account Profile";
+    action.textContent = "Complete profile";
   }
 
   dialog.addEventListener("close", () => previousFocus?.focus?.(), { once: true });

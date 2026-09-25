@@ -157,7 +157,8 @@ test("P2-3 mobile shell loads API-backed workspace and blocks stale tenant UI at
   });
   await page.goto("/apps/mobile/index.html");
 
-  await expect(page.locator("#profileMeta")).toHaveText("Alpha Traders - Owner");
+  await expect(page.locator("#profileName")).toHaveText("Alpha Traders");
+  await expect(page.locator("#profileMeta")).toHaveText("Owner");
   await expect(page.getByText("Total sales")).toBeVisible();
   await expect(page.getByText("Latest 5 Invoices")).toBeVisible();
   await expect(page.getByText("Latest 5 PO/WO")).toBeVisible();
@@ -165,7 +166,8 @@ test("P2-3 mobile shell loads API-backed workspace and blocks stale tenant UI at
   await page.getByRole("button", { name: "Sales" }).click();
   await expect(page.getByText("Create Invoice")).toBeVisible();
   await page.locator("#workspaceSelect").selectOption("biz-b:mobile-owner");
-  await expect(page.locator("#profileMeta")).toHaveText("Beta Services - Viewer");
+  await expect(page.locator("#profileName")).toHaveText("Beta Services");
+  await expect(page.locator("#profileMeta")).toHaveText("Viewer");
   await page.getByRole("button", { name: "Home" }).click();
   await expect(page.getByText("INR 25.00")).toBeVisible();
 

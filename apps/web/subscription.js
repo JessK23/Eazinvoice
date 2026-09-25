@@ -9,6 +9,9 @@ const planCards = document.getElementById("subscriptionPlanCards");
 const kycCountry = document.getElementById("kycCountry");
 const kycEntityType = document.getElementById("kycEntityType");
 const kycDocumentGuidance = document.getElementById("kycDocumentGuidance");
+const verificationGate = document.getElementById("verificationGate");
+const startVerification = document.getElementById("startVerification");
+const dismissVerification = document.getElementById("dismissVerification");
 const sessionContext = await requireSession();
 const token = sessionContext?.token;
 if (!token) throw new Error("Authentication required");
@@ -358,6 +361,7 @@ async function startPaidCheckout(plan) {
     setStatus(`${verified.subscription?.plan || plan} plan activated successfully.`, "success");
     await refreshSubscriptionPage();
   } catch (error) {
+    if (/verification|KYC/i.test(error.message || "")) verificationGate?.removeAttribute("hidden");
     setStatus(error.message || "Payment could not be completed. Please try again.", "error");
   } finally {
     if (button) {
@@ -366,6 +370,13 @@ async function startPaidCheckout(plan) {
     }
   }
 }
+
+startVerification?.addEventListener("click", () => {
+  form?.scrollIntoView({ behavior: "smooth", block: "start" });
+  form?.querySelector("input, select")?.focus();
+});
+
+dismissVerification?.addEventListener("click", () => verificationGate?.setAttribute("hidden", ""));
 
 async function downgradeToFree() {
   const active = activeSubscription(currentSubscriptions);

@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { getProfileSetupState } from "../apps/web/profile-setup.js";
@@ -36,7 +36,7 @@ test("dashboard presents a non-blocking accessible setup dialog using existing M
   assert.match(dashboard, /<dialog id="profileSetupDialog"/);
   assert.match(dashboard, /data-profile-status="account"/);
   assert.match(dashboard, /data-profile-status="business"/);
-  assert.match(dashboard, /Continue to Workspace/);
+  assert.match(dashboard, /Complete profile/);
   assert.match(dashboardJs, /getProfileSetupState\(currentUser, dashboardCompanies\)/);
   assert.match(dashboardJs, /showProfileSetupDialog/);
 });
