@@ -30,6 +30,9 @@ import { assertProductionConfig } from "./production-config.js";
 import { createSessionStore } from "./session-store.js";
 import { getFeatureRequirement, PLAN_CATALOG, resolvePlanUsageStatus } from "./plans.js";
 import {
+  normalizeCountry,
+  normalizeEntityType,
+  isIndividualEntity,
   REQUIREMENT_PURPOSES,
   resolveFeatureEligibility,
   resolveProfileRequirements,
@@ -995,6 +998,20 @@ function hasVerifiedKyc(company) {
   }).verified;
 }
 function evaluatePaidSubscriptionKycEligibility(api, user, { companyId = "", requireSpecificCompany = false } = {}) {
+  return evaluatePaidSubscriptionKycState(api, user, {
+    companyId,
+    requireSpecificCompany,
+    requireVerified: true,
+    missingStatusCode: 400,
+  });
+}
+
+function evaluatePaidSubscriptionKycState(api, user, {
+  companyId = "",
+  requireSpecificCompany = false,
+  requireVerified = false,
+  missingStatusCode = 400,
+} = {}) {
   const companies = api.listCompanies(user);
   const normalizedCompanyId = String(companyId || "").trim();
   const scopedCompanies = requireSpecificCompany && normalizedCompanyId
@@ -1004,7 +1021,7 @@ function evaluatePaidSubscriptionKycEligibility(api, user, { companyId = "", req
   if (!scopedCompanies.length) {
     return {
       ok: false,
-      statusCode: 400,
+      statusCode: missingStatusCode,
       code: "KYC_REQUIRED",
       error: "Complete verification to continue. KYC documents or identity/business verification are required to activate paid EazInvoice features.",
     };
@@ -1014,7 +1031,7 @@ function evaluatePaidSubscriptionKycEligibility(api, user, { companyId = "", req
   if (!kycProfile) {
     return {
       ok: false,
-      statusCode: 400,
+      statusCode: missingStatusCode,
       code: "KYC_REQUIRED",
       error: "Complete verification to continue. KYC documents or identity/business verification are required to activate paid EazInvoice features.",
     };
@@ -1028,7 +1045,8 @@ function evaluatePaidSubscriptionKycEligibility(api, user, { companyId = "", req
     };
   }
 
-  if (!hasVerifiedKyc(kycProfile)) {
+  const verified = hasVerifiedKyc(kycProfile);
+  if (requireVerified && !verified) {
     return {
       ok: false,
       statusCode: 409,
@@ -1040,13 +1058,13 @@ function evaluatePaidSubscriptionKycEligibility(api, user, { companyId = "", req
   return {
     ok: true,
     companyId: kycProfile.id,
+    company: kycProfile,
+    verified,
   };
 }
 
 function normalizeKycCountry(value) {
-  const normalized = String(value || "IN").trim();
-  if (!normalized) return "IN";
-  return normalized.toUpperCase();
+  return normalizeCountry(value);
 }
 
 function isIndiaKycCountry(value) {
@@ -1054,7 +1072,7 @@ function isIndiaKycCountry(value) {
 }
 
 function isIndividualKycEntity(entityType) {
-  return ["individual", "freelancer", "consultant"].includes(String(entityType || "").trim().toLowerCase());
+  return isIndividualEntity(entityType);
 }
 
 function resolveKycDocumentType({ country, entityType }) {
@@ -1068,32 +1086,38 @@ function resolveKycDocumentType({ country, entityType }) {
 
 function validatePaidKycInput(body = {}) {
   const country = normalizeKycCountry(body.country || body.kycCountry);
-  const entityType = String(body.entityType || "company").trim().toLowerCase();
+  const entityType = normalizeEntityType(body.entityType || "company");
   const individual = isIndividualKycEntity(entityType);
   const india = isIndiaKycCountry(country);
-  const address = String(body.address || "").trim();
-  const addressProof = String(body.addressProof || "").trim();
-  const panNumber = String(body.panNumber || "").trim();
-  const gstNumber = String(body.gstNumber || "").trim();
-  const aadhaarNumber = String(body.aadhaarNumber || "").trim();
-  const taxId = String(body.taxId || "").trim();
-  const registrationNumber = String(body.registrationNumber || "").trim();
-  const hasUploadedDocument = (Array.isArray(body.documentNames) && body.documentNames.length)
-    || (Array.isArray(body.documentFiles) && body.documentFiles.length);
 
-  if (!address || (!addressProof && !hasUploadedDocument)) {
+  const requirement = resolveProfileRequirements({
+    business: {
+      ...body,
+      country,
+      kycCountry: country,
+      entityType,
+      businessType: entityType,
+    },
+    purpose: REQUIREMENT_PURPOSES.KYC_PAID_FEATURE,
+  });
+
+  const missingFields = new Set(requirement.missingFields || []);
+  const missingAnyOf = Array.isArray(requirement.missingAnyOf) ? requirement.missingAnyOf : [];
+  const hasMissingAnyOf = (fields = []) => missingAnyOf.some((group) => fields.every((field) => group.includes(field)));
+
+  if (missingFields.has("address") || hasMissingAnyOf(["addressProof", "documentNames", "documentFiles"])) {
     return { ok: false, error: "KYC requires address and address proof or an uploaded document." };
   }
-  if (india && individual && (!panNumber || aadhaarNumber.length < 4)) {
+  if (india && individual && (missingFields.has("panNumber") || missingFields.has("aadhaarNumber"))) {
     return { ok: false, error: "India individual, freelancer, or consultant KYC requires PAN, Aadhaar last 4, address and address proof. GST is not required." };
   }
-  if (india && !individual && (!panNumber && !gstNumber)) {
+  if (india && !individual && hasMissingAnyOf(["panNumber", "gstNumber"])) {
     return { ok: false, error: "India company or group KYC requires company PAN or GST details." };
   }
-  if (!india && individual && !taxId && !hasUploadedDocument) {
+  if (!india && individual && hasMissingAnyOf(["taxId", "documentNames", "documentFiles"])) {
     return { ok: false, error: "Non-India individual, freelancer, or consultant KYC requires a country tax ID/national ID or identity document." };
   }
-  if (!india && !individual && !registrationNumber && !taxId && !hasUploadedDocument) {
+  if (!india && !individual && hasMissingAnyOf(["registrationNumber", "taxId", "documentNames", "documentFiles"])) {
     return { ok: false, error: "Non-India company or group KYC requires business registration, tax ID, or company registration document." };
   }
   return {
@@ -2223,19 +2247,35 @@ export function createServer(options = {}) {
     }
 
     if (url.pathname === "/profile/requirements" && req.method === "GET") {
-      const companies = api.listCompanies(user);
+      const requirementToken = extractToken(req);
+      const requirementSessionUser = requirementToken ? sessions.get(requirementToken) : null;
+      const requirementUser = requirementSessionUser ? api.getUserById(requirementSessionUser.id) || requirementSessionUser : null;
+      if (!requirementUser) {
+        sendJson(res, 401, { error: "Unauthorized" });
+        return;
+      }
+      const requirementPreviewPlan = getAdminPlanPreview(req, requirementUser);
+      if (requirementUser.accountStatus === "restricted" && !isConfiguredAdminUser(requirementUser)) {
+        sendJson(res, 403, {
+          error: "Account restricted by admin",
+          restrictedReason: requirementUser.restrictedReason || "Suspicious activity review",
+        });
+        return;
+      }
+
+      const companies = api.listCompanies(requirementUser);
       const requestedBusinessId = String(url.searchParams.get("businessId") || "").trim();
       const business = companies.find((company) => company.id === requestedBusinessId || company.businessId === requestedBusinessId)
         || companies[0]
         || {};
-      const planSummary = await resolvePlanSummary(api, user, previewPlan, options);
-      const subscription = currentUserPlan(api, user);
+      const planSummary = await resolvePlanSummary(api, requirementUser, requirementPreviewPlan, options);
+      const subscription = currentUserPlan(api, requirementUser);
       const documentType = String(url.searchParams.get("documentType") || "").trim();
       const featureRequiresPaidPlan = url.searchParams.get("paid") === "true";
       const featureRequiresKyc = url.searchParams.get("kyc") === "true";
       sendJson(res, 200, {
         businessId: business.id || business.businessId || null,
-        core: resolveProfileRequirements({ user, business, purpose: REQUIREMENT_PURPOSES.CORE_PROFILE }),
+        core: resolveProfileRequirements({ user: requirementUser, business, purpose: REQUIREMENT_PURPOSES.CORE_PROFILE }),
         document: documentType
           ? resolveProfileRequirements({ business, purpose: REQUIREMENT_PURPOSES.DOCUMENT, documentType })
           : null,
@@ -2245,7 +2285,7 @@ export function createServer(options = {}) {
           status: String(subscription.status || "inactive").toLowerCase(),
         },
         featureEligibility: resolveFeatureEligibility({
-          user,
+          user: requirementUser,
           business,
           plan: subscription.plan || planSummary.plan || "free",
           subscriptionStatus: subscription.status || "inactive",
@@ -3387,30 +3427,23 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
             sendJson(res, 400, { error: "Choose a valid paid plan." });
             return;
           }
-          const companies = api.listCompanies(user);
-          const kycProfile = companies.find((company) => hasSubmittedKyc(company));
-          if (!kycProfile) {
-            sendJson(res, 409, {
-              code: "KYC_REQUIRED",
-              error: "Complete verification to continue. KYC documents or identity/business verification are required to activate paid EazInvoice features.",
-            });
-            return;
-          }
-          if (kycProfile.kycStatus === "rejected" || kycProfile.reviewStatus === "rejected") {
-            sendJson(res, 403, { error: "KYC documents were rejected. Update documents before choosing a paid plan." });
-            return;
-          }
-          if (!hasVerifiedKyc(kycProfile)) {
-            sendJson(res, 409, {
-              code: "KYC_VERIFICATION_REQUIRED",
-              error: "Complete verification to continue. Your submitted verification must be approved before paid features can be activated.",
+          const eligibility = evaluatePaidSubscriptionKycState(api, user, {
+            companyId: body.companyId || "",
+            requireSpecificCompany: Boolean(body.companyId),
+            requireVerified: true,
+            missingStatusCode: 409,
+          });
+          if (!eligibility.ok) {
+            sendJson(res, eligibility.statusCode || 409, {
+              ...(eligibility.code ? { code: eligibility.code } : {}),
+              error: eligibility.error,
             });
             return;
           }
           orderContext = {
             kind,
             userId: user.id,
-            companyId: body.companyId || kycProfile.id,
+            companyId: body.companyId || eligibility.companyId,
             plan: selectedPlan.plan,
             amount: annualPlanCharge(selectedPlan),
             monthlyAmount: selectedPlan.monthlyAmount ?? selectedPlan.amount,
@@ -3527,23 +3560,21 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
     if (url.pathname === "/subscriptions" && req.method === "POST") {
       const body = await readBody(req);
       if (isPaidPlan(body)) {
-        const companies = api.listCompanies(user);
-        const kycProfile = companies.find((company) => hasSubmittedKyc(company));
-        if (!kycProfile) {
-          sendJson(res, 400, {
-            code: "KYC_REQUIRED",
-            error: "Complete verification to continue. KYC documents or identity/business verification are required to activate paid EazInvoice features.",
+        const eligibility = evaluatePaidSubscriptionKycState(api, user, {
+          companyId: body.companyId || "",
+          requireSpecificCompany: Boolean(body.companyId),
+          requireVerified: false,
+          missingStatusCode: 400,
+        });
+        if (!eligibility.ok) {
+          sendJson(res, eligibility.statusCode || 400, {
+            ...(eligibility.code ? { code: eligibility.code } : {}),
+            error: eligibility.error,
           });
           return;
         }
-        if (kycProfile.kycStatus === "rejected" || kycProfile.reviewStatus === "rejected") {
-          sendJson(res, 403, {
-            error: "KYC documents were rejected. Update documents before choosing a paid plan.",
-          });
-          return;
-        }
-        body.companyId = body.companyId || kycProfile.id;
-        body.status = kycProfile.kycStatus === "verified" ? "payment_pending" : "kyc_pending";
+        body.companyId = body.companyId || eligibility.companyId;
+        body.status = eligibility.verified ? "payment_pending" : "kyc_pending";
         const selectedPlan = PAID_PLAN_CATALOG[String(body.plan || "").toLowerCase()];
         if (selectedPlan) {
           body.amount = annualPlanCharge(selectedPlan);
@@ -6304,7 +6335,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   console.log(`Eazinvoice API running on http://localhost:${process.env.PORT || 3001}`);
 }
-
-
-
 

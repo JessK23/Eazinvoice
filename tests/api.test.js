@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -10,6 +10,7 @@ import { resolveReportPeriod } from "../apps/api/src/postgres-reporting.js";
 import { buildPlanUsageDetails, getFeatureRequirement, getPlanDefinition, resolvePlanUsageStatus } from "../apps/api/src/plans.js";
 import { createStore } from "../apps/api/src/store.js";
 import { createServer, createServerAsync } from "../apps/api/src/server.js";
+import { REQUIREMENT_PURPOSES, resolveProfileRequirements } from "../apps/api/src/profile-requirements.js";
 import { getAiAgentToolMatrix } from "../apps/api/src/ai-agent.js";
 
 const TEST_ADMIN_EMAIL = "support@eazinvoice.com";
@@ -4755,6 +4756,94 @@ test("paid subscription renewal requires authoritative KYC verification", async 
   } finally {
     await new Promise((resolve) => server.close(resolve));
     restoreAdminEmail();
+  }
+});
+
+test("profile requirements endpoint stays aligned with authoritative resolver", async () => {
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  try {
+    const otpResult = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: {
+        mode: "signup",
+        email: "resolver-alignment@example.com",
+        phone: "9888777666",
+      },
+    });
+
+    const signupResult = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "Resolver Alignment",
+        email: "resolver-alignment@example.com",
+        password: "Secure123",
+        phone: "9888777666",
+        otp: otpResult.payload.devOtp,
+      },
+    });
+    assert.equal(signupResult.response.status, 201);
+
+    const companyResult = await request("/companies", {
+      method: "POST",
+      token: signupResult.payload.token,
+      body: {
+        name: "Resolver Alignment Co",
+        businessType: "consulting",
+        entityType: "freelancer",
+        country: "India",
+        kycCountry: "India",
+        panNumber: "ABCDE1234F",
+        aadhaarNumber: "1234",
+        address: "1 Resolver Street",
+        addressProof: "address-proof.pdf",
+        documentNames: ["pan.pdf"],
+      },
+    });
+    assert.equal(companyResult.response.status, 201);
+
+    const requirementsResult = await request(`/profile/requirements?businessId=${encodeURIComponent(companyResult.payload.id)}&documentType=invoice&paid=true&kyc=true`, {
+      token: signupResult.payload.token,
+    });
+    assert.equal(requirementsResult.response.status, 200);
+
+    const business = companyResult.payload;
+    const expectedCore = resolveProfileRequirements({
+      user: signupResult.payload.user,
+      business,
+      purpose: REQUIREMENT_PURPOSES.CORE_PROFILE,
+    });
+    const expectedDocument = resolveProfileRequirements({
+      business,
+      purpose: REQUIREMENT_PURPOSES.DOCUMENT,
+      documentType: "invoice",
+    });
+    const expectedKyc = resolveProfileRequirements({
+      business,
+      purpose: REQUIREMENT_PURPOSES.KYC_PAID_FEATURE,
+    });
+
+    assert.deepEqual(requirementsResult.payload.core, expectedCore);
+    assert.deepEqual(requirementsResult.payload.document, expectedDocument);
+    assert.deepEqual(requirementsResult.payload.kyc, expectedKyc);
+    assert.equal(requirementsResult.payload.featureEligibility.kyc.complete, expectedKyc.complete);
+    assert.equal(requirementsResult.payload.featureEligibility.kyc.verified, expectedKyc.verified);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
   }
 });
 test("razorpay webhooks require configured signature verification", async () => {

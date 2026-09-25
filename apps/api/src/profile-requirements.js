@@ -88,11 +88,14 @@ function kycRequirement(country, entityType) {
     };
   }
 
+  if (individual) anyOf.push(["taxId", "documentNames", "documentFiles"]);
+  else anyOf.push(["registrationNumber", "taxId", "documentNames", "documentFiles"]);
+
   return {
     requiredFields,
     anyOf,
     configuredCountry: false,
-    countryModel: "generic",
+    countryModel: "generic-international",
   };
 }
 
