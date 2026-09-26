@@ -32,6 +32,7 @@ import { getFeatureRequirement, PLAN_CATALOG, resolvePlanUsageStatus } from "./p
 import {
   normalizeCountry,
   normalizeEntityType,
+  normalizeKycStatus,
   isIndividualEntity,
   REQUIREMENT_PURPOSES,
   resolveFeatureEligibility,
@@ -815,6 +816,97 @@ async function saveBase64File(input) {
   };
 }
 
+const ALLOWED_DOCUMENT_MIME_TYPES = new Set(["application/pdf", "image/png", "image/jpeg"]);
+
+function sanitizeStoredUploadName(value = "") {
+  const normalized = String(value || "").trim().replace(/\\+/g, "/");
+  const base = path.posix.basename(normalized);
+  if (!base || base === "." || base === "..") return "";
+  if (!/^[A-Za-z0-9._-]+$/.test(base)) return "";
+  return base;
+}
+
+function resolveDocumentMimeType(document = {}, storedName = "") {
+  const mime = String(document?.mimeType || "").trim().toLowerCase();
+  if (ALLOWED_DOCUMENT_MIME_TYPES.has(mime)) return mime;
+  const ext = String(storedName).toLowerCase();
+  if (ext.endsWith(".pdf")) return "application/pdf";
+  if (ext.endsWith(".png")) return "image/png";
+  return "image/jpeg";
+}
+
+function kycLifecycleStatus(company = {}) {
+  const normalized = normalizeKycStatus(company);
+  if (normalized === "verified") return { kycStatus: "verified", reviewStatus: "approved" };
+  if (normalized === "submitted") return { kycStatus: "pending", reviewStatus: "pending" };
+  if (normalized === "rejected") return { kycStatus: "rejected", reviewStatus: "rejected" };
+  return { kycStatus: "not_submitted", reviewStatus: "not_submitted" };
+}
+
+function companyHasKycSubmissionFields(body = {}) {
+  const keys = [
+    "panNumber",
+    "aadhaarLast4",
+    "aadhaarNumber",
+    "address",
+    "addressProof",
+    "documentNames",
+    "documentFiles",
+    "taxId",
+    "registrationNumber",
+    "country",
+    "kycCountry",
+    "entityType",
+    "gstNumber",
+  ];
+  return keys.some((key) => body[key] !== undefined);
+}
+
+function isKycSubmissionComplete(company = {}) {
+  const requirements = resolveProfileRequirements({
+    business: company,
+    purpose: REQUIREMENT_PURPOSES.KYC_PAID_FEATURE,
+  });
+  return Boolean(requirements?.complete);
+}
+
+function resolveAdminKycDocuments(company = {}) {
+  const files = Array.isArray(company.documentFiles) ? company.documentFiles : [];
+  return files
+    .map((entry, index) => {
+      const storedName = sanitizeStoredUploadName(entry?.storedName || entry?.filePath || company.documentNames?.[index] || "");
+      if (!storedName) return null;
+      return {
+        id: String(index),
+        fileName: String(entry?.storedName || company.documentNames?.[index] || storedName),
+        mimeType: resolveDocumentMimeType(entry, storedName),
+      };
+    })
+    .filter(Boolean);
+}
+
+function sanitizeAdminKycCompany(company = {}) {
+  const lifecycle = kycLifecycleStatus(company);
+  return {
+    id: company.id,
+    name: company.name || company.legalName || "",
+    legalName: company.legalName || "",
+    entityType: company.entityType || "",
+    country: normalizeCountry(company.country || company.kycCountry),
+    kycCountry: normalizeCountry(company.kycCountry || company.country),
+    panNumber: String(company.panNumber || "").trim(),
+    aadhaarLast4: String(company.aadhaarLast4 || "").replace(/\D/g, "").slice(-4),
+    address: company.address || "",
+    addressProof: company.addressProof || "",
+    kycStatus: lifecycle.kycStatus,
+    reviewStatus: lifecycle.reviewStatus,
+    reviewNotes: company.reviewNotes || "",
+    reviewedAt: company.reviewedAt || "",
+    createdAt: company.createdAt || "",
+    documents: resolveAdminKycDocuments(company),
+  };
+}
+
 function getAdminIdentity() {
   return {
     email: process.env.ADMIN_EMAIL || "support@eazinvoice.com",
@@ -971,6 +1063,11 @@ function isConfiguredAdminUser(user) {
   return Boolean(user?.email && adminRoleForEmail(user.email));
 }
 
+function hasKycReviewAuthority(user) {
+  if (isConfiguredAdminUser(user)) return true;
+  return Array.isArray(user?.permissions) && user.permissions.includes("kyc-review");
+}
+
 function getAdminPlanPreview(req, user) {
   if (!isConfiguredAdminUser(user)) return "";
   const requested = String(req.headers["x-eazinvoice-plan-preview"] || "").trim().toLowerCase();
@@ -1021,6 +1118,15 @@ function evaluatePaidSubscriptionKycState(api, user, {
     };
   }
 
+  const rejectedProfile = scopedCompanies.find((company) => company.kycStatus === "rejected" || company.reviewStatus === "rejected");
+  if (rejectedProfile) {
+    return {
+      ok: false,
+      statusCode: 403,
+      error: "KYC documents were rejected. Update documents before choosing a paid plan.",
+    };
+  }
+
   const kycProfile = scopedCompanies.find((company) => hasSubmittedKyc(company));
   if (!kycProfile) {
     return {
@@ -1028,14 +1134,6 @@ function evaluatePaidSubscriptionKycState(api, user, {
       statusCode: missingStatusCode,
       code: "KYC_REQUIRED",
       error: "Complete verification to continue. KYC documents or identity/business verification are required to activate paid EazInvoice features.",
-    };
-  }
-
-  if (kycProfile.kycStatus === "rejected" || kycProfile.reviewStatus === "rejected") {
-    return {
-      ok: false,
-      statusCode: 403,
-      error: "KYC documents were rejected. Update documents before choosing a paid plan.",
     };
   }
 
@@ -3100,35 +3198,103 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
     }
 
     if (url.pathname === "/admin/kyc-review" && req.method === "GET") {
-      if (!isConfiguredAdminUser(user)) {
+      if (!hasKycReviewAuthority(user)) {
         sendJson(res, 403, { error: "Forbidden" });
         return;
       }
       sendJson(res, 200, {
-        companies: api.listCompanies(),
+        companies: api.listCompanies().map((company) => sanitizeAdminKycCompany(company)),
       });
       return;
     }
 
+    if (url.pathname.startsWith("/admin/kyc-review/") && req.method === "GET") {
+      if (!hasKycReviewAuthority(user)) {
+        sendJson(res, 403, { error: "Forbidden" });
+        return;
+      }
+      const segments = url.pathname.split("/").filter(Boolean);
+      const companyId = segments[2] || "";
+      const company = api.listCompanies().find((entry) => entry.id === companyId);
+      if (!company) {
+        sendJson(res, 404, { error: "Company not found" });
+        return;
+      }
+
+      if (segments.length === 3) {
+        sendJson(res, 200, sanitizeAdminKycCompany(company));
+        return;
+      }
+
+      if (segments.length === 5 && segments[3] === "documents") {
+        const documentId = String(segments[4] || "").trim();
+        if (!/^\d+$/.test(documentId)) {
+          sendJson(res, 400, { error: "Invalid document identifier" });
+          return;
+        }
+        const index = Number(documentId);
+        const files = Array.isArray(company.documentFiles) ? company.documentFiles : [];
+        const entry = files[index] || null;
+        const storedName = sanitizeStoredUploadName(entry?.storedName || entry?.filePath || company.documentNames?.[index] || "");
+        if (!storedName) {
+          sendJson(res, 404, { error: "Document not found" });
+          return;
+        }
+        const uploadsDir = path.resolve(path.join(ROOT, "data", "uploads"));
+        const filePath = path.resolve(path.join(uploadsDir, storedName));
+        if (!filePath.startsWith(uploadsDir)) {
+          sendJson(res, 400, { error: "Invalid document path" });
+          return;
+        }
+        let data;
+        try {
+          data = await fs.readFile(filePath);
+        } catch {
+          sendJson(res, 404, { error: "Document not found" });
+          return;
+        }
+        const mimeType = resolveDocumentMimeType(entry, storedName);
+        res.writeHead(200, {
+          ...securityHeaders({
+            "Content-Type": mimeType,
+            "Content-Disposition": `inline; filename="${storedName.replace(/[^A-Za-z0-9._-]+/g, "_")}"`,
+            "Cache-Control": "no-store",
+          }),
+          ...(res.eazinvoiceCorsHeaders || {}),
+          "X-Content-Type-Options": "nosniff",
+        });
+        res.end(data);
+        return;
+      }
+
+      sendJson(res, 404, { error: "Not found" });
+      return;
+    }
+
     if (url.pathname.startsWith("/admin/kyc-review/") && req.method === "PATCH") {
-      if (!isConfiguredAdminUser(user)) {
+      if (!hasKycReviewAuthority(user)) {
         sendJson(res, 403, { error: "Forbidden" });
         return;
       }
       const companyId = url.pathname.split("/")[3];
-      const action = url.searchParams.get("action") || "approve";
+      const action = String(url.searchParams.get("action") || "approve").toLowerCase();
       const body = await readBody(req).catch(() => ({}));
+      const reason = String(body.reason || body.notes || "").trim();
+      if (action === "reject" && !reason) {
+        sendJson(res, 400, { error: "Rejection reason is required." });
+        return;
+      }
       const updated = api.updateCompanyKyc(companyId, {
         kycStatus: action === "approve" ? "verified" : "rejected",
         reviewStatus: action === "approve" ? "approved" : "rejected",
-        reviewNotes: body.reason || body.notes || (action === "approve" ? "KYC approved" : "KYC rejected"),
+        reviewNotes: reason || (action === "approve" ? "KYC approved" : "KYC rejected"),
         reviewedAt: new Date().toISOString(),
       });
       if (!updated) {
         sendJson(res, 404, { error: "Company not found" });
         return;
       }
-      sendJson(res, 200, updated);
+      sendJson(res, 200, sanitizeAdminKycCompany(updated));
       return;
     }
 
@@ -3263,11 +3429,30 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
       if (body.aadhaarLast4 === undefined && body.aadhaarNumber !== undefined) {
         body.aadhaarLast4 = normalizeAadhaarLast4(body.aadhaarNumber);
       }
-      const updated = api.updateCompany(companyId, body, {
+      let updated = api.updateCompany(companyId, body, {
         user,
         previewPlan,
         workspaceOwnerUserId: workspaceOwnerUserId || existingCompany.ownerUserId,
       });
+
+      const touchedKycFields = companyHasKycSubmissionFields(body);
+      const lifecycleBefore = normalizeKycStatus(existingCompany);
+      const lifecycleAfter = normalizeKycStatus(updated);
+      const completeAfterUpdate = isKycSubmissionComplete(updated);
+      const shouldSubmitForReview = touchedKycFields
+        && completeAfterUpdate
+        && lifecycleBefore === "not_started"
+        && lifecycleAfter === "not_started";
+
+      if (shouldSubmitForReview) {
+        updated = api.updateCompanyKyc(companyId, {
+          kycStatus: "pending",
+          reviewStatus: "pending",
+          reviewNotes: "",
+          reviewedAt: "",
+        }) || updated;
+      }
+
       sendJson(res, 200, updated);
       return;
     }
@@ -6349,4 +6534,3 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   console.log(`Eazinvoice API running on http://localhost:${process.env.PORT || 3001}`);
 }
-

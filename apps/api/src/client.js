@@ -1,4 +1,4 @@
-const API_BASE = typeof window !== "undefined" && window.location?.origin
+﻿const API_BASE = typeof window !== "undefined" && window.location?.origin
   ? window.location.origin
   : "http://localhost:3001";
 
@@ -298,6 +298,33 @@ export const apiClient = {
   },
   getAdminKycReview(token) {
     return request("/admin/kyc-review", { token });
+  },
+  getAdminKycReviewCompany(token, companyId) {
+    return request(`/admin/kyc-review/${companyId}`, { token });
+  },
+  async getAdminKycDocument(token, companyId, documentId) {
+    const response = await fetch(`${API_BASE}/admin/kyc-review/${companyId}/documents/${documentId}`, {
+      method: "GET",
+      headers: {
+        ...authHeaders(token),
+      },
+    });
+    if (!response.ok) {
+      const responseText = await response.text();
+      let payload = {};
+      try {
+        payload = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        payload = { message: responseText };
+      }
+      throw new Error(payload.error || payload.message || `Request failed (${response.status})`);
+    }
+    const blob = await response.blob();
+    return {
+      blob,
+      contentType: response.headers.get("content-type") || "application/octet-stream",
+      contentDisposition: response.headers.get("content-disposition") || "",
+    };
   },
   reviewKyc(token, companyId, action, reason) {
     return request(`/admin/kyc-review/${companyId}?action=${encodeURIComponent(action)}`, {

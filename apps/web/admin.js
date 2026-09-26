@@ -1,4 +1,5 @@
 ﻿import { apiClient, money, mountAdminPlanPreview, requireSession } from "./common.js?v=20260924-oauth-cleanup";
+import { normalizeActionError, openActionStatusModal } from "./action-error-modal.js?v=20260926-action-error-modal";
 
 const sessionContext = await requireSession("/apps/web/auth.html");
 const token = sessionContext?.token;
@@ -39,9 +40,214 @@ function escapeHtml(value) {
 
 function statusTone(status) {
   const normalized = String(status || "").toLowerCase();
-  if (["active", "paid", "verified", "consumed"].includes(normalized)) return "blue";
+  if (["active", "paid", "verified", "consumed", "approved"].includes(normalized)) return "blue";
   if (["failed", "rejected", "cancelled"].includes(normalized)) return "maroon";
   return "gold";
+}
+
+let latestKycCompanies = [];
+let latestKycReview = null;
+let currentKycObjectUrl = null;
+
+function safeAadhaarLast4(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits ? digits.slice(-4) : "";
+}
+
+function safeReviewStatusText(company = {}) {
+  const kyc = String(company.kycStatus || "not_submitted").toLowerCase();
+  const review = String(company.reviewStatus || "not_submitted").toLowerCase();
+  return `${kyc} / ${review}`;
+}
+
+function closeKycReviewDialog() {
+  const dialog = document.getElementById("adminKycReviewDialog");
+  if (dialog?.open) dialog.close();
+}
+
+function closeKycDocumentDialog() {
+  const dialog = document.getElementById("adminKycDocumentDialog");
+  if (dialog?.open) dialog.close();
+  if (currentKycObjectUrl) {
+    URL.revokeObjectURL(currentKycObjectUrl);
+    currentKycObjectUrl = null;
+  }
+}
+
+function ensureKycReviewDialog() {
+  let dialog = document.getElementById("adminKycReviewDialog");
+  if (dialog) return dialog;
+  dialog = document.createElement("dialog");
+  dialog.id = "adminKycReviewDialog";
+  dialog.className = "eaz-modal admin-kyc-review-dialog";
+  dialog.innerHTML = `
+    <div class="admin-kyc-review-shell">
+      <div class="panel-head compact">
+        <h3 id="adminKycReviewTitle">Review KYC</h3>
+        <button type="button" class="ghost small" data-kyc-close>Close</button>
+      </div>
+      <div id="adminKycReviewBody" class="list"></div>
+      <label class="stack" for="adminKycRejectReason">
+        Rejection Reason (required when rejecting)
+        <textarea id="adminKycRejectReason" rows="3" placeholder="Provide a clear reason for rejection"></textarea>
+      </label>
+      <div class="actions">
+        <button type="button" class="primary" data-kyc-approve>Approve</button>
+        <button type="button" class="ghost" data-kyc-reject>Reject</button>
+      </div>
+    </div>
+  `;
+  dialog.setAttribute("aria-labelledby", "adminKycReviewTitle");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.querySelector("[data-kyc-close]")?.addEventListener("click", closeKycReviewDialog);
+  dialog.querySelector("[data-kyc-approve]")?.addEventListener("click", async () => {
+    if (!latestKycReview?.id) return;
+    try {
+      await apiClient.reviewKyc(token, latestKycReview.id, "approve", "Approved by admin reviewer");
+      openActionStatusModal({
+        tone: "success",
+        title: "KYC Approved",
+        message: "KYC review is completed and marked as approved.",
+        actionLabel: "OK",
+        showClose: false,
+      });
+      closeKycReviewDialog();
+      const refreshed = await apiClient.getAdminKycReview(token);
+      renderKycQueue(refreshed.companies || []);
+    } catch (error) {
+      openActionStatusModal(normalizeActionError(error, { title: "Review Update Failed" }));
+    }
+  });
+  dialog.querySelector("[data-kyc-reject]")?.addEventListener("click", async () => {
+    if (!latestKycReview?.id) return;
+    const reasonInput = dialog.querySelector("#adminKycRejectReason");
+    const reason = String(reasonInput?.value || "").trim();
+    if (!reason) {
+      openActionStatusModal({
+        tone: "warning",
+        title: "Rejection Reason Required",
+        message: "Enter a rejection reason before rejecting KYC.",
+        actionLabel: "OK",
+        showClose: false,
+      });
+      reasonInput?.focus();
+      return;
+    }
+    try {
+      await apiClient.reviewKyc(token, latestKycReview.id, "reject", reason);
+      openActionStatusModal({
+        tone: "warning",
+        title: "KYC Rejected",
+        message: "KYC review is completed and marked as rejected.",
+        detail: "The applicant must update details and resubmit for review.",
+        actionLabel: "OK",
+        showClose: false,
+      });
+      closeKycReviewDialog();
+      const refreshed = await apiClient.getAdminKycReview(token);
+      renderKycQueue(refreshed.companies || []);
+    } catch (error) {
+      openActionStatusModal(normalizeActionError(error, { title: "Review Update Failed" }));
+    }
+  });
+  document.body.append(dialog);
+  return dialog;
+}
+
+function ensureKycDocumentDialog() {
+  let dialog = document.getElementById("adminKycDocumentDialog");
+  if (dialog) return dialog;
+  dialog = document.createElement("dialog");
+  dialog.id = "adminKycDocumentDialog";
+  dialog.className = "eaz-modal admin-kyc-document-dialog";
+  dialog.innerHTML = `
+    <div class="admin-kyc-review-shell">
+      <div class="panel-head compact">
+        <h3 id="adminKycDocumentTitle">KYC Document</h3>
+        <button type="button" class="ghost small" data-kyc-document-close>Close</button>
+      </div>
+      <div id="adminKycDocumentBody" class="list"></div>
+    </div>
+  `;
+  dialog.setAttribute("aria-labelledby", "adminKycDocumentTitle");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.querySelector("[data-kyc-document-close]")?.addEventListener("click", closeKycDocumentDialog);
+  document.body.append(dialog);
+  return dialog;
+}
+
+function renderKycReviewBody(company) {
+  const body = document.getElementById("adminKycReviewBody");
+  if (!body) return;
+  const docs = Array.isArray(company.documents) ? company.documents : [];
+  body.innerHTML = `
+    <div class="invoice-card">
+      <strong>${escapeHtml(company.name || company.legalName || "Applicant")}</strong>
+      <div class="hint">Entity: ${escapeHtml(company.entityType || "-")} - Country: ${escapeHtml(company.country || "-")}</div>
+      <div class="hint">PAN: ${escapeHtml(company.panNumber || "-")}</div>
+      <div class="hint">Aadhaar Last 4: ${escapeHtml(safeAadhaarLast4(company.aadhaarLast4) || "-")}</div>
+      <div class="hint">Address: ${escapeHtml(company.address || "-")}</div>
+      <div class="hint">Address Proof: ${escapeHtml(company.addressProof || "-")}</div>
+      <div class="hint">Status: ${escapeHtml(safeReviewStatusText(company))}</div>
+      <div class="hint">Submitted: ${escapeHtml(company.createdAt || "-")} - Reviewed: ${escapeHtml(company.reviewedAt || "-")}</div>
+      <div class="hint">Reviewer Notes: ${escapeHtml(company.reviewNotes || "-")}</div>
+    </div>
+    <div class="invoice-card">
+      <strong>Uploaded Documents</strong>
+      <div class="list">
+        ${docs.length
+    ? docs.map((document) => `
+              <div class="expense-entry-row">
+                <span>${escapeHtml(document.fileName || "Document")}</span>
+                <span>${escapeHtml(document.mimeType || "-")}</span>
+                <button type="button" class="ghost small" data-kyc-document="${escapeHtml(document.id)}">View</button>
+              </div>
+            `).join("")
+    : '<div class="hint">No uploaded documents found.</div>'}
+      </div>
+    </div>
+  `;
+
+  body.querySelectorAll("button[data-kyc-document]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const documentId = button.getAttribute("data-kyc-document");
+      if (!documentId) return;
+      try {
+        const documentDialog = ensureKycDocumentDialog();
+        const documentBody = documentDialog.querySelector("#adminKycDocumentBody");
+        if (documentBody) documentBody.innerHTML = "<p class=\"hint\">Loading document...</p>";
+        const file = await apiClient.getAdminKycDocument(token, company.id, documentId);
+        closeKycDocumentDialog();
+        const blobUrl = URL.createObjectURL(file.blob);
+        currentKycObjectUrl = blobUrl;
+        if (documentBody) {
+          if ((file.contentType || "").startsWith("image/")) {
+            documentBody.innerHTML = `<img src="${blobUrl}" alt="KYC document preview" class="admin-kyc-document-image" />`;
+          } else {
+            documentBody.innerHTML = `<iframe src="${blobUrl}" title="KYC document preview" class="admin-kyc-document-frame"></iframe>`;
+          }
+        }
+        documentDialog.showModal();
+      } catch (error) {
+        openActionStatusModal(normalizeActionError(error, { title: "Document View Failed" }));
+      }
+    });
+  });
+}
+
+async function openKycReview(companyId) {
+  if (!companyId) return;
+  try {
+    const company = await apiClient.getAdminKycReviewCompany(token, companyId);
+    latestKycReview = company;
+    const dialog = ensureKycReviewDialog();
+    const reasonInput = dialog.querySelector("#adminKycRejectReason");
+    if (reasonInput) reasonInput.value = "";
+    renderKycReviewBody(company);
+    dialog.showModal();
+  } catch (error) {
+    openActionStatusModal(normalizeActionError(error, { title: "Review Load Failed" }));
+  }
 }
 
 function renderBillingOrderAudit(orders) {
@@ -175,35 +381,32 @@ function renderUserControls(users) {
 
 function renderKycQueue(companies) {
   if (!kycReviewQueue) return;
-  kycReviewQueue.innerHTML = companies.length
-    ? companies.map((company) => `
+  latestKycCompanies = Array.isArray(companies) ? companies : [];
+  kycReviewQueue.innerHTML = latestKycCompanies.length
+    ? latestKycCompanies.map((company) => `
       <div class="invoice-card">
         <div>
           <strong>${escapeHtml(company.name || "Company")}</strong>
-          <div class="hint">${escapeHtml(company.entityType || "company")} - KYC ${escapeHtml(company.kycStatus || "pending")} - Review ${escapeHtml(company.reviewStatus || "pending")}</div>
+          <div class="hint">${escapeHtml(company.entityType || "company")} - ${escapeHtml(company.country || "IN")}</div>
+          <div class="hint">KYC ${escapeHtml(company.kycStatus || "not_submitted")} - Review ${escapeHtml(company.reviewStatus || "not_submitted")}</div>
           <div class="badge-row">
-            ${badge((company.kycStatus || "pending").toUpperCase(), company.kycStatus === "verified" ? "blue" : "gold")}
-            ${badge((company.reviewStatus || "pending").toUpperCase(), company.reviewStatus === "approved" ? "blue" : company.reviewStatus === "rejected" ? "maroon" : "gold")}
+            ${badge((company.kycStatus || "not_submitted").toUpperCase(), statusTone(company.kycStatus || "not_submitted"))}
+            ${badge((company.reviewStatus || "not_submitted").toUpperCase(), statusTone(company.reviewStatus || "not_submitted"))}
           </div>
-          <div class="hint">Docs: ${escapeHtml((company.documentNames || []).join(", ") || "none")}</div>
-          <div class="hint">Stored: ${escapeHtml((company.documentFiles || []).map((file) => file.filePath).join(", ") || "none")}</div>
+          <div class="hint">Docs: ${escapeHtml((company.documents || []).map((entry) => entry.fileName).join(", ") || "none")}</div>
+          <div class="hint">Aadhaar Last 4: ${escapeHtml(safeAadhaarLast4(company.aadhaarLast4) || "-")}</div>
         </div>
         <div class="actions">
-          <button class="ghost small" data-action="approve" data-company="${escapeHtml(company.id)}">Approve</button>
-          <button class="ghost small" data-action="reject" data-company="${escapeHtml(company.id)}">Reject</button>
+          <button class="primary small" data-action="review" data-company="${escapeHtml(company.id)}">Review KYC</button>
         </div>
       </div>
     `).join("")
     : "<p>No KYC items waiting for review.</p>";
 
-  kycReviewQueue.querySelectorAll("button[data-company]").forEach((button) => {
+  kycReviewQueue.querySelectorAll("button[data-action=\"review\"][data-company]").forEach((button) => {
     button.addEventListener("click", async () => {
       const companyId = button.getAttribute("data-company");
-      const action = button.getAttribute("data-action");
-      const reason = action === "reject" ? prompt("Reject reason", "KYC documents need review") || "KYC documents need review" : "Approved by admin";
-      await apiClient.reviewKyc(token, companyId, action, reason);
-      const refreshed = await apiClient.getAdminKycReview(token);
-      renderKycQueue(refreshed.companies || []);
+      await openKycReview(companyId);
     });
   });
 }

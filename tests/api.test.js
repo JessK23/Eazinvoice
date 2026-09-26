@@ -9163,3 +9163,207 @@ test("google oauth callback returns mobile deep-link handoff on oauth error", as
     process.env.MOBILE_APP_URL = prevMobileUrl;
   }
 });
+test("admin KYC review uses secure document access and consistent submission states", async () => {
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await response.text();
+    let payload = {};
+    try {
+      payload = text ? JSON.parse(text) : {};
+    } catch {
+      payload = { message: text };
+    }
+    return { response, payload };
+  }
+
+  async function signup(name, email, phone) {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email, phone },
+    });
+    const created = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name,
+        email,
+        password: "Secure123",
+        phone,
+        otp: otp.payload.devOtp,
+      },
+    });
+    assert.equal(created.response.status, 201);
+    return created.payload;
+  }
+
+  try {
+    const admin = await signup("Support Admin", TEST_ADMIN_EMAIL, "9776600111");
+    const owner = await signup("KYC Owner", "kyc-owner-secure@example.com", "9776600112");
+    const reviewer = await signup("Reviewer User", "kyc-reviewer-secure@example.com", "9776600113");
+    const other = await signup("Other User", "kyc-other-secure@example.com", "9776600114");
+
+    const onboarding = await request("/companies", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        profilePurpose: "onboarding",
+        name: "Owner KYC Company",
+        entityType: "individual",
+        country: "IN",
+        address: "Setup Street",
+      },
+    });
+    assert.equal(onboarding.response.status, 201);
+    assert.equal(onboarding.payload.kycStatus, "not_submitted");
+
+    const upload = await request("/uploads", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        files: [
+          {
+            fileName: "pan-kyc.pdf",
+            mimeType: "application/pdf",
+            dataUrl: `data:application/pdf;base64,${Buffer.from("%PDF-1.4\nkyc doc").toString("base64")}`,
+          },
+        ],
+      },
+    });
+    assert.equal(upload.response.status, 201);
+    const uploadedFile = upload.payload.files[0];
+
+    const submitted = await request(`/companies/${onboarding.payload.id}`, {
+      method: "PATCH",
+      token: owner.token,
+      body: {
+        panNumber: "ABCDE1234F",
+        aadhaarLast4: "1234",
+        address: "1 Verified Lane",
+        addressProof: "utility bill",
+        documentNames: [uploadedFile.storedName],
+        documentFiles: [uploadedFile],
+      },
+    });
+    assert.equal(submitted.response.status, 200);
+    assert.equal(submitted.payload.kycStatus, "pending");
+    assert.equal(submitted.payload.reviewStatus, "pending");
+
+    const pendingUpgrade = await request("/subscriptions", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        plan: "standard",
+        amount: 199,
+        subscriberType: "company",
+      },
+    });
+    assert.equal(pendingUpgrade.response.status, 201);
+    assert.equal(pendingUpgrade.payload.status, "kyc_pending");
+
+    const grantReviewer = await request(`/admin/users/${reviewer.user.id}?action=permissions`, {
+      method: "PATCH",
+      token: admin.token,
+      body: { permissions: ["kyc-review"] },
+    });
+    assert.equal(grantReviewer.response.status, 200);
+
+    const reviewerQueue = await request("/admin/kyc-review", { token: reviewer.token });
+    assert.equal(reviewerQueue.response.status, 200);
+
+    const queue = await request("/admin/kyc-review", { token: admin.token });
+    assert.equal(queue.response.status, 200);
+    const queued = queue.payload.companies.find((entry) => entry.id === onboarding.payload.id);
+    assert.ok(queued);
+    assert.equal(Array.isArray(queued.documents), true);
+    assert.ok(queued.documents.length >= 1);
+    assert.equal(Object.hasOwn(queued, "documentFiles"), false);
+    assert.equal(Object.hasOwn(queued, "aadhaarNumber"), false);
+    assert.equal(queued.aadhaarLast4, "1234");
+
+    const detail = await request(`/admin/kyc-review/${onboarding.payload.id}`, { token: admin.token });
+    assert.equal(detail.response.status, 200);
+    assert.equal(detail.payload.id, onboarding.payload.id);
+    assert.equal(detail.payload.aadhaarLast4, "1234");
+    assert.equal(Object.hasOwn(detail.payload, "aadhaarNumber"), false);
+
+    const unauthDocument = await fetch(`${baseUrl}/admin/kyc-review/${onboarding.payload.id}/documents/0`);
+    assert.equal(unauthDocument.status, 401);
+
+    const otherDocument = await request(`/admin/kyc-review/${onboarding.payload.id}/documents/0`, { token: other.token });
+    assert.equal(otherDocument.response.status, 403);
+
+    const traversalDocument = await request(`/admin/kyc-review/${onboarding.payload.id}/documents/..%2F..%2Fsecret`, { token: admin.token });
+    assert.ok(traversalDocument.response.status >= 400);
+
+    const wrongCompanyDocument = await request(`/admin/kyc-review/cmp_missing/documents/0`, { token: admin.token });
+    assert.equal(wrongCompanyDocument.response.status, 404);
+
+    const adminDocument = await fetch(`${baseUrl}/admin/kyc-review/${onboarding.payload.id}/documents/0`, {
+      headers: { Authorization: `Bearer ${admin.token}` },
+    });
+    assert.equal(adminDocument.status, 200);
+    assert.match(String(adminDocument.headers.get("content-type") || ""), /application\/pdf/);
+    assert.match(String(adminDocument.headers.get("content-disposition") || ""), /inline/);
+
+    const rejectMissingReason = await request(`/admin/kyc-review/${onboarding.payload.id}?action=reject`, {
+      method: "PATCH",
+      token: admin.token,
+      body: { reason: "" },
+    });
+    assert.equal(rejectMissingReason.response.status, 400);
+
+    const rejected = await request(`/admin/kyc-review/${onboarding.payload.id}?action=reject`, {
+      method: "PATCH",
+      token: admin.token,
+      body: { reason: "Document mismatch" },
+    });
+    assert.equal(rejected.response.status, 200);
+    assert.equal(rejected.payload.kycStatus, "rejected");
+    assert.equal(rejected.payload.reviewStatus, "rejected");
+
+    const rejectedUpgrade = await request("/subscriptions", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        plan: "standard",
+        amount: 199,
+        subscriberType: "company",
+      },
+    });
+    assert.equal(rejectedUpgrade.response.status, 403);
+    assert.match(rejectedUpgrade.payload.error, /rejected/i);
+
+    const approved = await request(`/admin/kyc-review/${onboarding.payload.id}?action=approve`, {
+      method: "PATCH",
+      token: admin.token,
+      body: { reason: "All documents verified" },
+    });
+    assert.equal(approved.response.status, 200);
+    assert.equal(approved.payload.kycStatus, "verified");
+    assert.equal(approved.payload.reviewStatus, "approved");
+
+    const approvedUpgrade = await request("/subscriptions", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        plan: "standard",
+        amount: 199,
+        subscriberType: "company",
+      },
+    });
+    assert.equal(approvedUpgrade.response.status, 201);
+    assert.notEqual(approvedUpgrade.payload.status, "kyc_pending");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
