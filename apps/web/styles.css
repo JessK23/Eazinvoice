@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   --gold: #d6a11e;
   --purple: #6f42c1;
   --blue: #2f6fed;
@@ -5948,7 +5948,8 @@ body {
   }
 }
 
-/* Reusable action-level error modal */
+/* Reusable action/status modal */
+.eaz-action-status-modal,
 .eaz-action-error-modal {
   width: min(520px, calc(100% - 28px));
   padding: 0;
@@ -5958,11 +5959,13 @@ body {
   color: #111827;
 }
 
+.eaz-action-status-modal::backdrop,
 .eaz-action-error-modal::backdrop {
   background: rgba(6, 26, 58, .62);
   backdrop-filter: blur(3px);
 }
 
+.eaz-action-status-card,
 .eaz-action-error-card {
   display: grid;
   gap: 12px;
@@ -5973,6 +5976,7 @@ body {
   box-shadow: 0 26px 70px rgba(9, 30, 66, .25);
 }
 
+.eaz-action-status-icon,
 .eaz-action-error-icon {
   width: 44px;
   height: 44px;
@@ -5980,18 +5984,39 @@ body {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  background: #fef3f2;
-  color: #b42318;
   font-size: 24px;
   font-weight: 800;
 }
 
+.eaz-action-status-modal[data-tone="error"] .eaz-action-status-icon {
+  background: #fef3f2;
+  color: #b42318;
+}
+
+.eaz-action-status-modal[data-tone="success"] .eaz-action-status-icon {
+  background: #ecfdf3;
+  color: #067647;
+}
+
+.eaz-action-status-modal[data-tone="warning"] .eaz-action-status-icon {
+  background: #fff7e6;
+  color: #b54708;
+}
+
+.eaz-action-status-modal[data-tone="info"] .eaz-action-status-icon {
+  background: #eff5ff;
+  color: #155eef;
+}
+
+.eaz-action-status-title,
 .eaz-action-error-title {
   margin: 0;
   color: #0b2b64;
   font-size: 1.45rem;
 }
 
+.eaz-action-status-message,
+.eaz-action-status-detail,
 .eaz-action-error-message,
 .eaz-action-error-detail {
   margin: 0;
@@ -5999,6 +6024,7 @@ body {
   line-height: 1.55;
 }
 
+.eaz-action-status-actions,
 .eaz-action-error-actions {
   display: flex;
   flex-wrap: wrap;
@@ -6006,20 +6032,26 @@ body {
   padding-top: 6px;
 }
 
+.eaz-action-status-actions .primary,
+.eaz-action-status-actions .ghost,
 .eaz-action-error-actions .primary,
 .eaz-action-error-actions .ghost {
   min-width: 124px;
 }
 
 @media (max-width: 560px) {
+  .eaz-action-status-modal,
   .eaz-action-error-modal {
     width: calc(100% - 20px);
   }
 
+  .eaz-action-status-card,
   .eaz-action-error-card {
     padding: 18px;
   }
 
+  .eaz-action-status-actions .primary,
+  .eaz-action-status-actions .ghost,
   .eaz-action-error-actions .primary,
   .eaz-action-error-actions .ghost {
     width: 100%;

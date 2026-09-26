@@ -1,5 +1,5 @@
 ﻿import { apiClient, money, requireSession } from "./common.js?v=20260924-oauth-cleanup";
-import { normalizeActionError, openActionErrorModal } from "./action-error-modal.js?v=20260926-action-error-modal";
+import { normalizeActionError, openActionStatusModal } from "./action-error-modal.js?v=20260926-action-error-modal";
 
 const form = document.getElementById("subscriptionForm");
 const status = document.getElementById("subscriptionStatus");
@@ -54,29 +54,85 @@ function isIndividualEntity(value) {
   return ["individual", "freelancer", "consultant"].includes(String(value || "").trim().toLowerCase());
 }
 
-function showActionError(error, context = {}) {
-  const normalized = normalizeActionError(error, context);
-  openActionErrorModal(normalized, {
+function showActionStatus(statusConfig = {}) {
+  openActionStatusModal(statusConfig, {
     onPrimary: () => {
-      if (normalized.actionKind === "focus_kyc") {
+      if (statusConfig.actionKind === "focus_kyc") {
         verificationGate?.removeAttribute("hidden");
         form?.scrollIntoView({ behavior: "smooth", block: "start" });
         form?.querySelector("input, select, textarea")?.focus();
         return;
       }
-      if (normalized.actionKind === "view_plans") {
+      if (statusConfig.actionKind === "view_plans") {
         planCards?.scrollIntoView({ behavior: "smooth", block: "start" });
         return;
       }
-      if (normalized.actionKind === "retry") {
+      if (statusConfig.actionKind === "retry") {
         form?.querySelector('button[type="submit"]')?.focus();
       }
     },
   });
+}
+
+function showActionError(error, context = {}) {
+  const normalized = normalizeActionError(error, context);
+  showActionStatus(normalized);
   const statusMessage = normalized.detail
     ? `${normalized.message} ${normalized.detail}`
     : normalized.message;
   setStatus(statusMessage, "error");
+}
+
+function resolveKycSaveSuccessStatus(company, existingCompany) {
+  const kycState = String(company?.reviewStatus || company?.kycStatus || "").toLowerCase();
+
+  if (kycState === "verified" || kycState === "approved") {
+    return {
+      tone: "success",
+      title: "Profile Saved",
+      message: "Your profile changes were saved successfully.",
+      detail: "Your KYC is already verified.",
+      actionLabel: "OK",
+      actionKind: "close",
+      showClose: false,
+    };
+  }
+
+  if (kycState === "pending" || kycState === "under_review" || kycState === "not_submitted") {
+    const isFirstSubmission = !existingCompany;
+    return {
+      tone: "success",
+      title: isFirstSubmission ? "KYC Submitted Successfully" : "KYC Update Saved",
+      message: "Your KYC information has been saved and submitted for verification.",
+      detail: "You can continue using your current plan while verification is pending. Paid-plan activation will become available after your KYC is approved.",
+      actionLabel: "OK",
+      actionKind: "close",
+      showClose: false,
+    };
+  }
+
+  if (kycState === "rejected") {
+    return {
+      tone: "warning",
+      title: "Profile Saved",
+      message: "Your profile changes were saved, but verification still needs attention.",
+      detail: "Update the requested KYC details and submit again for review.",
+      actionLabel: "Update KYC",
+      actionKind: "focus_kyc",
+      closeLabel: "Cancel",
+      showClose: true,
+    };
+  }
+
+  return {
+    tone: "success",
+    title: "Profile Saved",
+    message: "Your profile changes were saved successfully.",
+    detail: "Verification status remains based on review outcome.",
+    actionLabel: "OK",
+    actionKind: "close",
+    showClose: false,
+  };
 }
 
 function setFieldVisible(selector, visible) {
@@ -512,15 +568,17 @@ form?.addEventListener("submit", async (event) => {
       payload.documentNames = Array.isArray(existingCompany.documentNames) ? existingCompany.documentNames : [];
       payload.documentFiles = Array.isArray(existingCompany.documentFiles) ? existingCompany.documentFiles : [];
     }
+    let savedCompany;
     if (existingCompany?.id) {
-      await apiClient.updateCompany(token, existingCompany.id, payload);
+      savedCompany = await apiClient.updateCompany(token, existingCompany.id, payload);
     } else {
       payload.kycStatus = "pending";
-      await apiClient.createCompany(token, payload);
+      savedCompany = await apiClient.createCompany(token, payload);
     }
-    setStatus("Profile saved for paid plan review. You can now choose a paid yearly plan.", "success");
-    form.reset();
+    setStatus("");
     await refreshSubscriptionPage();
+    const successStatus = resolveKycSaveSuccessStatus(savedCompany, existingCompany);
+    showActionStatus(successStatus);
   } catch (error) {
     showActionError(error, { operation: "save_profile" });
   }
