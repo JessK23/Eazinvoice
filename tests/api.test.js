@@ -3460,6 +3460,115 @@ test("subscription KYC form has adaptive country and document fields", () => {
   assert.doesNotMatch(js, /Optional GST Document/);
   assert.match(js, /use Company or Group for GST\/company registration/);
 });
+test("subscription profile save uses update path when an existing business profile is present", () => {
+  const js = fs.readFileSync(path.join(process.cwd(), "apps", "web", "subscription.js"), "utf8");
+
+  assert.match(js, /apiClient\.listCompanies\(token\)/);
+  assert.match(js, /existingCompany\?\.id/);
+  assert.match(js, /apiClient\.updateCompany\(token, existingCompany\.id, payload\)/);
+  assert.match(js, /apiClient\.createCompany\(token, payload\)/);
+});
+
+test("free-plan business limit blocks only new company creation, not existing company profile updates", async () => {
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  try {
+    const otpResult = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email: "free-limit-update@example.com", phone: "9666600011" },
+    });
+    assert.equal(otpResult.response.status, 200);
+
+    const signupResult = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "Free Limit Update",
+        email: "free-limit-update@example.com",
+        password: "Secure123",
+        phone: "9666600011",
+        otp: otpResult.payload.devOtp,
+      },
+    });
+    assert.equal(signupResult.response.status, 201);
+    const token = signupResult.payload.token;
+
+    const firstCompany = await request("/companies", {
+      method: "POST",
+      token,
+      body: {
+        name: "Only Allowed Free Company",
+        entityType: "individual",
+        country: "IN",
+        kycCountry: "IN",
+        address: "1 Existing Lane",
+        addressProof: "aadhaar card",
+        panNumber: "ABCDE1234F",
+        aadhaarLast4: "1234",
+        documentNames: ["pan_existing.pdf", "id_existing.pdf"],
+        documentFiles: [
+          { storedName: "pan_existing.pdf", filePath: "data/uploads/pan_existing.pdf", mimeType: "application/pdf" },
+          { storedName: "id_existing.pdf", filePath: "data/uploads/id_existing.pdf", mimeType: "application/pdf" },
+        ],
+      },
+    });
+    assert.equal(firstCompany.response.status, 201);
+
+    const beforeUpdateList = await request("/companies", { token });
+    assert.equal(beforeUpdateList.response.status, 200);
+    assert.equal(beforeUpdateList.payload.length, 1);
+
+    const updatedProfile = await request(`/companies/${firstCompany.payload.id}`, {
+      method: "PATCH",
+      token,
+      body: {
+        address: "99 Updated Lane",
+        addressProof: "utility bill",
+      },
+    });
+    assert.equal(updatedProfile.response.status, 200);
+    assert.equal(updatedProfile.payload.id, firstCompany.payload.id);
+    assert.equal(updatedProfile.payload.address, "99 Updated Lane");
+
+    const afterUpdateList = await request("/companies", { token });
+    assert.equal(afterUpdateList.response.status, 200);
+    assert.equal(afterUpdateList.payload.length, 1);
+    assert.equal(afterUpdateList.payload[0].id, firstCompany.payload.id);
+
+    const blockedSecondCreate = await request("/companies", {
+      method: "POST",
+      token,
+      body: {
+        name: "Second Free Company",
+        entityType: "individual",
+        country: "IN",
+        kycCountry: "IN",
+        address: "2 Create Lane",
+        addressProof: "passport",
+        panNumber: "ABCDE1234F",
+        aadhaarLast4: "1234",
+        documentNames: ["pan_second.pdf", "id_second.pdf"],
+      },
+    });
+    assert.equal(blockedSecondCreate.response.status, 402);
+    assert.match(blockedSecondCreate.payload.error, /business profiles exceeds Free plan limit/i);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
 
 test("homepage pricing highlights Standard as the primary paid plan", () => {
   const html = fs.readFileSync(path.join(process.cwd(), "apps", "web", "index.html"), "utf8");

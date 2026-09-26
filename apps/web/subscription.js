@@ -1,4 +1,5 @@
 ﻿import { apiClient, money, requireSession } from "./common.js?v=20260924-oauth-cleanup";
+import { normalizeActionError, openActionErrorModal } from "./action-error-modal.js?v=20260926-action-error-modal";
 
 const form = document.getElementById("subscriptionForm");
 const status = document.getElementById("subscriptionStatus");
@@ -51,6 +52,31 @@ function isIndiaCountry(value) {
 
 function isIndividualEntity(value) {
   return ["individual", "freelancer", "consultant"].includes(String(value || "").trim().toLowerCase());
+}
+
+function showActionError(error, context = {}) {
+  const normalized = normalizeActionError(error, context);
+  openActionErrorModal(normalized, {
+    onPrimary: () => {
+      if (normalized.actionKind === "focus_kyc") {
+        verificationGate?.removeAttribute("hidden");
+        form?.scrollIntoView({ behavior: "smooth", block: "start" });
+        form?.querySelector("input, select, textarea")?.focus();
+        return;
+      }
+      if (normalized.actionKind === "view_plans") {
+        planCards?.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      if (normalized.actionKind === "retry") {
+        form?.querySelector('button[type="submit"]')?.focus();
+      }
+    },
+  });
+  const statusMessage = normalized.detail
+    ? `${normalized.message} ${normalized.detail}`
+    : normalized.message;
+  setStatus(statusMessage, "error");
 }
 
 function setFieldVisible(selector, visible) {
@@ -362,7 +388,7 @@ async function startPaidCheckout(plan) {
     await refreshSubscriptionPage();
   } catch (error) {
     if (/verification|KYC/i.test(error.message || "")) verificationGate?.removeAttribute("hidden");
-    setStatus(error.message || "Payment could not be completed. Please try again.", "error");
+    showActionError(error, { operation: "payment" });
   } finally {
     if (button) {
       button.disabled = false;
@@ -408,7 +434,7 @@ async function handleSubscriptionAction(action, subscriptionId) {
     }
     await refreshSubscriptionPage();
   } catch (error) {
-    setStatus(error.message || "Could not update subscription.", "error");
+    showActionError(error, { operation: "subscription_action" });
   }
 }
 
@@ -439,6 +465,8 @@ form?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const data = new FormData(form);
   try {
+    const companies = await apiClient.listCompanies(token);
+    const existingCompany = Array.isArray(companies) ? companies[0] : null;
     const entityType = data.get("entityType");
     const aadhaarNumber = String(data.get("aadhaarNumber") || "").replace(/\D/g, "");
     const hasAadhaar = aadhaarNumber.length >= 4;
@@ -460,7 +488,7 @@ form?.addEventListener("submit", async (event) => {
     const uploaded = fileEntries.filter(Boolean).length
       ? await apiClient.uploadDocuments(token, fileEntries.filter(Boolean))
       : { files: [] };
-    await apiClient.createCompany(token, {
+    const payload = {
       ownerUserId: null,
       name: data.get("entityName"),
       legalName: data.get("entityName"),
@@ -472,18 +500,28 @@ form?.addEventListener("submit", async (event) => {
       taxId: data.get("taxId"),
       registrationNumber: data.get("registrationNumber"),
       addressProof: data.get("addressProof"),
-      documentNames: uploaded.files.map((file) => file.storedName),
-      documentFiles: uploaded.files,
       logoUrl: data.get("logoUrl"),
-      kycStatus: "pending",
       kycMode: "document-review",
       kycCountry: data.get("country") || "IN",
       aadhaarLast4: hasAadhaar ? aadhaarNumber.slice(-4) : "",
-    });
+    };
+    if (uploaded.files.length) {
+      payload.documentNames = uploaded.files.map((file) => file.storedName);
+      payload.documentFiles = uploaded.files;
+    } else if (existingCompany) {
+      payload.documentNames = Array.isArray(existingCompany.documentNames) ? existingCompany.documentNames : [];
+      payload.documentFiles = Array.isArray(existingCompany.documentFiles) ? existingCompany.documentFiles : [];
+    }
+    if (existingCompany?.id) {
+      await apiClient.updateCompany(token, existingCompany.id, payload);
+    } else {
+      payload.kycStatus = "pending";
+      await apiClient.createCompany(token, payload);
+    }
     setStatus("Profile saved for paid plan review. You can now choose a paid yearly plan.", "success");
     form.reset();
     await refreshSubscriptionPage();
   } catch (error) {
-    setStatus(error.message || "Could not save profile.", "error");
+    showActionError(error, { operation: "save_profile" });
   }
 });

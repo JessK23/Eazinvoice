@@ -1,4 +1,4 @@
-# EazInvoice Web Application User Manual
+﻿# EazInvoice Web Application User Manual
 
 ## Purpose
 
@@ -81,3 +81,14 @@ Business users can manage:
 - Do not share OTPs, passwords, API keys, Razorpay secrets, or SMTP passwords.
 - Use role-based sub-user access instead of sharing the owner login.
 - Created/deleted records are preserved historically for audit integrity.
+
+## Action-Level Error Presentation
+
+EazInvoice distinguishes between:
+
+- **Field-level validation**: shown near the specific form field.
+- **Action-level failures**: shown in a centered error modal.
+
+The reusable action-level modal is used for failures such as profile save errors, upload failures, plan-limit denials, payment-start failures, and network/server failures. It provides safe, user-facing messages and does not expose raw technical internals (stack traces, SQL details, filesystem paths, or secrets).
+
+The backend remains authoritative for KYC states, plan limits, upload validation, and payment/entitlement gates. The modal only improves error presentation and does not bypass business rules.
