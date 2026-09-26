@@ -40,11 +40,27 @@ test("mobile business profile includes entity-aware tax and bank details fields"
   assert.match(mobileScript, /name="taxId"/);
   assert.match(mobileScript, /name="registrationNumber"/);
   assert.match(mobileScript, /aadhaarLast4/);
+  assert.match(mobileScript, /uploadBusinessDocuments\(selectedDocumentFiles\)/);
+  assert.match(mobileScript, /uploadDocuments\(files\)/);
+  assert.match(mobileScript, /\/uploads/);
+  assert.match(mobileScript, /documentNames: uploadedDocuments\.documentNames/);
+  assert.match(mobileScript, /documentFiles: uploadedDocuments\.documentFiles/);
+  assert.doesNotMatch(mobileScript, /aadhaarNumber:\s*rules\.requiresAadhaar/);
   assert.match(mobileScript, /requiresGstEntityType/);
   assert.match(mobileScript, /isIndiaCountry/);
   assert.match(mobileScript, /businessIdentityRules/);
   assert.match(mobileScript, /defaultCurrencyForCountry/);
   assert.match(mobileScript, /currency: businessDefaultCurrency\(\)/);
+});
+
+test("mobile KYC upload flow requires authoritative upload metadata and fails closed", () => {
+  assert.match(mobileScript, /function normalizeUploadedDocumentMetadata/);
+  assert.match(mobileScript, /storedName/);
+  assert.match(mobileScript, /filePath/);
+  assert.match(mobileScript, /mimeType/);
+  assert.match(mobileScript, /Document upload failed\. Please retry with valid PDF, PNG, or JPEG files\./);
+  assert.doesNotMatch(mobileScript, /documentFiles: supportingDocs/);
+  assert.doesNotMatch(mobileScript, /documentNames: supportingDocs/);
 });
 test("mobile auth exposes forgot password recovery using the shared reset API", () => {
   assert.match(mobileScript, /authMode/);

@@ -330,6 +330,9 @@ const api = {
   updateCompany(companyId, body) {
     return this.request(`/companies/${encodeURIComponent(companyId)}`, { method: "PATCH", body });
   },
+  uploadDocuments(files) {
+    return this.request("/uploads", { method: "POST", body: { files } });
+  },
   workspaces() {
     return this.request("/business/workspaces");
   },
@@ -521,6 +524,55 @@ function applyMePayload(payload) {
 
 function hasValue(value) {
   return typeof value === "string" ? Boolean(value.trim()) : value !== null && value !== undefined;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new MobileApiError(`Could not read document ${file?.name || ""}.`, 400, {}));
+    reader.readAsDataURL(file);
+  });
+}
+
+function normalizeUploadedDocumentMetadata(payload) {
+  const files = Array.isArray(payload?.files) ? payload.files : [];
+  const documentFiles = files
+    .filter((entry) => (
+      entry
+      && typeof entry.storedName === "string"
+      && entry.storedName.trim()
+      && typeof entry.filePath === "string"
+      && entry.filePath.trim()
+      && typeof entry.mimeType === "string"
+      && entry.mimeType.trim()
+    ))
+    .map((entry) => ({
+      storedName: entry.storedName,
+      filePath: entry.filePath,
+      mimeType: entry.mimeType,
+    }));
+  return {
+    documentFiles,
+    documentNames: documentFiles.map((entry) => entry.storedName),
+  };
+}
+
+async function uploadBusinessDocuments(files = []) {
+  if (!Array.isArray(files) || files.length === 0) return { documentNames: [], documentFiles: [] };
+
+  const uploadPayload = await Promise.all(files.map(async (file) => ({
+    fileName: String(file?.name || "").trim(),
+    mimeType: String(file?.type || "").trim(),
+    dataUrl: await readFileAsDataUrl(file),
+  })));
+
+  const response = await api.uploadDocuments(uploadPayload);
+  const normalized = normalizeUploadedDocumentMetadata(response);
+  if (normalized.documentFiles.length !== files.length) {
+    throw new MobileApiError("Document upload failed. Please retry with valid PDF, PNG, or JPEG files.", 400, response || {});
+  }
+  return normalized;
 }
 
 function missingFields(record, requiredFields) {
@@ -1730,9 +1782,7 @@ async function handleForm(name, form) {
     const registrationNumber = value("registrationNumber").toUpperCase();
     const address = value("address");
     const addressProof = value("addressProof");
-    const supportingDocs = Array.from(form.querySelector("input[name=\"documentFiles\"]")?.files || [])
-      .map((file) => String(file?.name || "").trim())
-      .filter(Boolean);
+    const selectedDocumentFiles = Array.from(form.querySelector("input[name=\"documentFiles\"]")?.files || []);
     if (!value("name")) {
       setStatus("Business/Consultant/Individual name is required.", "error", "account");
       return;
@@ -1757,7 +1807,7 @@ async function handleForm(name, form) {
       setStatus("Business address is required.", "error", "account");
       return;
     }
-    if (!addressProof && !supportingDocs.length) {
+    if (!addressProof && !selectedDocumentFiles.length) {
       setStatus("Address proof reference or supporting document is required.", "error", "account");
       return;
     }
@@ -1782,6 +1832,7 @@ async function handleForm(name, form) {
       return;
     }
     await withBusy(async () => {
+      const uploadedDocuments = await uploadBusinessDocuments(selectedDocumentFiles);
       const payload = {
         profilePurpose: company?.id ? "account-settings" : "onboarding",
         name: value("name"),
@@ -1796,10 +1847,9 @@ async function handleForm(name, form) {
         registrationNumber: !rules.india && !rules.individual ? registrationNumber : "",
         address,
         addressProof,
-        aadhaarNumber: rules.requiresAadhaar ? aadhaarDigits : "",
         kycCountry: country,
-        documentNames: supportingDocs,
-        documentFiles: supportingDocs,
+        documentNames: uploadedDocuments.documentNames,
+        documentFiles: uploadedDocuments.documentFiles,
       };
       const updated = company?.id
         ? await api.updateCompany(company.id, payload)
