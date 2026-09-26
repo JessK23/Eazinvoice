@@ -5106,6 +5106,122 @@ test("profile requirements endpoint stays aligned with authoritative resolver", 
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("India individual KYC with aadhaarLast4 persists and clears paid-upgrade completeness blocker", async () => {
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { response, payload: await response.json() };
+  }
+
+  try {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email: "aadhaar-last4@example.com", phone: "9555512345" },
+    });
+
+    const signup = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name: "Aadhaar Last4",
+        email: "aadhaar-last4@example.com",
+        password: "Secure123",
+        phone: "9555512345",
+        otp: otp.payload.devOtp,
+      },
+    });
+    assert.equal(signup.response.status, 201);
+
+    const createCompany = await request("/companies", {
+      method: "POST",
+      token: signup.payload.token,
+      body: {
+        name: "Aadhaar Last4 Co",
+        businessType: "consulting",
+        entityType: "individual",
+        country: "IN",
+        kycCountry: "IN",
+        panNumber: "ABCDE1234F",
+        aadhaarLast4: "1234",
+        address: "1 Last4 Street",
+        addressProof: "aadhaar card",
+        documentNames: ["pan_doc.pdf", "id_doc.pdf"],
+        documentFiles: [
+          { storedName: "pan_doc.pdf", filePath: "/data/uploads/pan_doc.pdf", mimeType: "application/pdf" },
+          { storedName: "id_doc.pdf", filePath: "/data/uploads/id_doc.pdf", mimeType: "application/pdf" },
+        ],
+      },
+    });
+    assert.equal(createCompany.response.status, 201);
+    assert.equal(createCompany.payload.aadhaarLast4, "1234");
+
+    const companies = await request("/companies", { token: signup.payload.token });
+    assert.equal(companies.response.status, 200);
+    const persisted = companies.payload.find((entry) => entry.id === createCompany.payload.id);
+    assert.ok(persisted);
+    assert.equal(persisted.aadhaarLast4, "1234");
+    assert.deepEqual(persisted.documentNames, ["pan_doc.pdf", "id_doc.pdf"]);
+    assert.equal(Array.isArray(persisted.documentFiles), true);
+    assert.equal(persisted.documentFiles.length, 2);
+
+    const loginOtp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "login", email: "aadhaar-last4@example.com", phone: "9555512345" },
+    });
+    assert.equal(loginOtp.response.status, 200);
+
+    const login = await request("/auth/login", {
+      method: "POST",
+      body: {
+        email: "aadhaar-last4@example.com",
+        password: "Secure123",
+        otp: loginOtp.payload.devOtp,
+      },
+    });
+    assert.equal(login.response.status, 200);
+
+    const companiesAfterRelogin = await request("/companies", { token: login.payload.token });
+    assert.equal(companiesAfterRelogin.response.status, 200);
+    const persistedAfterRelogin = companiesAfterRelogin.payload.find((entry) => entry.id === createCompany.payload.id);
+    assert.ok(persistedAfterRelogin);
+    assert.equal(persistedAfterRelogin.aadhaarLast4, "1234");
+    assert.equal(Array.isArray(persistedAfterRelogin.documentFiles), true);
+    assert.equal(persistedAfterRelogin.documentFiles.length, 2);
+
+    const requirements = await request(`/profile/requirements?businessId=${encodeURIComponent(createCompany.payload.id)}&kyc=true`, {
+      token: signup.payload.token,
+    });
+    assert.equal(requirements.response.status, 200);
+    assert.equal(requirements.payload.kyc.complete, true);
+    assert.equal((requirements.payload.kyc.missingFields || []).includes("aadhaarLast4"), false);
+
+    const paidAttempt = await request("/subscriptions", {
+      method: "POST",
+      token: signup.payload.token,
+      body: {
+        plan: "standard",
+        amount: 100,
+        currency: "INR",
+        companyId: createCompany.payload.id,
+      },
+    });
+    assert.equal(paidAttempt.response.status, 201);
+    assert.equal(paidAttempt.payload.status, "kyc_pending");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("razorpay webhooks require configured signature verification", async () => {
   const previousWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
   process.env.RAZORPAY_WEBHOOK_SECRET = "webhook_secret_for_signature";

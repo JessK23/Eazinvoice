@@ -1069,6 +1069,11 @@ function isIndividualKycEntity(entityType) {
   return isIndividualEntity(entityType);
 }
 
+function normalizeAadhaarLast4(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits ? digits.slice(-4) : "";
+}
+
 function resolveKycDocumentType({ country, entityType }) {
   const india = isIndiaKycCountry(country);
   const individual = isIndividualKycEntity(entityType);
@@ -1083,6 +1088,7 @@ function validatePaidKycInput(body = {}) {
   const entityType = normalizeEntityType(body.entityType || "company");
   const individual = isIndividualKycEntity(entityType);
   const india = isIndiaKycCountry(country);
+  const aadhaarLast4 = normalizeAadhaarLast4(body.aadhaarLast4 || body.aadhaarNumber);
 
   const requirement = resolveProfileRequirements({
     business: {
@@ -1091,6 +1097,7 @@ function validatePaidKycInput(body = {}) {
       kycCountry: country,
       entityType,
       businessType: entityType,
+      aadhaarLast4,
     },
     purpose: REQUIREMENT_PURPOSES.KYC_PAID_FEATURE,
   });
@@ -1102,7 +1109,7 @@ function validatePaidKycInput(body = {}) {
   if (missingFields.has("address") || hasMissingAnyOf(["addressProof", "documentNames", "documentFiles"])) {
     return { ok: false, error: "KYC requires address and address proof or an uploaded document." };
   }
-  if (india && individual && (missingFields.has("panNumber") || missingFields.has("aadhaarNumber"))) {
+  if (india && individual && (missingFields.has("panNumber") || missingFields.has("aadhaarLast4"))) {
     return { ok: false, error: "India individual, freelancer, or consultant KYC requires PAN, Aadhaar last 4, address and address proof. GST is not required." };
   }
   if (india && !individual && hasMissingAnyOf(["panNumber", "gstNumber"])) {
@@ -1118,6 +1125,7 @@ function validatePaidKycInput(body = {}) {
     ok: true,
     country,
     entityType,
+    aadhaarLast4,
     kycDocumentType: resolveKycDocumentType({ country, entityType }),
   };
 }
@@ -3226,6 +3234,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
         country: kycValidation.country || normalizeKycCountry(body.country || body.kycCountry),
         kycCountry: kycValidation.country || normalizeKycCountry(body.country || body.kycCountry),
         gstNumber: isIndividualKycEntity(entityType) ? "" : body.gstNumber,
+        aadhaarLast4: kycValidation.aadhaarLast4 || normalizeAadhaarLast4(body.aadhaarLast4 || body.aadhaarNumber),
         kycStatus: isOnboardingProfile ? "not_submitted" : "pending",
         reviewStatus: "pending",
         reviewedAt: "",
@@ -3251,6 +3260,9 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
         workspaceOwnerUserId: workspaceOwnerUserId || existingCompany.ownerUserId,
       }, "manageSettings");
       const body = await readBody(req);
+      if (body.aadhaarLast4 === undefined && body.aadhaarNumber !== undefined) {
+        body.aadhaarLast4 = normalizeAadhaarLast4(body.aadhaarNumber);
+      }
       const updated = api.updateCompany(companyId, body, {
         user,
         previewPlan,

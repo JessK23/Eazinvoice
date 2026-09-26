@@ -67,7 +67,7 @@ function kycRequirement(country, entityType) {
   const anyOf = [["addressProof", "documentNames", "documentFiles"]];
 
   if (normalizedCountry === "IN") {
-    if (individual) requiredFields.push("panNumber", "aadhaarNumber");
+    if (individual) requiredFields.push("panNumber", "aadhaarLast4");
     else anyOf.push(["panNumber", "gstNumber"]);
     return {
       requiredFields,

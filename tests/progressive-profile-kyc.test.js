@@ -122,7 +122,7 @@ test("10. Country/entity changes recalculate purpose-specific requirement sets",
     business: { country: "US", entityType: "company" },
     purpose: REQUIREMENT_PURPOSES.KYC_PAID_FEATURE,
   });
-  assert.ok(indiaIndividual.requiredFields.includes("aadhaarNumber"));
+  assert.ok(indiaIndividual.requiredFields.includes("aadhaarLast4"));
   assert.ok(internationalCompany.anyOf.some((group) => group.includes("registrationNumber")));
   assert.notDeepEqual(indiaIndividual, internationalCompany);
 });
