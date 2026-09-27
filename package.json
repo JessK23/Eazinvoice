@@ -22,6 +22,8 @@
     "db:verify-entitlements": "node scripts/postgres-verify-entitlements.mjs",
     "db:verify-reports": "node scripts/postgres-verify-reports.mjs",
     "db:verify-state": "node scripts/postgres-verify-state.mjs",
+    "document-storage:azure-check": "node scripts/azure-document-storage-check.mjs",
+    "document-storage:local-check": "node scripts/local-document-storage-check.mjs",
     "audit:subscriptions": "node scripts/subscription-entitlement-audit.mjs",
     "mobile:check": "node --check apps/mobile/app.js && node scripts/mobile-p23-check.mjs",
     "mobile:sync": "npx cap sync android",

@@ -201,6 +201,7 @@ test("P2-1 production server startup refuses JSON fallback before opening a list
     API_KEY_HASH_SECRET: process.env.API_KEY_HASH_SECRET,
     ADMIN_ACCESS_KEY: process.env.ADMIN_ACCESS_KEY,
     CORS_ALLOWED_ORIGINS: process.env.CORS_ALLOWED_ORIGINS,
+    EAZINVOICE_UPLOADS_DIR: process.env.EAZINVOICE_UPLOADS_DIR,
   };
   try {
     process.env.NODE_ENV = "production";
@@ -233,7 +234,9 @@ test("P2-1 readiness endpoint reports unsafe production without exposing databas
     API_KEY_HASH_SECRET: process.env.API_KEY_HASH_SECRET,
     ADMIN_ACCESS_KEY: process.env.ADMIN_ACCESS_KEY,
     CORS_ALLOWED_ORIGINS: process.env.CORS_ALLOWED_ORIGINS,
+    EAZINVOICE_UPLOADS_DIR: process.env.EAZINVOICE_UPLOADS_DIR,
   };
+  const uploadsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "eazinvoice-readyz-uploads-"));
   try {
     process.env.NODE_ENV = "production";
     process.env.EAZINVOICE_ENV = "production";
@@ -243,8 +246,9 @@ test("P2-1 readiness endpoint reports unsafe production without exposing databas
     process.env.API_KEY_HASH_SECRET = "weak";
     process.env.ADMIN_ACCESS_KEY = "eazinvoice-admin";
     process.env.CORS_ALLOWED_ORIGINS = "http://localhost:3001";
+    process.env.EAZINVOICE_UPLOADS_DIR = uploadsRoot;
     const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
+    const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
     await new Promise((resolve) => server.listen(0, resolve));
     try {
       const { port } = server.address();
@@ -263,6 +267,7 @@ test("P2-1 readiness endpoint reports unsafe production without exposing databas
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     });
+    fs.rmSync(uploadsRoot, { recursive: true, force: true });
   }
 });
 

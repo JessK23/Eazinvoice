@@ -19,6 +19,13 @@ function sha256Hex(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
 
+function isNotFoundError(error) {
+  const status = Number(error?.statusCode || error?.status || 0);
+  const code = asText(error?.code).toLowerCase();
+  return status === 404
+    || ["blobnotfound", "resourcenotfound", "containernotfound"].includes(code);
+}
+
 function ensureContainerName(value = "") {
   const name = asText(value).toLowerCase();
   if (!name) throw new Error("Azure document storage container is required.");
@@ -128,10 +135,23 @@ export function createAzureBlobDocumentStorage(options = {}) {
         const container = await loadContainerClient();
         const blob = container.getBlockBlobClient(key);
         return await blob.exists();
-      } catch {
-        return false;
+      } catch (error) {
+        if (isNotFoundError(error)) return false;
+        throw error;
       }
     },
+
+    async stat(storageKey) {
+      const key = normalizeStorageKey(storageKey);
+      try {
+        return await this.head(key);
+      } catch (error) {
+        if (isNotFoundError(error)) return null;
+        throw error;
+      }
+    },
+
+    isNotFoundError,
 
     async archive(storageKey) {
       const key = normalizeStorageKey(storageKey);

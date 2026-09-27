@@ -351,6 +351,8 @@ Phase 2B business-document archive integration stores authoritative generated PD
 Phase 2C durable object-storage readiness keeps DocumentService as the single business-facing abstraction while extending createDocumentStorage(...) to support provider selection via EAZINVOICE_DOCUMENT_STORAGE_PROVIDER. Local development and test flows continue using LocalDocumentStorage (local). Production can now be configured to use an Azure Blob adapter (azure) with private-container server-side credentials (EAZINVOICE_AZURE_STORAGE_CONNECTION_STRING, EAZINVOICE_AZURE_STORAGE_CONTAINER). If azure is explicitly selected without required configuration, startup fails closed instead of silently falling back to local filesystem storage.
 
 Security and integrity remain unchanged across providers: server-generated storage keys, tenant/business authorization through DocumentService, registry authority in eazinvoice_documents, SHA-256 verification on read, and fail-closed handling for missing or tampered objects. KYC and finalized Invoice/PO archival continue calling DocumentService and do not bypass authorization with public object URLs.
+
+Phase 2F Render persistent-disk activation keeps provider `local` but adds production fail-closed root requirements. In production, local document storage must use an explicitly configured persistent root (`EAZINVOICE_UPLOADS_DIR`) and startup validates read/write access. If explicit root configuration is missing or invalid, startup fails closed instead of falling back to repository-relative or ephemeral filesystem paths.
 ## Release And Verification
 
 Implemented scripts include:

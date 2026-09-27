@@ -52,6 +52,22 @@ function statusForStoredObject(currentStatus) {
   return normalizeDocumentStatus(currentStatus || DOCUMENT_STATUSES.AVAILABLE);
 }
 
+function normalizeProvider(value = "") {
+  return asText(value).toLowerCase();
+}
+
+function isProviderMismatch(document = {}, storage = {}) {
+  const recordProvider = normalizeProvider(document.storageProvider);
+  const activeProvider = normalizeProvider(storage.provider);
+  return Boolean(recordProvider && activeProvider && recordProvider !== activeProvider);
+}
+
+function storageUnavailableError() {
+  const error = new Error("Document storage is temporarily unavailable. Please retry.");
+  error.statusCode = 503;
+  return error;
+}
+
 export function createDocumentService({ api, storage }) {
   if (!api) throw new Error("DocumentService requires api");
   if (!storage) throw new Error("DocumentService requires storage adapter");
@@ -118,7 +134,15 @@ export function createDocumentService({ api, storage }) {
           idempotencyKey: normalizedIdempotencyKey,
         });
         if (existing) {
-          const exists = await storage.exists(existing.storageKey).catch(() => false);
+          if (isProviderMismatch(existing, storage)) {
+            return existing;
+          }
+          let exists = false;
+          try {
+            exists = await storage.exists(existing.storageKey);
+          } catch {
+            throw storageUnavailableError();
+          }
           if (!exists && existing.status === DOCUMENT_STATUSES.AVAILABLE) {
             return api.updateDocumentRecord(existing.id, {
               status: DOCUMENT_STATUSES.MISSING,
@@ -204,14 +228,29 @@ export function createDocumentService({ api, storage }) {
         error.statusCode = 410;
         throw error;
       }
-      const exists = await storage.exists(document.storageKey).catch(() => false);
+      if (isProviderMismatch(document, storage)) {
+        const error = new Error("Document storage provider mismatch. Historical documents require migration before this provider switch.");
+        error.statusCode = 409;
+        throw error;
+      }
+      let exists = false;
+      try {
+        exists = await storage.exists(document.storageKey);
+      } catch {
+        throw storageUnavailableError();
+      }
       if (!exists) {
         api.updateDocumentRecord(document.id, { status: DOCUMENT_STATUSES.MISSING });
         const error = new Error("Document is no longer available. Ask the user to re-upload the document.");
         error.statusCode = 410;
         throw error;
       }
-      const file = await storage.get(document.storageKey);
+      let file = null;
+      try {
+        file = await storage.get(document.storageKey);
+      } catch {
+        throw storageUnavailableError();
+      }
       const checksum = generateChecksum(file.bytes);
       if (checksum.checksumSha256 !== asText(document.checksumSha256)) {
         api.updateDocumentRecord(document.id, { status: DOCUMENT_STATUSES.QUARANTINED });
@@ -233,7 +272,23 @@ export function createDocumentService({ api, storage }) {
       if (!document) {
         return { ok: false, status: "not_found", documentId };
       }
-      const exists = await storage.exists(document.storageKey).catch(() => false);
+      if (isProviderMismatch(document, storage)) {
+        return {
+          ok: false,
+          status: "provider_mismatch",
+          document,
+        };
+      }
+      let exists = false;
+      try {
+        exists = await storage.exists(document.storageKey);
+      } catch {
+        return {
+          ok: false,
+          status: "storage_error",
+          document,
+        };
+      }
       if (!exists) {
         const updated = api.updateDocumentRecord(document.id, { status: DOCUMENT_STATUSES.MISSING });
         return {
@@ -242,7 +297,16 @@ export function createDocumentService({ api, storage }) {
           document: updated || document,
         };
       }
-      const file = await storage.get(document.storageKey).catch(() => null);
+      let file = null;
+      try {
+        file = await storage.get(document.storageKey);
+      } catch {
+        return {
+          ok: false,
+          status: "storage_error",
+          document,
+        };
+      }
       if (!file) {
         const updated = api.updateDocumentRecord(document.id, { status: DOCUMENT_STATUSES.MISSING });
         return {
@@ -280,6 +344,8 @@ export function createDocumentService({ api, storage }) {
         total: results.length,
         missing: results.filter((entry) => entry.status === "missing").length,
         checksumMismatches: results.filter((entry) => entry.status === "checksum_mismatch").length,
+        providerMismatches: results.filter((entry) => entry.status === "provider_mismatch").length,
+        storageErrors: results.filter((entry) => entry.status === "storage_error").length,
         available: results.filter((entry) => entry.status === "available").length,
         results,
       };

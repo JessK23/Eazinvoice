@@ -1,4 +1,5 @@
-﻿import crypto from "node:crypto";
+import crypto from "node:crypto";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -31,8 +32,46 @@ function sha256Hex(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
 
+function asText(value = "") {
+  return String(value || "").trim();
+}
+
+export function validateLocalDocumentStorageRoot(rootDir, options = {}) {
+  const absoluteRoot = path.resolve(String(rootDir || path.join(process.cwd(), "data", "uploads")));
+  const production = Boolean(options.production);
+
+  if (!path.isAbsolute(absoluteRoot)) {
+    throw new Error("Document storage root must resolve to an absolute path.");
+  }
+
+  const cwd = path.resolve(process.cwd());
+  if (production && (absoluteRoot === cwd || absoluteRoot.startsWith(`${cwd}${path.sep}`))) {
+    throw new Error("Production local document storage root must be outside the application source directory.");
+  }
+
+  try {
+    fsSync.mkdirSync(absoluteRoot, { recursive: true });
+    const stats = fsSync.statSync(absoluteRoot);
+    if (!stats.isDirectory()) {
+      throw new Error("Configured document storage root is not a directory.");
+    }
+    fsSync.accessSync(absoluteRoot, fsSync.constants.R_OK | fsSync.constants.W_OK);
+    const probeName = `.eazinvoice-storage-probe-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+    const probePath = path.join(absoluteRoot, probeName);
+    fsSync.writeFileSync(probePath, "probe", { flag: "wx" });
+    fsSync.accessSync(probePath, fsSync.constants.R_OK | fsSync.constants.W_OK);
+    fsSync.rmSync(probePath, { force: true });
+  } catch (error) {
+    throw new Error(`Document storage root validation failed for ${absoluteRoot}: ${asText(error?.message || error)}`);
+  }
+
+  return absoluteRoot;
+}
+
 export function createLocalDocumentStorage(options = {}) {
-  const rootDir = path.resolve(String(options.rootDir || path.join(process.cwd(), "data", "uploads")));
+  const rootDir = validateLocalDocumentStorageRoot(options.rootDir || path.join(process.cwd(), "data", "uploads"), {
+    production: Boolean(options.production),
+  });
   const provider = String(options.provider || "local").trim().toLowerCase();
 
   return {
