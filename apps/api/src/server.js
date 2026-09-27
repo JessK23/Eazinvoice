@@ -42,6 +42,8 @@ import { sendSmtpMail } from "./smtp.js";
 import { UploadValidationError, validateUploadInput } from "./upload-security.js";
 import { createDocumentStorage, resolveUploadsRoot } from "./document-storage.js";
 import { createDocumentService } from "./document-service.js";
+import { generateBusinessDocumentPdfBytes } from "./business-document-pdf.js";
+import { archiveAuthoritativeBusinessDocumentPdf, findArchivedBusinessDocument, resolveBusinessDocumentFileName, safePdfDownloadName } from "./business-document-archive.js";
 
 function loadLocalEnv() {
   const envPath = [".env", ".env.example"]
@@ -2013,6 +2015,56 @@ export function createServer(options = {}) {
     }
   }
 
+  async function sendArchivedBusinessDocumentPdf(res, user, record, kind) {
+    const businessId = String(record?.businessId || "").trim();
+    const archived = findArchivedBusinessDocument(api, {
+      businessId,
+      kind,
+      relatedEntityId: record?.id || "",
+    });
+    if (!archived) {
+      sendJson(res, 404, { error: "Authoritative PDF archive not found. Finalize/issue and retry archival." });
+      return;
+    }
+
+    try {
+      const opened = await documentService.openDocumentForBusiness(archived.id, {
+        user,
+        businessId,
+      });
+      const fileName = safePdfDownloadName(archived.originalFilename || resolveBusinessDocumentFileName(kind, record));
+      res.writeHead(200, {
+        ...securityHeaders({
+          "Content-Type": "application/pdf",
+          "Content-Disposition": `inline; filename="${fileName}"`,
+          "Cache-Control": "no-store",
+        }),
+        ...(res.eazinvoiceCorsHeaders || {}),
+        "X-Content-Type-Options": "nosniff",
+      });
+      res.end(opened.bytes);
+      return;
+    } catch (error) {
+      const statusCode = Number(error?.statusCode || 410);
+      if (statusCode === 409) {
+        sendJson(res, 410, { error: "Authoritative PDF failed integrity verification and is unavailable. Retry archival." });
+        return;
+      }
+      if (statusCode === 410) {
+        sendJson(res, 410, { error: "Authoritative PDF is no longer available. Retry archival." });
+        return;
+      }
+      if (statusCode === 401) {
+        sendJson(res, 401, { error: "Authentication required" });
+        return;
+      }
+      if (statusCode === 403) {
+        sendJson(res, 403, { error: "Forbidden" });
+        return;
+      }
+      sendJson(res, 404, { error: "Authoritative PDF archive not found." });
+    }
+  }
   async function sendDocumentEmail(req, user, previewPlan, type, id, body = {}) {
     const workspace = api.resolveRecordsWorkspaceAccess(user, {
       previewPlan,
@@ -6295,7 +6347,16 @@ if (url.pathname === "/customers" && req.method === "GET") {
       try {
         const invoice = api.finalizeInvoice(id, body, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
         const reportSync = await syncInvoiceReportRows(invoice, "invoice-finalize");
-        sendJson(res, 200, { ...invoice, reportSync });
+        const archive = await archiveAuthoritativeBusinessDocumentPdf({
+          api,
+          documentService,
+          pdfBytes: generateBusinessDocumentPdfBytes(invoice, "invoice"),
+          kind: "invoice",
+          record: invoice,
+          user,
+          businessId: workspace.businessId || invoice.businessId,
+        });
+        sendJson(res, 200, { ...invoice, reportSync, authoritativePdfArchive: archive });
       } catch (error) {
         sendJson(res, 400, { error: error.message });
       }
@@ -6314,6 +6375,21 @@ if (url.pathname === "/customers" && req.method === "GET") {
         return;
       }
       sendDocumentPrintHtml(res, invoice, "invoice");
+      return;
+    }
+
+    if (url.pathname.startsWith("/invoices/") && url.pathname.endsWith("/archived-pdf") && req.method === "GET") {
+      const id = url.pathname.split("/")[2];
+      const invoice = api.getInvoice(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
+      });
+      if (!invoice) {
+        sendJson(res, 404, { error: "Not found" });
+        return;
+      }
+      await sendArchivedBusinessDocumentPdf(res, user, invoice, "invoice");
       return;
     }
 
@@ -6618,7 +6694,16 @@ if (url.pathname === "/customers" && req.method === "GET") {
       try {
         const purchaseOrder = api.issuePurchaseOrder(id, body, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
         const reportSync = await syncPurchaseOrderReportRows(purchaseOrder, "purchase-order-issue");
-        sendJson(res, 200, { ...purchaseOrder, reportSync });
+        const archive = await archiveAuthoritativeBusinessDocumentPdf({
+          api,
+          documentService,
+          pdfBytes: generateBusinessDocumentPdfBytes(purchaseOrder, "purchase_order"),
+          kind: "purchase_order",
+          record: purchaseOrder,
+          user,
+          businessId: workspace.businessId || purchaseOrder.businessId,
+        });
+        sendJson(res, 200, { ...purchaseOrder, reportSync, authoritativePdfArchive: archive });
       } catch (error) {
         sendJson(res, 400, { error: error.message });
       }
@@ -6637,6 +6722,21 @@ if (url.pathname === "/customers" && req.method === "GET") {
         return;
       }
       sendDocumentPrintHtml(res, purchaseOrder, "purchase_order");
+      return;
+    }
+
+    if (url.pathname.startsWith("/purchase-orders/") && url.pathname.endsWith("/archived-pdf") && req.method === "GET") {
+      const id = url.pathname.split("/")[2];
+      const purchaseOrder = api.getPurchaseOrder(id, user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
+      });
+      if (!purchaseOrder) {
+        sendJson(res, 404, { error: "Not found" });
+        return;
+      }
+      await sendArchivedBusinessDocumentPdf(res, user, purchaseOrder, "purchase_order");
       return;
     }
 

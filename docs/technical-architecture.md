@@ -345,6 +345,8 @@ Configuration behavior:
 This Phase 1 does **not** implement a production object adapter yet. Production durable object storage remains the target architecture for later phases.
 
 Phase 2A KYC integration uses the central DocumentService for new KYC uploads via `/kyc/documents`, with server-generated `document_id` references (`kycDocuments`) treated as authoritative for Admin review retrieval. Legacy `documentNames`/`documentFiles` remain dual-read compatibility fields for pre-migration records. Upload/save still does not approve KYC; explicit reviewer action remains authoritative for verification.
+
+Phase 2B business-document archive integration stores authoritative generated PDF snapshots for finalized/issued Invoice and Purchase/Work Order records through DocumentService. Preview routes (/invoices/:id/pdf, /purchase-orders/:id/pdf) remain non-authoritative HTML print previews and do not allocate numbers, post accounting, or create archive records. Finalize/issue endpoints now perform idempotent archival using deterministic keys tied to the authoritative record identity and finalized marker. Archived retrieval uses secured domain routes (/invoices/:id/archived-pdf, /purchase-orders/:id/archived-pdf) with tenant authorization, checksum verification, and fail-closed missing/quarantine handling.
 ## Release And Verification
 
 Implemented scripts include:

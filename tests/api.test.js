@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -13,6 +13,7 @@ import { createStore } from "../apps/api/src/store.js";
 import { createServer, createServerAsync } from "../apps/api/src/server.js";
 import { REQUIREMENT_PURPOSES, resolveProfileRequirements } from "../apps/api/src/profile-requirements.js";
 import { getAiAgentToolMatrix } from "../apps/api/src/ai-agent.js";
+import { resolveUploadsRoot } from "../apps/api/src/document-storage.js";
 
 const TEST_ADMIN_EMAIL = "support@eazinvoice.com";
 
@@ -242,7 +243,8 @@ test("P2-1 readiness endpoint reports unsafe production without exposing databas
     process.env.API_KEY_HASH_SECRET = "weak";
     process.env.ADMIN_ACCESS_KEY = "eazinvoice-admin";
     process.env.CORS_ALLOWED_ORIGINS = "http://localhost:3001";
-    const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+    const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
     await new Promise((resolve) => server.listen(0, resolve));
     try {
       const { port } = server.address();
@@ -492,7 +494,8 @@ test("P2-3G invoice archive and restore preserve accounting, payments, and final
 });
 
 test("P2-3G print preview and sharing gates are presentation-only", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const { port } = server.address();
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -571,6 +574,215 @@ test("P2-3G print preview and sharing gates are presentation-only", async () => 
     assert.match(email.payload.error, /Standard|paid/i);
     const finalList = await request(`/invoices?businessId=${encodeURIComponent(businessId)}`, { token });
     assert.equal(finalList.payload.filter((entry) => entry.id === finalized.payload.id).length, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("P2-4B authoritative archived invoice PDFs are idempotent, tenant-scoped, and fail closed", async () => {
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const port = server.address().port;
+  const baseUrl = "http://127.0.0.1:" + port;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(baseUrl + path, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: "Bearer " + token } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await response.text();
+    let payload = {};
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = { text };
+      }
+    }
+    return { response, payload };
+  }
+
+  try {
+    const otp = await request("/auth/email-otp/request", { method: "POST", body: { email: "p24b-archive@example.com", mode: "signup" } });
+    const signup = await request("/auth/signup", {
+      method: "POST",
+      body: { name: "P24B Archive", email: "p24b-archive@example.com", password: "Passw0rd!", otp: otp.payload.devOtp },
+    });
+    const token = signup.payload.token;
+    const me = await request("/me", { token });
+    const businessId = me.payload.business?.id || me.payload.user?.businessId || "";
+
+    const draft = await request("/invoices", {
+      method: "POST",
+      token,
+      body: {
+        businessId,
+        status: "draft",
+        invoiceDate: "2026-09-01",
+        billToName: "Archive Customer",
+        items: [{ description: "Archive service", quantity: 1, rate: 1000, gstRate: 18 }],
+      },
+    });
+    assert.equal(draft.response.status, 201);
+    assert.equal(draft.payload.invoiceNumber || "", "");
+
+    const preview = await request("/invoices/" + encodeURIComponent(draft.payload.id) + "/pdf?businessId=" + encodeURIComponent(businessId), { token });
+    assert.equal(preview.response.status, 200);
+    assert.match(String(preview.payload.text || ""), /Print \/ Save as PDF/);
+
+    const finalized = await request("/invoices/" + encodeURIComponent(draft.payload.id) + "/finalize", {
+      method: "POST",
+      token,
+      body: { businessId, idempotencyKey: "p24b-archive-finalize" },
+    });
+    assert.equal(finalized.response.status, 200);
+    assert.equal(finalized.payload.status, "issued");
+    assert.equal(String(finalized.payload.authoritativePdfArchive?.status || ""), "available");
+
+    const replay = await request("/invoices/" + encodeURIComponent(draft.payload.id) + "/finalize", {
+      method: "POST",
+      token,
+      body: { businessId, idempotencyKey: "p24b-archive-finalize" },
+    });
+    assert.equal(replay.response.status, 200);
+    assert.equal(String(replay.payload.authoritativePdfArchive?.documentId || ""), String(finalized.payload.authoritativePdfArchive?.documentId || ""));
+
+    const archivedPdf = await fetch(baseUrl + "/invoices/" + encodeURIComponent(draft.payload.id) + "/archived-pdf?businessId=" + encodeURIComponent(businessId), {
+      headers: { Authorization: "Bearer " + token },
+    });
+    assert.equal(archivedPdf.status, 200);
+    assert.match(String(archivedPdf.headers.get("content-type") || ""), /application\/pdf/);
+    const archivedBytes = Buffer.from(await archivedPdf.arrayBuffer());
+    assert.match(archivedBytes.toString("utf8", 0, 8), /%PDF-1.4/);
+
+    const ledger = await request("/accounting/event-ledger?businessId=" + encodeURIComponent(businessId), { token });
+    assert.equal(ledger.response.status, 200);
+    assert.equal(ledger.payload.financialEvents.filter((event) => event.sourceId === draft.payload.id && event.eventType === "invoice_issued").length, 1);
+
+    const otpOther = await request("/auth/email-otp/request", { method: "POST", body: { email: "p24b-other@example.com", mode: "signup" } });
+    const signupOther = await request("/auth/signup", {
+      method: "POST",
+      body: { name: "P24B Other", email: "p24b-other@example.com", password: "Passw0rd!", otp: otpOther.payload.devOtp },
+    });
+    const otherToken = signupOther.payload.token;
+    const wrongBizRead = await fetch(baseUrl + "/invoices/" + encodeURIComponent(draft.payload.id) + "/archived-pdf?businessId=" + encodeURIComponent(businessId), {
+      headers: { Authorization: "Bearer " + otherToken },
+    });
+    assert.equal(wrongBizRead.status, 404);
+
+    const unauthRead = await fetch(baseUrl + "/invoices/" + encodeURIComponent(draft.payload.id) + "/archived-pdf?businessId=" + encodeURIComponent(businessId));
+    assert.equal(unauthRead.status, 401);
+
+    const docId = String(finalized.payload.authoritativePdfArchive?.documentId || "");
+    const persistedDoc = store.listDocuments().find((entry) => entry.id === docId);
+    assert.ok(persistedDoc);
+    assert.equal(String(persistedDoc.classification || ""), "sales_finalized");
+    assert.equal(String(persistedDoc.relatedEntityType || ""), "invoice");
+    assert.equal(String(persistedDoc.relatedEntityId || ""), String(draft.payload.id));
+    assert.equal(String(persistedDoc.mimeType || ""), "application/pdf");
+    assert.equal(String(persistedDoc.status || ""), "available");
+    assert.ok(String(persistedDoc.checksumSha256 || "").length > 16);
+
+    const storagePath = path.resolve(resolveUploadsRoot(), String(persistedDoc.storageKey || ""));
+    fs.writeFileSync(storagePath, Buffer.from("%PDF-1.4\nTampered archive", "utf8"));
+    const tamperedRead = await fetch(baseUrl + "/invoices/" + encodeURIComponent(draft.payload.id) + "/archived-pdf?businessId=" + encodeURIComponent(businessId), {
+      headers: { Authorization: "Bearer " + token },
+    });
+    assert.equal(tamperedRead.status, 410);
+
+    fs.unlinkSync(storagePath);
+    const missingRead = await fetch(baseUrl + "/invoices/" + encodeURIComponent(draft.payload.id) + "/archived-pdf?businessId=" + encodeURIComponent(businessId), {
+      headers: { Authorization: "Bearer " + token },
+    });
+    assert.equal(missingRead.status, 410);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("P2-4B authoritative archived purchase order PDFs are created on issue only", async () => {
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const port = server.address().port;
+  const baseUrl = "http://127.0.0.1:" + port;
+
+  async function request(path, { method = "GET", token, body } = {}) {
+    const response = await fetch(baseUrl + path, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: "Bearer " + token } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await response.text();
+    let payload = {};
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = { text };
+      }
+    }
+    return { response, payload };
+  }
+
+  try {
+    const otp = await request("/auth/email-otp/request", { method: "POST", body: { email: "p24b-po@example.com", mode: "signup" } });
+    const signup = await request("/auth/signup", {
+      method: "POST",
+      body: { name: "P24B PO", email: "p24b-po@example.com", password: "Passw0rd!", otp: otp.payload.devOtp },
+    });
+    const token = signup.payload.token;
+    const me = await request("/me", { token });
+    const businessId = me.payload.business?.id || me.payload.user?.businessId || "";
+
+    const draft = await request("/purchase-orders", {
+      method: "POST",
+      token,
+      body: {
+        businessId,
+        status: "draft",
+        poDate: "2026-09-01",
+        billToName: "Vendor Archive",
+        items: [{ description: "PO line", quantity: 1, rate: 500, gstRate: 18 }],
+      },
+    });
+    assert.equal(draft.response.status, 201);
+    assert.equal(draft.payload.poNumber || "", "");
+
+    const preview = await request("/purchase-orders/" + encodeURIComponent(draft.payload.id) + "/pdf?businessId=" + encodeURIComponent(businessId), { token });
+    assert.equal(preview.response.status, 200);
+    assert.match(String(preview.payload.text || ""), /Print \/ Save as PDF/);
+
+    const issued = await request("/purchase-orders/" + encodeURIComponent(draft.payload.id) + "/issue", {
+      method: "POST",
+      token,
+      body: { businessId, idempotencyKey: "p24b-issue" },
+    });
+    assert.equal(issued.response.status, 200);
+    assert.equal(issued.payload.status, "issued");
+    assert.equal(String(issued.payload.authoritativePdfArchive?.status || ""), "available");
+
+    const replay = await request("/purchase-orders/" + encodeURIComponent(draft.payload.id) + "/issue", {
+      method: "POST",
+      token,
+      body: { businessId, idempotencyKey: "p24b-issue" },
+    });
+    assert.equal(replay.response.status, 200);
+    assert.equal(String(replay.payload.authoritativePdfArchive?.documentId || ""), String(issued.payload.authoritativePdfArchive?.documentId || ""));
+
+    const archivedPdf = await fetch(baseUrl + "/purchase-orders/" + encodeURIComponent(draft.payload.id) + "/archived-pdf?businessId=" + encodeURIComponent(businessId), {
+      headers: { Authorization: "Bearer " + token },
+    });
+    assert.equal(archivedPdf.status, 200);
+    assert.match(String(archivedPdf.headers.get("content-type") || ""), /application\/pdf/);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -3276,7 +3488,8 @@ test("admin can update kyc review status and permissions", () => {
 });
 
 test("onboarding business profile can be created without KYC documents", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -3331,7 +3544,8 @@ test("onboarding business profile can be created without KYC documents", async (
 });
 
 test("paid KYC supports India individual/freelancer without GST and non-India company documents", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -3471,7 +3685,8 @@ test("subscription profile save uses update path when an existing business profi
 });
 
 test("free-plan business limit blocks only new company creation, not existing company profile updates", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -3611,7 +3826,8 @@ test("web and mobile expose EazInvoice branded icons", async () => {
   const mobileManifest = JSON.parse(fs.readFileSync(path.join(process.cwd(), "apps", "mobile", "manifest.json"), "utf8"));
   assert.ok(mobileManifest.icons.some((icon) => icon.src === "./assets/logo-icon-maskable.png" && icon.purpose === "maskable"));
 
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   try {
     const response = await fetch(`http://127.0.0.1:${server.address().port}/favicon.ico`, { redirect: "manual" });
@@ -3624,7 +3840,8 @@ test("web and mobile expose EazInvoice branded icons", async () => {
 });
 
 test("signed-in user can update access profile", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -3670,7 +3887,8 @@ test("signed-in user can update access profile", async () => {
 });
 
 test("signup and login require email OTP verification", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -3835,7 +4053,8 @@ test("auth OTP falls back to app SMTP when Supabase email delivery fails", async
 });
 
 test("password reset changes the password after reset OTP verification", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   try {
@@ -3930,7 +4149,8 @@ test("auth OTP reports safe diagnostics when Supabase and SMTP fallback fail", a
 });
 
 test("signup OTP blocks already registered users and login OTP blocks unknown users", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -3974,7 +4194,8 @@ test("signup OTP blocks already registered users and login OTP blocks unknown us
 
 test("configured admin email receives admin rights through normal signup and login", async () => {
   const restoreAdminEmail = useTestAdminEmail();
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -4059,7 +4280,8 @@ test("configured admin email receives admin rights through normal signup and log
 
 test("admin access is restricted to the configured admin email", async () => {
   const restoreAdminEmail = useTestAdminEmail();
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -4130,7 +4352,8 @@ test("admin access is restricted to the configured admin email", async () => {
 
 test("admin subscription audit exposes yearly tier checkout amounts", async () => {
   const restoreAdminEmail = useTestAdminEmail();
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -4187,7 +4410,8 @@ test("admin operations dashboard is admin-only and hides secrets", async () => {
   const previousWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
   process.env.RAZORPAY_KEY_SECRET = "super-secret-razorpay-value";
   process.env.RAZORPAY_WEBHOOK_SECRET = "super-secret-webhook-value";
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -4255,7 +4479,8 @@ test("admin operations dashboard is admin-only and hides secrets", async () => {
 });
 
 test("paid subscriptions require submitted KYC documents while free does not", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -4380,7 +4605,8 @@ test("razorpay subscription activation requires verified signature and is idempo
     return originalFetch(url, options);
   };
 
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -4558,7 +4784,8 @@ test("razorpay paid checkout shows KYC blocker before gateway order creation", a
     return originalFetch(url, options);
   };
 
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -4633,7 +4860,8 @@ test("subscription page places checkout status above the KYC form", () => {
 
 test("manual paid subscription requests remain pending even when kyc is verified", async () => {
   const restoreAdminEmail = useTestAdminEmail();
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -4726,7 +4954,8 @@ test("manual paid subscription requests remain pending even when kyc is verified
 
 test("paid subscription renewal requires authoritative KYC verification", async () => {
   const restoreAdminEmail = useTestAdminEmail();
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -5130,7 +5359,8 @@ test("F-005 material identity changes trigger KYC re-evaluation without rewritin
   }
 });
 test("profile requirements endpoint stays aligned with authoritative resolver", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -5218,7 +5448,8 @@ test("profile requirements endpoint stays aligned with authoritative resolver", 
 });
 
 test("India individual KYC with aadhaarLast4 persists and clears paid-upgrade completeness blocker", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -5338,7 +5569,8 @@ test("new KYC document uploads are registry-backed with secure admin retrieval a
   const previousUploadsDir = process.env.EAZINVOICE_UPLOADS_DIR;
   process.env.EAZINVOICE_UPLOADS_DIR = uploadsRoot;
 
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -5565,7 +5797,8 @@ test("razorpay webhooks require configured signature verification", async () => 
   const previousWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
   process.env.RAZORPAY_WEBHOOK_SECRET = "webhook_secret_for_signature";
 
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   const rawBody = JSON.stringify({
@@ -5614,7 +5847,8 @@ test("razorpay webhook verification is bound to the exact raw request body", asy
   const previousWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
   process.env.RAZORPAY_WEBHOOK_SECRET = "webhook_secret_for_raw_body";
 
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   const signedRawBody = JSON.stringify({
@@ -5813,7 +6047,8 @@ test("expired active subscription does not unlock paid features", () => {
 
 test("admin plan preview unlocks tiers without creating a subscription", async () => {
   const restoreAdminEmail = useTestAdminEmail();
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -6080,7 +6315,8 @@ test("standard tier recurring scheduler creates due invoice drafts once", () => 
 
 test("admin recurring scheduler endpoint processes paid users only", async () => {
   const restoreAdminEmail = useTestAdminEmail();
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -6717,7 +6953,8 @@ test("AI usage logs and approved drafts are included in persisted state snapshot
 });
 
 test("AI command endpoint is gated and unlocks for Pro subscriptions", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -6782,7 +7019,8 @@ test("AI command endpoint is gated and unlocks for Pro subscriptions", async () 
 
 test("admin can inspect persistence status without exposing data", async () => {
   const restoreAdminEmail = useTestAdminEmail();
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -6826,7 +7064,8 @@ test("admin can inspect persistence status without exposing data", async () => {
 });
 
 test("company signup stores registrant details", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -7212,7 +7451,8 @@ test("entity-aware compliance engine distinguishes company and freelancer obliga
 
 test("business workspace endpoints honor plan preview and gating", async () => {
   const restoreAdminEmail = useTestAdminEmail();
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -9053,7 +9293,8 @@ test("document email sharing is paid-tier gated for invoices and PO/WO records",
 });
 
 test("production access audit requires authentication for sensitive api routes", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -9273,7 +9514,8 @@ test("api key creation audit events contain only safe key metadata", async () =>
 });
 
 test("static server exposes only the browser api client from api source", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -9320,7 +9562,8 @@ test("auth OTP uses a production-safe redirect target for signup and never local
 });
 
 test("direct Google identity POST route is disabled in favor of OAuth callback validation", async () => {
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   try {
@@ -9344,7 +9587,8 @@ test("google oauth start validates client config and supports mobile client flag
   process.env.GOOGLE_CLIENT_ID = "test-google-client-id.apps.googleusercontent.com";
   process.env.GOOGLE_CLIENT_SECRET = "test-secret";
   process.env.GOOGLE_REDIRECT_URI = "https://www.eazinvoice.com/auth/google/callback";
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   try {
@@ -9371,7 +9615,8 @@ test("google oauth callback returns mobile deep-link handoff on oauth error", as
   process.env.GOOGLE_CLIENT_SECRET = "test-secret";
   process.env.GOOGLE_REDIRECT_URI = "https://www.eazinvoice.com/auth/google/callback";
   process.env.MOBILE_APP_URL = "eazinvoice://auth/callback";
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   try {
@@ -9398,7 +9643,8 @@ test("admin KYC review uses secure document access and consistent submission sta
   const uploadsRoot = path.join(process.cwd(), "data", "test-kyc-review-uploads");
   fs.rmSync(uploadsRoot, { recursive: true, force: true });
   process.env.EAZINVOICE_UPLOADS_DIR = uploadsRoot;
-  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  const store = createStore({}, { persist: false, useSupabaseEmailOtp: false });
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
