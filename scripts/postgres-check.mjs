@@ -5,6 +5,7 @@ import { loadLocalEnv } from "./postgres-env.mjs";
 
 const ROOT = process.cwd();
 const MIGRATIONS_DIR = path.join(ROOT, "database", "migrations");
+const REQUIRED_SCHEMA_MIGRATION_DEFAULT = "024_document_registry_foundation";
 
 function maskDatabaseUrl(value) {
   return String(value || "").replace(/postgres:\/\/([^:]+):([^@]+)@/, "postgres://$1:***@");
@@ -59,6 +60,101 @@ function listMigrationFiles() {
 
 function migrationNameFromFile(filePath) {
   return path.basename(filePath, ".sql");
+}
+
+function migrationSequence(name = "") {
+  const match = String(name || "").match(/^(\d+)_/);
+  if (!match) return 0;
+  return Number(match[1]) || 0;
+}
+
+function verifyDocumentRegistryStructure(psql, databaseUrl) {
+  const tableExists = runPsql(psql, [
+    databaseUrl,
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-At",
+    "-c",
+    "select (to_regclass('public.eazinvoice_documents') is not null)::text;",
+  ], "Schema structure check (document table)");
+  if (tableExists.trim() !== "true" && tableExists.trim() !== "t") {
+    throw new Error("Required table public.eazinvoice_documents is missing.");
+  }
+
+  const columnRows = runPsql(psql, [
+    databaseUrl,
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-At",
+    "-c",
+    "select column_name from information_schema.columns where table_schema = 'public' and table_name = 'eazinvoice_documents';",
+  ], "Schema structure check (document columns)");
+  const columns = new Set(columnRows.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+  const requiredColumns = [
+    "id",
+    "business_id",
+    "owner_user_id",
+    "classification",
+    "related_entity_type",
+    "related_entity_id",
+    "storage_provider",
+    "storage_key",
+    "original_filename",
+    "mime_type",
+    "size_bytes",
+    "checksum_sha256",
+    "status",
+    "idempotency_key",
+  ];
+  const missingColumns = requiredColumns.filter((column) => !columns.has(column));
+  if (missingColumns.length) {
+    throw new Error(`eazinvoice_documents missing required columns: ${missingColumns.join(", ")}`);
+  }
+
+  const constraintRows = runPsql(psql, [
+    databaseUrl,
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-At",
+    "-c",
+    `select conname
+       from pg_constraint c
+       join pg_class t on t.oid = c.conrelid
+       join pg_namespace n on n.oid = t.relnamespace
+      where n.nspname = 'public'
+        and t.relname = 'eazinvoice_documents';`,
+  ], "Schema structure check (document constraints)");
+  const constraints = new Set(constraintRows.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+  const requiredConstraints = [
+    "eazinvoice_documents_pkey",
+    "eazinvoice_documents_size_non_negative",
+    "eazinvoice_documents_status_valid",
+  ];
+  const missingConstraints = requiredConstraints.filter((name) => !constraints.has(name));
+  if (missingConstraints.length) {
+    throw new Error(`eazinvoice_documents missing required constraints: ${missingConstraints.join(", ")}`);
+  }
+
+  const indexRows = runPsql(psql, [
+    databaseUrl,
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-At",
+    "-c",
+    "select indexname from pg_indexes where schemaname = 'public' and tablename = 'eazinvoice_documents';",
+  ], "Schema structure check (document indexes)");
+  const indexes = new Set(indexRows.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+  const requiredIndexes = [
+    "eazinvoice_documents_business_idx",
+    "eazinvoice_documents_owner_idx",
+    "eazinvoice_documents_related_idx",
+    "eazinvoice_documents_storage_idx",
+    "eazinvoice_documents_business_idempotency_idx",
+  ];
+  const missingIndexes = requiredIndexes.filter((name) => !indexes.has(name));
+  if (missingIndexes.length) {
+    throw new Error(`eazinvoice_documents missing required indexes: ${missingIndexes.join(", ")}`);
+  }
 }
 
 loadLocalEnv(ROOT);
@@ -118,25 +214,20 @@ if (process.argv.includes("--migrate")) {
 }
 
 if (process.argv.includes("--verify-schema")) {
-  const required = process.env.EAZINVOICE_REQUIRED_SCHEMA_MIGRATION || "023_transactional_financial_persistence";
-  const output = runPsql(psql, [
+  const required = process.env.EAZINVOICE_REQUIRED_SCHEMA_MIGRATION || REQUIRED_SCHEMA_MIGRATION_DEFAULT;
+  const direct = runPsql(psql, [
     databaseUrl,
     "-v",
     "ON_ERROR_STOP=1",
     "-At",
     "-c",
-    "select migration_name from eazinvoice_migrations where migration_name = current_setting('app.required_migration', true);",
+    `select migration_name from eazinvoice_migrations where migration_name = '${required.replace(/'/g, "''")}';`,
   ], "Schema version check");
-  if (!output.trim()) {
-    const direct = runPsql(psql, [
-      databaseUrl,
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-At",
-      "-c",
-      `select migration_name from eazinvoice_migrations where migration_name = '${required.replace(/'/g, "''")}';`,
-    ], "Schema version check");
-    if (!direct.trim()) throw new Error(`Required migration ${required} has not been applied.`);
+  if (!direct.trim()) throw new Error(`Required migration ${required} has not been applied.`);
+
+  if (migrationSequence(required) >= 24) {
+    verifyDocumentRegistryStructure(psql, databaseUrl);
   }
+
   console.log(`Schema version verified: ${required}`);
 }

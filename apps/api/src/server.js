@@ -1,4 +1,4 @@
-﻿import http from "node:http";
+import http from "node:http";
 import crypto from "node:crypto";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
@@ -40,6 +40,8 @@ import {
 } from "./profile-requirements.js";
 import { sendSmtpMail } from "./smtp.js";
 import { UploadValidationError, validateUploadInput } from "./upload-security.js";
+import { createDocumentStorage, resolveUploadsRoot } from "./document-storage.js";
+import { createDocumentService } from "./document-service.js";
 
 function loadLocalEnv() {
   const envPath = [".env", ".env.example"]
@@ -62,6 +64,12 @@ function loadLocalEnv() {
 }
 
 loadLocalEnv();
+
+const ROOT = process.cwd();
+
+function resolveUploadsDir() {
+  return resolveUploadsRoot();
+}
 
 function getPublicAppUrl(req = null) {
   const configured = process.env.PUBLIC_APP_URL || process.env.APP_BASE_URL || "";
@@ -803,8 +811,8 @@ async function ensureDir(dirPath) {
   await fs.mkdir(dirPath, { recursive: true });
 }
 
-async function saveBase64File(input) {
-  const uploadsDir = path.join(ROOT, "data", "uploads");
+async function saveBase64File(input, options = {}) {
+  const uploadsDir = String(options.uploadsDir || resolveUploadsDir()).trim() || resolveUploadsDir();
   await ensureDir(uploadsDir);
   const validated = validateUploadInput(input);
   const filePath = path.join(uploadsDir, validated.storedName);
@@ -870,22 +878,42 @@ function isKycSubmissionComplete(company = {}) {
   return Boolean(requirements?.complete);
 }
 
-function resolveAdminKycDocuments(company = {}) {
+function resolveCompanyDocumentEntry(company = {}, index = 0, uploadsDir = resolveUploadsDir()) {
   const files = Array.isArray(company.documentFiles) ? company.documentFiles : [];
-  return files
-    .map((entry, index) => {
-      const storedName = sanitizeStoredUploadName(entry?.storedName || entry?.filePath || company.documentNames?.[index] || "");
-      if (!storedName) return null;
-      return {
-        id: String(index),
-        fileName: String(entry?.storedName || company.documentNames?.[index] || storedName),
-        mimeType: resolveDocumentMimeType(entry, storedName),
-      };
-    })
-    .filter(Boolean);
+  const names = Array.isArray(company.documentNames) ? company.documentNames : [];
+  const entry = files[index] || null;
+  const storedName = sanitizeStoredUploadName(entry?.storedName || entry?.filePath || names[index] || "");
+  if (!storedName) return null;
+  const normalizedUploadsDir = path.resolve(uploadsDir);
+  const filePath = path.resolve(path.join(normalizedUploadsDir, storedName));
+  const relative = path.relative(normalizedUploadsDir, filePath);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  return {
+    index,
+    entry,
+    storedName,
+    filePath,
+    exists: fsSync.existsSync(filePath),
+  };
 }
 
-function sanitizeAdminKycCompany(company = {}) {
+function resolveAdminKycDocuments(company = {}, uploadsDir = resolveUploadsDir()) {
+  const files = Array.isArray(company.documentFiles) ? company.documentFiles : [];
+  const names = Array.isArray(company.documentNames) ? company.documentNames : [];
+  const count = Math.max(files.length, names.length);
+  return Array.from({ length: count }, (_, index) => {
+    const resolved = resolveCompanyDocumentEntry(company, index, uploadsDir);
+    if (!resolved) return null;
+    return {
+      id: String(index),
+      fileName: String(resolved.entry?.storedName || names[index] || resolved.storedName),
+      mimeType: resolveDocumentMimeType(resolved.entry, resolved.storedName),
+      available: resolved.exists,
+    };
+  }).filter(Boolean);
+}
+
+function sanitizeAdminKycCompany(company = {}, uploadsDir = resolveUploadsDir()) {
   const lifecycle = kycLifecycleStatus(company);
   return {
     id: company.id,
@@ -903,7 +931,7 @@ function sanitizeAdminKycCompany(company = {}) {
     reviewNotes: company.reviewNotes || "",
     reviewedAt: company.reviewedAt || "",
     createdAt: company.createdAt || "",
-    documents: resolveAdminKycDocuments(company),
+    documents: resolveAdminKycDocuments(company, uploadsDir),
   };
 }
 
@@ -1627,7 +1655,6 @@ async function razorpayRequest(pathname, body) {
   return payload;
 }
 
-const ROOT = process.cwd();
 const STATIC_ROOTS = [
   { prefix: "/apps/web/", dir: path.join(ROOT, "apps", "web") },
   { prefix: "/apps/mobile/", dir: path.join(ROOT, "apps", "mobile") },
@@ -1683,6 +1710,10 @@ export function createServer(options = {}) {
     persistenceAdapter,
   });
   const api = createApi({ store });
+  const documentStorage = options.documentStorage ?? createDocumentStorage();
+  const documentService = options.documentService ?? createDocumentService({ api, storage: documentStorage });
+  const uploadsDir = documentStorage.rootDir || resolveUploadsDir();
+  void documentService;
   const sessions = createSessionStore();
   const oauthStates = createOAuthStateStore();
   const emailOtps = createEmailOtpStore();
@@ -3203,7 +3234,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
         return;
       }
       sendJson(res, 200, {
-        companies: api.listCompanies().map((company) => sanitizeAdminKycCompany(company)),
+        companies: api.listCompanies().map((company) => sanitizeAdminKycCompany(company, uploadsDir)),
       });
       return;
     }
@@ -3222,7 +3253,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
       }
 
       if (segments.length === 3) {
-        sendJson(res, 200, sanitizeAdminKycCompany(company));
+        sendJson(res, 200, sanitizeAdminKycCompany(company, uploadsDir));
         return;
       }
 
@@ -3233,31 +3264,27 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
           return;
         }
         const index = Number(documentId);
-        const files = Array.isArray(company.documentFiles) ? company.documentFiles : [];
-        const entry = files[index] || null;
-        const storedName = sanitizeStoredUploadName(entry?.storedName || entry?.filePath || company.documentNames?.[index] || "");
-        if (!storedName) {
+        const resolvedDocument = resolveCompanyDocumentEntry(company, index, uploadsDir);
+        if (!resolvedDocument) {
           sendJson(res, 404, { error: "Document not found" });
           return;
         }
-        const uploadsDir = path.resolve(path.join(ROOT, "data", "uploads"));
-        const filePath = path.resolve(path.join(uploadsDir, storedName));
-        if (!filePath.startsWith(uploadsDir)) {
-          sendJson(res, 400, { error: "Invalid document path" });
+        if (!resolvedDocument.exists) {
+          sendJson(res, 410, { error: "KYC document is no longer available. Ask the user to re-upload the document." });
           return;
         }
         let data;
         try {
-          data = await fs.readFile(filePath);
+          data = await fs.readFile(resolvedDocument.filePath);
         } catch {
-          sendJson(res, 404, { error: "Document not found" });
+          sendJson(res, 410, { error: "KYC document is no longer available. Ask the user to re-upload the document." });
           return;
         }
-        const mimeType = resolveDocumentMimeType(entry, storedName);
+        const mimeType = resolveDocumentMimeType(resolvedDocument.entry, resolvedDocument.storedName);
         res.writeHead(200, {
           ...securityHeaders({
             "Content-Type": mimeType,
-            "Content-Disposition": `inline; filename="${storedName.replace(/[^A-Za-z0-9._-]+/g, "_")}"`,
+            "Content-Disposition": `inline; filename="${resolvedDocument.storedName.replace(/[^A-Za-z0-9._-]+/g, "_")}"`,
             "Cache-Control": "no-store",
           }),
           ...(res.eazinvoiceCorsHeaders || {}),
@@ -3294,7 +3321,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
         sendJson(res, 404, { error: "Company not found" });
         return;
       }
-      sendJson(res, 200, sanitizeAdminKycCompany(updated));
+      sendJson(res, 200, sanitizeAdminKycCompany(updated, uploadsDir));
       return;
     }
 
@@ -3308,7 +3335,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
       const stored = [];
       for (const file of files) {
         try {
-          stored.push(await saveBase64File(file));
+          stored.push(await saveBase64File(file, { uploadsDir }));
         } catch (error) {
           const status = error instanceof UploadValidationError
             ? Number(error.statusCode || 400)

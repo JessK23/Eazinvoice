@@ -639,6 +639,58 @@ export async function syncInvoicePaymentToCoreTables(invoice, payment, options =
   });
 }
 
+export async function syncDocuments(client, documents) {
+  for (const document of documents) {
+    await client.query(
+      `insert into eazinvoice_documents
+        (id, owner_user_id, business_id, classification, related_entity_type, related_entity_id,
+         storage_provider, storage_key, original_filename, mime_type, size_bytes, checksum_sha256,
+         status, retention_class, security_class, created_by_user_id, idempotency_key, record, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::jsonb, coalesce($19::timestamptz, now()), now())
+       on conflict (id) do update set
+        owner_user_id = excluded.owner_user_id,
+        business_id = excluded.business_id,
+        classification = excluded.classification,
+        related_entity_type = excluded.related_entity_type,
+        related_entity_id = excluded.related_entity_id,
+        storage_provider = excluded.storage_provider,
+        storage_key = excluded.storage_key,
+        original_filename = excluded.original_filename,
+        mime_type = excluded.mime_type,
+        size_bytes = excluded.size_bytes,
+        checksum_sha256 = excluded.checksum_sha256,
+        status = excluded.status,
+        retention_class = excluded.retention_class,
+        security_class = excluded.security_class,
+        created_by_user_id = excluded.created_by_user_id,
+        idempotency_key = excluded.idempotency_key,
+        record = excluded.record,
+        updated_at = now()`,
+      [
+        text(document.id),
+        text(document.ownerUserId),
+        text(document.businessId),
+        text(document.classification, "supporting_attachment"),
+        text(document.relatedEntityType),
+        text(document.relatedEntityId),
+        text(document.storageProvider, "local"),
+        text(document.storageKey),
+        text(document.originalFilename),
+        text(document.mimeType),
+        num(document.sizeBytes),
+        text(document.checksumSha256),
+        text(document.status, "pending_storage"),
+        text(document.retentionClass),
+        text(document.securityClass),
+        text(document.createdByUserId, document.ownerUserId),
+        text(document.idempotencyKey),
+        json(document),
+        timestamp(document.createdAt),
+      ],
+    );
+  }
+}
+
 export async function syncSubscriptions(client, subscriptions) {
   for (const subscription of subscriptions) {
     await client.query(
@@ -1014,6 +1066,7 @@ export function countCoreState(state = {}) {
     purchaseOrderItems: toArray(state.purchaseOrders).reduce((total, purchaseOrder) => total + toArray(purchaseOrder.items).length, 0),
     payments: toArray(state.payments).length,
     subscriptions: toArray(state.subscriptions).length,
+    documents: toArray(state.documents).length,
     businessSettings: toArray(state.businessSettings).length,
     teamMembers: toArray(state.teamMembers).length,
     approvalRequests: toArray(state.approvalRequests).length,
@@ -1030,6 +1083,7 @@ export async function syncCoreTables(client, state = {}, options = {}) {
   await syncInvoices(client, toArray(state.invoices), options);
   await syncPurchaseOrders(client, toArray(state.purchaseOrders), options);
   await syncPayments(client, toArray(state.payments));
+  await syncDocuments(client, toArray(state.documents));
   await syncSubscriptions(client, toArray(state.subscriptions));
   await syncBusinessWorkspaceTables(client, state, options);
 

@@ -11,4 +11,5 @@ test("admin KYC review UI uses secure review flow without exposing stored file p
   assert.doesNotMatch(js, /Stored:\s*\$\{escapeHtml\(\(company\.documentFiles \|\| \[\]\)\.map\(\(file\) => file\.filePath\)/);
   assert.match(js, /Aadhaar Last 4/);
   assert.doesNotMatch(js, /aadhaarNumber/);
+  assert.match(js, /Unavailable - Re-upload required/);
 });

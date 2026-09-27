@@ -289,7 +289,7 @@ Safety invariants:
 Important environment variables:
 
 - Runtime: `NODE_ENV`, `EAZINVOICE_ENV`, `PORT`, `PUBLIC_APP_URL`, `APP_BASE_URL`, `EAZINVOICE_PUBLIC_URL`.
-- Storage: `EAZINVOICE_STORAGE`, `DATABASE_URL`, `EAZINVOICE_DATA_DIR`, `DATA_DIR`.
+- Storage: `EAZINVOICE_STORAGE`, `DATABASE_URL`, `EAZINVOICE_DATA_DIR`, `DATA_DIR`, `EAZINVOICE_UPLOADS_DIR` (KYC/admin document storage root).
 - Postgres safety: `EAZINVOICE_POSTGRES_SSL_REQUIRED`, `POSTGRES_SSL`, pool/timeout settings.
 - Transition flags: `EAZINVOICE_POSTGRES_DUAL_WRITE`, `EAZINVOICE_CORE_TABLE_SYNC`, `EAZINVOICE_REPORTS_SOURCE`, `EAZINVOICE_ENTITLEMENTS_SOURCE`.
 - Security: `ADMIN_ACCESS_KEY`, `ADMIN_EMAIL`, `ADMIN_EMAILS`, `API_KEY_HASH_SECRET`, `CORS_ALLOWED_ORIGINS`.
@@ -308,8 +308,41 @@ Production minimum:
 - Strong `ADMIN_ACCESS_KEY`
 - Strong stable `API_KEY_HASH_SECRET`
 - Explicit `CORS_ALLOWED_ORIGINS` without localhost
+- KYC documents should use a persistent disk path via `EAZINVOICE_UPLOADS_DIR` (or `EAZINVOICE_DATA_DIR/uploads`) in Render to survive redeploy/restart
 - Required migration `023_transactional_financial_persistence` applied
 
+
+## Document Service Foundation (Phase 1)
+
+Action-level backend document handling now has a central foundation that is independent of direct `data/uploads` path usage in domain workflows.
+
+- `DocumentStorage` abstraction lives in `apps/api/src/document-storage.js` and resolves a provider (`local` in Phase 1).
+- `LocalDocumentStorage` adapter lives in `apps/api/src/local-document-storage.js` and is the canonical filesystem implementation for local/dev/test.
+- `DocumentService` lives in `apps/api/src/document-service.js` and owns document metadata lifecycle, checksum authority, reconciliation, and fail-closed retrieval semantics.
+- Document registry migration is `database/migrations/024_document_registry_foundation.sql` (`eazinvoice_documents`).
+
+Phase-1 lifecycle states:
+
+- `pending_storage`
+- `available`
+- `missing`
+- `quarantined`
+- `archived`
+
+Failure semantics in Phase 1:
+
+- Storage write failure keeps the registry from being finalized as available.
+- Registry finalize failure after storage write triggers best-effort storage cleanup.
+- Missing storage object on read marks registry status as `missing` and returns a safe fail-closed error.
+- Checksum mismatch marks registry status as `quarantined` and blocks serving content.
+
+Configuration behavior:
+
+- `EAZINVOICE_UPLOADS_DIR` is the primary local adapter root.
+- `EAZINVOICE_DATA_DIR/uploads` is fallback when explicit uploads dir is not set.
+- Final fallback remains `<repo>/data/uploads` for local development.
+
+This Phase 1 does **not** implement a production object adapter yet. Production durable object storage remains the target architecture for later phases.
 ## Release And Verification
 
 Implemented scripts include:

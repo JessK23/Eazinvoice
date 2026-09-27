@@ -196,13 +196,18 @@ function renderKycReviewBody(company) {
       <strong>Uploaded Documents</strong>
       <div class="list">
         ${docs.length
-    ? docs.map((document) => `
+    ? docs.map((document) => {
+      const available = document.available !== false;
+      return `
               <div class="expense-entry-row">
                 <span>${escapeHtml(document.fileName || "Document")}</span>
                 <span>${escapeHtml(document.mimeType || "-")}</span>
-                <button type="button" class="ghost small" data-kyc-document="${escapeHtml(document.id)}">View</button>
+                ${available
+    ? `<button type="button" class="ghost small" data-kyc-document="${escapeHtml(document.id)}">View</button>`
+    : `<span class="hint">Unavailable - Re-upload required</span>`}
               </div>
-            `).join("")
+            `;
+    }).join("")
     : '<div class="hint">No uploaded documents found.</div>'}
       </div>
     </div>

@@ -9164,6 +9164,10 @@ test("google oauth callback returns mobile deep-link handoff on oauth error", as
   }
 });
 test("admin KYC review uses secure document access and consistent submission states", async () => {
+  const previousUploadsDir = process.env.EAZINVOICE_UPLOADS_DIR;
+  const uploadsRoot = path.join(process.cwd(), "data", "test-kyc-review-uploads");
+  fs.rmSync(uploadsRoot, { recursive: true, force: true });
+  process.env.EAZINVOICE_UPLOADS_DIR = uploadsRoot;
   const server = createServer({ persist: false, useSupabaseEmailOtp: false });
   await new Promise((resolve) => server.listen(0, resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -9241,6 +9245,8 @@ test("admin KYC review uses secure document access and consistent submission sta
     });
     assert.equal(upload.response.status, 201);
     const uploadedFile = upload.payload.files[0];
+    const uploadedAbsolutePath = path.join(uploadsRoot, uploadedFile.storedName);
+    assert.equal(fs.existsSync(uploadedAbsolutePath), true);
 
     const submitted = await request(`/companies/${onboarding.payload.id}`, {
       method: "PATCH",
@@ -9286,6 +9292,7 @@ test("admin KYC review uses secure document access and consistent submission sta
     assert.ok(queued);
     assert.equal(Array.isArray(queued.documents), true);
     assert.ok(queued.documents.length >= 1);
+    assert.equal(queued.documents[0].available, true);
     assert.equal(Object.hasOwn(queued, "documentFiles"), false);
     assert.equal(Object.hasOwn(queued, "aadhaarNumber"), false);
     assert.equal(queued.aadhaarLast4, "1234");
@@ -9314,6 +9321,18 @@ test("admin KYC review uses secure document access and consistent submission sta
     assert.equal(adminDocument.status, 200);
     assert.match(String(adminDocument.headers.get("content-type") || ""), /application\/pdf/);
     assert.match(String(adminDocument.headers.get("content-disposition") || ""), /inline/);
+
+    fs.rmSync(uploadedAbsolutePath, { force: true });
+
+    const queueAfterMissing = await request("/admin/kyc-review", { token: admin.token });
+    assert.equal(queueAfterMissing.response.status, 200);
+    const missingQueued = queueAfterMissing.payload.companies.find((entry) => entry.id === onboarding.payload.id);
+    assert.ok(missingQueued);
+    assert.equal(missingQueued.documents[0].available, false);
+
+    const missingDocument = await request(`/admin/kyc-review/${onboarding.payload.id}/documents/0`, { token: admin.token });
+    assert.equal(missingDocument.response.status, 410);
+    assert.match(String(missingDocument.payload.error || ""), /re-upload|no longer available/i);
 
     const rejectMissingReason = await request(`/admin/kyc-review/${onboarding.payload.id}?action=reject`, {
       method: "PATCH",
@@ -9365,5 +9384,11 @@ test("admin KYC review uses secure document access and consistent submission sta
     assert.notEqual(approvedUpgrade.payload.status, "kyc_pending");
   } finally {
     await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(uploadsRoot, { recursive: true, force: true });
+    if (previousUploadsDir === undefined) {
+      delete process.env.EAZINVOICE_UPLOADS_DIR;
+    } else {
+      process.env.EAZINVOICE_UPLOADS_DIR = previousUploadsDir;
+    }
   }
 });

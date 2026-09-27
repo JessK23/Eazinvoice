@@ -91,6 +91,13 @@ function nextId(prefix, counter) {
   return `${prefix}_${String(counter).padStart(4, "0")}`;
 }
 
+function nextDocumentId() {
+  if (typeof crypto.randomUUID === "function") {
+    return `doc_${crypto.randomUUID()}`;
+  }
+  return `doc_${crypto.randomBytes(16).toString("hex")}`;
+}
+
 function makeCodeFromText(text, fallback) {
   const cleaned = String(text || "")
     .trim()
@@ -298,6 +305,7 @@ export function createStore(seed = {}, options = {}) {
     billingOrders: [],
     monetization: [],
     reports: [],
+    documents: [],
     aiUsageLogs: [],
     teamMembers: [],
     approvalRequests: [],
@@ -345,6 +353,7 @@ export function createStore(seed = {}, options = {}) {
       billingOrder: 0,
       monetization: 0,
       report: 0,
+      document: 0,
       aiUsageLog: 0,
       teamMember: 0,
       approvalRequest: 0,
@@ -396,6 +405,7 @@ export function createStore(seed = {}, options = {}) {
     billingOrder: 0,
     monetization: 0,
     report: 0,
+    document: 0,
     aiUsageLog: 0,
     teamMember: 0,
     approvalRequest: 0,
@@ -448,6 +458,7 @@ export function createStore(seed = {}, options = {}) {
       billingOrders: state.billingOrders,
       monetization: state.monetization,
       reports: state.reports,
+      documents: state.documents,
       aiUsageLogs: state.aiUsageLogs,
       teamMembers: state.teamMembers,
       approvalRequests: state.approvalRequests,
@@ -1569,6 +1580,102 @@ export function createStore(seed = {}, options = {}) {
       byType,
       count: state.monetization.length,
     };
+  }
+
+
+  function createDocument(input = {}) {
+    state.counters.document += 1;
+    const providedId = String(input.id || "").trim();
+    const document = {
+      id: providedId || nextDocumentId(),
+      ownerUserId: input.ownerUserId || null,
+      businessId: input.businessId || null,
+      classification: String(input.classification || "supporting_attachment").trim().toLowerCase(),
+      relatedEntityType: String(input.relatedEntityType || "").trim().toLowerCase(),
+      relatedEntityId: String(input.relatedEntityId || "").trim(),
+      storageProvider: String(input.storageProvider || "local").trim().toLowerCase(),
+      storageKey: String(input.storageKey || "").trim(),
+      originalFilename: String(input.originalFilename || "").trim(),
+      mimeType: String(input.mimeType || "").trim().toLowerCase(),
+      sizeBytes: Math.max(0, Number(input.sizeBytes || 0) || 0),
+      checksumSha256: String(input.checksumSha256 || "").trim().toLowerCase(),
+      status: String(input.status || "pending_storage").trim().toLowerCase(),
+      retentionClass: String(input.retentionClass || "").trim().toLowerCase(),
+      securityClass: String(input.securityClass || "").trim().toLowerCase(),
+      createdByUserId: input.createdByUserId || input.ownerUserId || null,
+      idempotencyKey: String(input.idempotencyKey || "").trim(),
+      legacyFilePath: String(input.legacyFilePath || "").trim(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    state.documents.push(document);
+    persist();
+    return clone(document);
+  }
+
+  function listDocuments() {
+    return clone(state.documents);
+  }
+
+  function listDocumentsForBusiness(businessId) {
+    const normalizedBusinessId = String(businessId || "").trim();
+    return clone(state.documents.filter((entry) => String(entry.businessId || "") === normalizedBusinessId));
+  }
+
+  function getDocumentById(documentId) {
+    return clone(state.documents.find((entry) => entry.id === documentId) || null);
+  }
+
+  function updateDocument(documentId, updates = {}) {
+    const document = state.documents.find((entry) => entry.id === documentId);
+    if (!document) return null;
+    [
+      "classification",
+      "relatedEntityType",
+      "relatedEntityId",
+      "storageProvider",
+      "storageKey",
+      "originalFilename",
+      "mimeType",
+      "checksumSha256",
+      "status",
+      "retentionClass",
+      "securityClass",
+      "idempotencyKey",
+      "legacyFilePath",
+    ].forEach((field) => {
+      if (updates[field] !== undefined) document[field] = String(updates[field] || "").trim();
+    });
+    if (updates.ownerUserId !== undefined) document.ownerUserId = updates.ownerUserId || null;
+    if (updates.businessId !== undefined) document.businessId = updates.businessId || null;
+    if (updates.createdByUserId !== undefined) document.createdByUserId = updates.createdByUserId || null;
+    if (updates.sizeBytes !== undefined) document.sizeBytes = Math.max(0, Number(updates.sizeBytes || 0) || 0);
+    document.updatedAt = new Date().toISOString();
+    persist();
+    return clone(document);
+  }
+
+  function findDocumentByIdempotencyKey(input = {}) {
+    const ownerUserId = String(input.ownerUserId || "").trim();
+    const businessId = String(input.businessId || "").trim();
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    if (!ownerUserId || !businessId || !idempotencyKey) return null;
+    const match = state.documents.find((entry) => (
+      String(entry.ownerUserId || "") === ownerUserId
+      && String(entry.businessId || "") === businessId
+      && String(entry.idempotencyKey || "") === idempotencyKey
+    ));
+    return clone(match || null);
+  }
+
+  function listDocumentStorageKeys(businessId = "") {
+    const normalizedBusinessId = String(businessId || "").trim();
+    const scoped = normalizedBusinessId
+      ? state.documents.filter((entry) => String(entry.businessId || "") === normalizedBusinessId)
+      : state.documents;
+    return scoped
+      .map((entry) => String(entry.storageKey || "").trim())
+      .filter(Boolean);
   }
 
   function createReport(input) {
@@ -4627,6 +4734,7 @@ export function createStore(seed = {}, options = {}) {
       billingOrders: state.billingOrders.length,
       monetization: state.monetization.length,
       reports: state.reports.length,
+      documents: state.documents.length,
       aiUsageLogs: state.aiUsageLogs.length,
       teamMembers: state.teamMembers.length,
       approvalRequests: state.approvalRequests.length,
@@ -5595,6 +5703,13 @@ export function createStore(seed = {}, options = {}) {
     getBillingOrderByGatewayOrderId,
     updateBillingOrder,
     listBillingOrders,
+    createDocument,
+    listDocuments,
+    listDocumentsForBusiness,
+    getDocumentById,
+    updateDocument,
+    findDocumentByIdempotencyKey,
+    listDocumentStorageKeys,
     createReport,
     createAiUsageLog,
     listAiUsageLogsForUser,

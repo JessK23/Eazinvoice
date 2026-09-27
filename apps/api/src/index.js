@@ -325,6 +325,34 @@ export function createApi(deps = {}) {
     updateCompanyKyc(companyId, updates) {
       return store.updateCompanyKyc(companyId, updates);
     },
+    createDocumentRecord(input) {
+      return store.createDocument(input);
+    },
+
+    listDocumentRecords() {
+      return store.listDocuments();
+    },
+
+    listDocumentsForBusiness(businessId) {
+      return store.listDocumentsForBusiness(businessId);
+    },
+
+    getDocumentRecordById(documentId) {
+      return store.getDocumentById(documentId);
+    },
+
+    updateDocumentRecord(documentId, updates) {
+      return store.updateDocument(documentId, updates);
+    },
+
+    findDocumentByIdempotencyKey(input = {}) {
+      return store.findDocumentByIdempotencyKey(input);
+    },
+
+    listDocumentStorageKeys(businessId = "") {
+      return store.listDocumentStorageKeys(businessId);
+    },
+
     updateCompany(companyId, updates, options = {}) {
       let workspace = null;
       const company = store.listCompanies().find((entry) => entry.id === companyId);
