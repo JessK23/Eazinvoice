@@ -1,4 +1,4 @@
-# EazInvoice Technical Architecture
+﻿# EazInvoice Technical Architecture
 
 Status date: 2026-08-22
 
@@ -343,6 +343,8 @@ Configuration behavior:
 - Final fallback remains `<repo>/data/uploads` for local development.
 
 This Phase 1 does **not** implement a production object adapter yet. Production durable object storage remains the target architecture for later phases.
+
+Phase 2A KYC integration uses the central DocumentService for new KYC uploads via `/kyc/documents`, with server-generated `document_id` references (`kycDocuments`) treated as authoritative for Admin review retrieval. Legacy `documentNames`/`documentFiles` remain dual-read compatibility fields for pre-migration records. Upload/save still does not approve KYC; explicit reviewer action remains authoritative for verification.
 ## Release And Verification
 
 Implemented scripts include:

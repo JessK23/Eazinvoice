@@ -825,6 +825,51 @@ async function saveBase64File(input, options = {}) {
 }
 
 const ALLOWED_DOCUMENT_MIME_TYPES = new Set(["application/pdf", "image/png", "image/jpeg"]);
+const KYC_DOCUMENT_TYPES = new Set(["pan", "aadhaar", "gst", "address_proof", "registration", "tax_id", "identity", "supporting"]);
+
+function normalizeKycDocumentType(value = "") {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  if (!normalized) return "supporting";
+  return KYC_DOCUMENT_TYPES.has(normalized) ? normalized : "supporting";
+}
+
+function normalizeKycDocumentReferences(value = []) {
+  const references = [];
+  const input = Array.isArray(value) ? value : [];
+  for (const entry of input) {
+    if (!entry) continue;
+    const object = typeof entry === "string" ? { documentId: entry } : entry;
+    const documentId = String(object.documentId || object.id || "").trim();
+    if (!documentId) continue;
+    references.push({
+      documentId,
+      documentType: normalizeKycDocumentType(object.documentType || object.kind),
+      fileName: String(object.fileName || object.originalFilename || "").trim(),
+      mimeType: String(object.mimeType || "").trim().toLowerCase(),
+    });
+  }
+  return references;
+}
+
+function deriveLegacyKycMetadataFromReferences(references = []) {
+  const files = [];
+  const names = [];
+  for (const entry of references) {
+    const safeName = String(entry.fileName || `${entry.documentType || "kyc"}.document`).trim().replace(/[\\/]+/g, "_");
+    names.push(safeName);
+    files.push({
+      storedName: safeName,
+      filePath: "",
+      mimeType: String(entry.mimeType || "application/octet-stream").trim().toLowerCase(),
+      documentId: String(entry.documentId || "").trim(),
+      documentType: normalizeKycDocumentType(entry.documentType),
+    });
+  }
+  return {
+    documentNames: names,
+    documentFiles: files,
+  };
+}
 
 function sanitizeStoredUploadName(value = "") {
   const normalized = String(value || "").trim().replace(/\\+/g, "/");
@@ -860,6 +905,7 @@ function companyHasKycSubmissionFields(body = {}) {
     "addressProof",
     "documentNames",
     "documentFiles",
+    "kycDocuments",
     "taxId",
     "registrationNumber",
     "country",
@@ -887,33 +933,75 @@ function resolveCompanyDocumentEntry(company = {}, index = 0, uploadsDir = resol
   const normalizedUploadsDir = path.resolve(uploadsDir);
   const filePath = path.resolve(path.join(normalizedUploadsDir, storedName));
   const relative = path.relative(normalizedUploadsDir, filePath);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
   return {
+    source: "legacy",
+    id: String(index),
     index,
     entry,
     storedName,
     filePath,
     exists: fsSync.existsSync(filePath),
+    mimeType: resolveDocumentMimeType(entry, storedName),
+    fileName: String(entry?.storedName || names[index] || storedName),
   };
 }
 
-function resolveAdminKycDocuments(company = {}, uploadsDir = resolveUploadsDir()) {
+async function resolveCompanyKycDocuments(company = {}, uploadsDir = resolveUploadsDir(), options = {}) {
+  const api = options.api;
+  const documentService = options.documentService;
+  const references = normalizeKycDocumentReferences(company.kycDocuments || []);
+  if (references.length) {
+    const documents = [];
+    for (const reference of references) {
+      const document = api.getDocumentRecordById(reference.documentId);
+      if (!document || String(document.businessId || "") !== String(company.businessId || "") || String(document.classification || "") !== "kyc") {
+        documents.push({
+          id: reference.documentId,
+          documentId: reference.documentId,
+          documentType: reference.documentType,
+          fileName: reference.fileName || "KYC document",
+          mimeType: reference.mimeType || "application/octet-stream",
+          available: false,
+          source: "registry",
+        });
+        continue;
+      }
+
+      if (options.reconcile !== false) {
+        await documentService.reconcileDocument(document.id).catch(() => null);
+      }
+      const refreshed = api.getDocumentRecordById(document.id) || document;
+      documents.push({
+        id: refreshed.id,
+        documentId: refreshed.id,
+        documentType: reference.documentType,
+        fileName: reference.fileName || refreshed.originalFilename || "KYC document",
+        mimeType: refreshed.mimeType || reference.mimeType || "application/octet-stream",
+        available: String(refreshed.status || "") === "available",
+        source: "registry",
+      });
+    }
+    return documents;
+  }
+
   const files = Array.isArray(company.documentFiles) ? company.documentFiles : [];
   const names = Array.isArray(company.documentNames) ? company.documentNames : [];
   const count = Math.max(files.length, names.length);
-  return Array.from({ length: count }, (_, index) => {
-    const resolved = resolveCompanyDocumentEntry(company, index, uploadsDir);
-    if (!resolved) return null;
-    return {
-      id: String(index),
-      fileName: String(resolved.entry?.storedName || names[index] || resolved.storedName),
-      mimeType: resolveDocumentMimeType(resolved.entry, resolved.storedName),
-      available: resolved.exists,
-    };
-  }).filter(Boolean);
+  return Array.from({ length: count }, (_, index) => resolveCompanyDocumentEntry(company, index, uploadsDir))
+    .filter(Boolean)
+    .map((entry) => ({
+      id: String(entry.index),
+      documentId: "",
+      documentType: "legacy",
+      fileName: entry.fileName,
+      mimeType: entry.mimeType,
+      available: entry.exists,
+      source: "legacy",
+    }));
 }
 
-function sanitizeAdminKycCompany(company = {}, uploadsDir = resolveUploadsDir()) {
+async function sanitizeAdminKycCompany(company = {}, uploadsDir = resolveUploadsDir(), options = {}) {
   const lifecycle = kycLifecycleStatus(company);
   return {
     id: company.id,
@@ -931,10 +1019,54 @@ function sanitizeAdminKycCompany(company = {}, uploadsDir = resolveUploadsDir())
     reviewNotes: company.reviewNotes || "",
     reviewedAt: company.reviewedAt || "",
     createdAt: company.createdAt || "",
-    documents: resolveAdminKycDocuments(company, uploadsDir),
+    documents: await resolveCompanyKycDocuments(company, uploadsDir, options),
   };
 }
 
+async function resolveAuthoritativeKycDocumentsForSave({ body = {}, company = {}, businessId = "", user, api, documentService }) {
+  const submitted = normalizeKycDocumentReferences(body.kycDocuments || []);
+  if (!submitted.length) {
+    if (Array.isArray(company.kycDocuments) && company.kycDocuments.length) {
+      return normalizeKycDocumentReferences(company.kycDocuments);
+    }
+    return [];
+  }
+
+  const byId = new Map();
+  for (const reference of submitted) {
+    const record = api.getDocumentRecordById(reference.documentId);
+    if (!record) {
+      const error = new Error("Document not found");
+      error.statusCode = 404;
+      throw error;
+    }
+    if (String(record.businessId || "") !== String(businessId || "")) {
+      const error = new Error("Document not found");
+      error.statusCode = 404;
+      throw error;
+    }
+    if (String(record.classification || "") !== "kyc") {
+      const error = new Error("KYC document reference is invalid.");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    await documentService.openDocumentForBusiness(record.id, { user, businessId }).catch((openError) => {
+      const error = new Error(openError?.message || "Document is not available.");
+      error.statusCode = Number(openError?.statusCode || 410);
+      throw error;
+    });
+
+    const refreshed = api.getDocumentRecordById(record.id) || record;
+    byId.set(refreshed.id, {
+      documentId: refreshed.id,
+      documentType: reference.documentType,
+      fileName: reference.fileName || refreshed.originalFilename || "KYC document",
+      mimeType: refreshed.mimeType || reference.mimeType || "application/octet-stream",
+    });
+  }
+  return Array.from(byId.values());
+}
 function getAdminIdentity() {
   return {
     email: process.env.ADMIN_EMAIL || "support@eazinvoice.com",
@@ -1232,7 +1364,7 @@ function validatePaidKycInput(body = {}) {
   const missingAnyOf = Array.isArray(requirement.missingAnyOf) ? requirement.missingAnyOf : [];
   const hasMissingAnyOf = (fields = []) => missingAnyOf.some((group) => fields.every((field) => group.includes(field)));
 
-  if (missingFields.has("address") || hasMissingAnyOf(["addressProof", "documentNames", "documentFiles"])) {
+  if (missingFields.has("address") || hasMissingAnyOf(["addressProof", "kycDocuments", "documentNames", "documentFiles"])) {
     return { ok: false, error: "KYC requires address and address proof or an uploaded document." };
   }
   if (india && individual && (missingFields.has("panNumber") || missingFields.has("aadhaarLast4"))) {
@@ -1241,10 +1373,10 @@ function validatePaidKycInput(body = {}) {
   if (india && !individual && hasMissingAnyOf(["panNumber", "gstNumber"])) {
     return { ok: false, error: "India company or group KYC requires company PAN or GST details." };
   }
-  if (!india && individual && hasMissingAnyOf(["taxId", "documentNames", "documentFiles"])) {
+  if (!india && individual && hasMissingAnyOf(["taxId", "kycDocuments", "documentNames", "documentFiles"])) {
     return { ok: false, error: "Non-India individual, freelancer, or consultant KYC requires a country tax ID/national ID or identity document." };
   }
-  if (!india && !individual && hasMissingAnyOf(["registrationNumber", "taxId", "documentNames", "documentFiles"])) {
+  if (!india && !individual && hasMissingAnyOf(["registrationNumber", "taxId", "kycDocuments", "documentNames", "documentFiles"])) {
     return { ok: false, error: "Non-India company or group KYC requires business registration, tax ID, or company registration document." };
   }
   return {
@@ -2808,7 +2940,7 @@ export function createServer(options = {}) {
           fallback.searchParams.set("error", message);
           fallback.searchParams.set("provider", "google");
           fallback.searchParams.set("mode", oauthMode);
-          const html = `<!doctype html><html><body><script>window.location.href=${JSON.stringify(deepLink)};setTimeout(function(){window.location.href=${JSON.stringify(fallback.toString())};},1200);</script><p>Returning to EazInvoice appâ€¦</p></body></html>`;
+          const html = `<!doctype html><html><body><script>window.location.href=${JSON.stringify(deepLink)};setTimeout(function(){window.location.href=${JSON.stringify(fallback.toString())};},1200);</script><p>Returning to EazInvoice appÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦</p></body></html>`;
           res.writeHead(200, securityHeaders({ "Content-Type": "text/html; charset=utf-8" }));
           res.end(html);
           return;
@@ -2903,7 +3035,7 @@ export function createServer(options = {}) {
         fallback.searchParams.set("token", token);
         fallback.searchParams.set("provider", "google");
         fallback.searchParams.set("mode", oauthMode);
-        const html = `<!doctype html><html><body><script>window.location.href=${JSON.stringify(deepLink)};setTimeout(function(){window.location.href=${JSON.stringify(fallback.toString())};},1200);</script><p>Returning to EazInvoice appâ€¦</p></body></html>`;
+        const html = `<!doctype html><html><body><script>window.location.href=${JSON.stringify(deepLink)};setTimeout(function(){window.location.href=${JSON.stringify(fallback.toString())};},1200);</script><p>Returning to EazInvoice appÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦</p></body></html>`;
         res.writeHead(200, securityHeaders({ "Content-Type": "text/html; charset=utf-8" }));
         res.end(html);
         return;
@@ -3228,14 +3360,13 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
       return;
     }
 
-    if (url.pathname === "/admin/kyc-review" && req.method === "GET") {
+        if (url.pathname === "/admin/kyc-review" && req.method === "GET") {
       if (!hasKycReviewAuthority(user)) {
         sendJson(res, 403, { error: "Forbidden" });
         return;
       }
-      sendJson(res, 200, {
-        companies: api.listCompanies().map((company) => sanitizeAdminKycCompany(company, uploadsDir)),
-      });
+      const companies = await Promise.all(api.listCompanies().map((company) => sanitizeAdminKycCompany(company, uploadsDir, { api, documentService })));
+      sendJson(res, 200, { companies });
       return;
     }
 
@@ -3253,16 +3384,71 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
       }
 
       if (segments.length === 3) {
-        sendJson(res, 200, sanitizeAdminKycCompany(company, uploadsDir));
+        sendJson(res, 200, await sanitizeAdminKycCompany(company, uploadsDir, { api, documentService }));
         return;
       }
 
       if (segments.length === 5 && segments[3] === "documents") {
         const documentId = String(segments[4] || "").trim();
-        if (!/^\d+$/.test(documentId)) {
+        if (!documentId) {
           sendJson(res, 400, { error: "Invalid document identifier" });
           return;
         }
+
+        const normalizedReferences = normalizeKycDocumentReferences(company.kycDocuments || []);
+        const registryReference = normalizedReferences.find((entry) => entry.documentId === documentId) || null;
+        if (registryReference) {
+          const registryRecord = api.getDocumentRecordById(registryReference.documentId);
+          if (!registryRecord || String(registryRecord.classification || "") !== "kyc") {
+            sendJson(res, 404, { error: "Document not found" });
+            return;
+          }
+          try {
+            const opened = await documentService.openDocumentForBusiness(registryRecord.id, {
+              user,
+              businessId: company.businessId,
+            });
+            const safeFileName = String(registryReference.fileName || registryRecord.originalFilename || "kyc_document").replace(/[^A-Za-z0-9._-]+/g, "_");
+            const mimeType = String(registryRecord.mimeType || "application/octet-stream");
+            res.writeHead(200, {
+              ...securityHeaders({
+                "Content-Type": mimeType,
+                "Content-Disposition": `inline; filename="${safeFileName}"`,
+                "Cache-Control": "no-store",
+              }),
+              ...(res.eazinvoiceCorsHeaders || {}),
+              "X-Content-Type-Options": "nosniff",
+            });
+            res.end(opened.bytes);
+            return;
+          } catch (error) {
+            const statusCode = Number(error?.statusCode || 410);
+            if (statusCode === 409) {
+              sendJson(res, 410, { error: "KYC document failed integrity verification and is unavailable. Ask the user to re-upload the document." });
+              return;
+            }
+            if (statusCode === 410) {
+              sendJson(res, 410, { error: "KYC document is no longer available. Ask the user to re-upload the document." });
+              return;
+            }
+            if (statusCode === 401) {
+              sendJson(res, 401, { error: "Authentication required" });
+              return;
+            }
+            if (statusCode === 403) {
+              sendJson(res, 403, { error: "Forbidden" });
+              return;
+            }
+            sendJson(res, 404, { error: "Document not found" });
+            return;
+          }
+        }
+
+        if (!/^\d+$/.test(documentId)) {
+          sendJson(res, 404, { error: "Document not found" });
+          return;
+        }
+
         const index = Number(documentId);
         const resolvedDocument = resolveCompanyDocumentEntry(company, index, uploadsDir);
         if (!resolvedDocument) {
@@ -3280,7 +3466,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
           sendJson(res, 410, { error: "KYC document is no longer available. Ask the user to re-upload the document." });
           return;
         }
-        const mimeType = resolveDocumentMimeType(resolvedDocument.entry, resolvedDocument.storedName);
+        const mimeType = resolvedDocument.mimeType;
         res.writeHead(200, {
           ...securityHeaders({
             "Content-Type": mimeType,
@@ -3321,7 +3507,74 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
         sendJson(res, 404, { error: "Company not found" });
         return;
       }
-      sendJson(res, 200, sanitizeAdminKycCompany(updated, uploadsDir));
+      sendJson(res, 200, await sanitizeAdminKycCompany(updated, uploadsDir, { api, documentService }));
+      return;
+    }
+
+    if (url.pathname === "/kyc/documents" && req.method === "POST") {
+      const body = await readBody(req);
+      const files = Array.isArray(body.files) ? body.files : [];
+      if (!files.length) {
+        sendJson(res, 400, { error: "No files to upload" });
+        return;
+      }
+
+      const targetCompanyId = String(body.companyId || "").trim();
+      const targetCompany = targetCompanyId ? api.listCompanies(user).find((entry) => entry.id === targetCompanyId) : null;
+      const workspace = api.resolveRecordsWorkspaceAccess(user, {
+        previewPlan,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || targetCompany?.ownerUserId || null,
+        businessId: body.businessId || targetCompany?.businessId || null,
+      }, targetCompany ? "manageSettings" : "writeRecords");
+
+      const relatedEntityId = targetCompany?.id || workspace.businessId || workspace.ownerUserId;
+      if (!relatedEntityId) {
+        sendJson(res, 400, { error: "A business workspace is required for KYC document upload." });
+        return;
+      }
+
+      const stored = [];
+      for (const file of files) {
+        try {
+          const validated = validateUploadInput(file);
+          const docType = normalizeKycDocumentType(file.documentType || file.kind || "supporting");
+          const idempotencyKey = String(file.idempotencyKey || body.idempotencyKey || "").trim()
+            || `kyc:${relatedEntityId}:${docType}:${crypto.createHash("sha256").update(validated.bytes).digest("hex")}`;
+          const document = await documentService.putDocument({
+            user,
+            businessId: workspace.businessId,
+            classification: "kyc",
+            relatedEntityType: "company_kyc",
+            relatedEntityId,
+            originalFilename: String(file.fileName || "").trim(),
+            mimeType: validated.mimeType,
+            bytes: validated.bytes,
+            idempotencyKey,
+            retentionClass: "kyc",
+            securityClass: "restricted",
+          });
+          const storageLeaf = String(document.storageKey || "").split("/").pop() || "";
+          stored.push({
+            id: document.id,
+            documentId: document.id,
+            documentType: docType,
+            fileName: document.originalFilename || String(file.fileName || "").trim(),
+            mimeType: document.mimeType,
+            sizeBytes: document.sizeBytes,
+            checksumSha256: document.checksumSha256,
+            status: document.status,
+            storedName: storageLeaf,
+            filePath: "",
+          });
+        } catch (error) {
+          const status = error instanceof UploadValidationError
+            ? Number(error.statusCode || 400)
+            : Number(error?.statusCode || 400);
+          sendJson(res, status, { error: error.message || "Invalid upload payload" });
+          return;
+        }
+      }
+      sendJson(res, 201, { files: stored });
       return;
     }
 
@@ -3347,8 +3600,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
       sendJson(res, 201, { files: stored });
       return;
     }
-
-    if (url.pathname.startsWith("/admin/users/") && req.method === "PATCH") {
+if (url.pathname.startsWith("/admin/users/") && req.method === "PATCH") {
       if (!isConfiguredAdminUser(user)) {
         sendJson(res, 403, { error: "Forbidden" });
         return;
@@ -3404,7 +3656,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
       return;
     }
 
-    if (url.pathname === "/companies" && req.method === "POST") {
+        if (url.pathname === "/companies" && req.method === "POST") {
       const body = await readBody(req);
       const entityType = String(body.entityType || "company").trim().toLowerCase();
       const isOnboardingProfile = body.profilePurpose === "onboarding";
@@ -3420,14 +3672,35 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
         previewPlan,
         workspaceOwnerUserId: body.workspaceOwnerUserId || null,
       }, body.workspaceOwnerUserId ? "manageSettings" : "writeRecords");
+
+      let authoritativeKycDocuments = [];
+      try {
+        authoritativeKycDocuments = await resolveAuthoritativeKycDocumentsForSave({
+          body,
+          company: {},
+          businessId: workspace.businessId,
+          user,
+          api,
+          documentService,
+        });
+      } catch (error) {
+        sendJson(res, Number(error?.statusCode || 400), { error: error.message || "Invalid KYC document reference." });
+        return;
+      }
+      const legacyDerived = deriveLegacyKycMetadataFromReferences(authoritativeKycDocuments);
+
       sendJson(res, 201, api.createCompany({
         ...body,
         ownerUserId: workspace.ownerUserId,
+        businessId: workspace.businessId,
         entityType,
         country: kycValidation.country || normalizeKycCountry(body.country || body.kycCountry),
         kycCountry: kycValidation.country || normalizeKycCountry(body.country || body.kycCountry),
         gstNumber: isIndividualKycEntity(entityType) ? "" : body.gstNumber,
         aadhaarLast4: kycValidation.aadhaarLast4 || normalizeAadhaarLast4(body.aadhaarLast4 || body.aadhaarNumber),
+        kycDocuments: authoritativeKycDocuments,
+        documentNames: authoritativeKycDocuments.length ? legacyDerived.documentNames : (Array.isArray(body.documentNames) ? body.documentNames : []),
+        documentFiles: authoritativeKycDocuments.length ? legacyDerived.documentFiles : (Array.isArray(body.documentFiles) ? body.documentFiles : []),
         kycStatus: isOnboardingProfile ? "not_submitted" : "pending",
         reviewStatus: "pending",
         reviewedAt: "",
@@ -3448,7 +3721,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
         sendJson(res, 404, { error: "Company not found" });
         return;
       }
-      api.resolveRecordsWorkspaceAccess(user, {
+      const workspace = api.resolveRecordsWorkspaceAccess(user, {
         previewPlan,
         workspaceOwnerUserId: workspaceOwnerUserId || existingCompany.ownerUserId,
       }, "manageSettings");
@@ -3456,7 +3729,35 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
       if (body.aadhaarLast4 === undefined && body.aadhaarNumber !== undefined) {
         body.aadhaarLast4 = normalizeAadhaarLast4(body.aadhaarNumber);
       }
-      let updated = api.updateCompany(companyId, body, {
+
+      let authoritativeKycDocuments = [];
+      try {
+        authoritativeKycDocuments = await resolveAuthoritativeKycDocumentsForSave({
+          body,
+          company: existingCompany,
+          businessId: workspace.businessId || existingCompany.businessId,
+          user,
+          api,
+          documentService,
+        });
+      } catch (error) {
+        sendJson(res, Number(error?.statusCode || 400), { error: error.message || "Invalid KYC document reference." });
+        return;
+      }
+
+      const updates = {
+        ...body,
+      };
+      if (authoritativeKycDocuments.length) {
+        const legacyDerived = deriveLegacyKycMetadataFromReferences(authoritativeKycDocuments);
+        updates.kycDocuments = authoritativeKycDocuments;
+        updates.documentNames = legacyDerived.documentNames;
+        updates.documentFiles = legacyDerived.documentFiles;
+      } else if (body.kycDocuments !== undefined) {
+        updates.kycDocuments = [];
+      }
+
+      let updated = api.updateCompany(companyId, updates, {
         user,
         previewPlan,
         workspaceOwnerUserId: workspaceOwnerUserId || existingCompany.ownerUserId,
@@ -3483,8 +3784,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
       sendJson(res, 200, updated);
       return;
     }
-
-    if (url.pathname === "/customers" && req.method === "GET") {
+if (url.pathname === "/customers" && req.method === "GET") {
       sendJson(res, 200, api.listCustomers(user, {
         previewPlan,
         workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,

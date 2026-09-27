@@ -64,7 +64,7 @@ function kycRequirement(country, entityType) {
   const normalizedCountry = normalizeCountry(country);
   const individual = isIndividualEntity(entityType);
   const requiredFields = ["address"];
-  const anyOf = [["addressProof", "documentNames", "documentFiles"]];
+  const anyOf = [["addressProof", "kycDocuments", "documentNames", "documentFiles"]];
 
   if (normalizedCountry === "IN") {
     if (individual) requiredFields.push("panNumber", "aadhaarLast4");
@@ -78,8 +78,8 @@ function kycRequirement(country, entityType) {
   }
 
   if (normalizedCountry === "US") {
-    if (individual) anyOf.push(["taxId", "documentNames", "documentFiles"]);
-    else anyOf.push(["registrationNumber", "taxId", "documentNames", "documentFiles"]);
+    if (individual) anyOf.push(["taxId", "kycDocuments", "documentNames", "documentFiles"]);
+    else anyOf.push(["registrationNumber", "taxId", "kycDocuments", "documentNames", "documentFiles"]);
     return {
       requiredFields,
       anyOf,
@@ -88,8 +88,8 @@ function kycRequirement(country, entityType) {
     };
   }
 
-  if (individual) anyOf.push(["taxId", "documentNames", "documentFiles"]);
-  else anyOf.push(["registrationNumber", "taxId", "documentNames", "documentFiles"]);
+  if (individual) anyOf.push(["taxId", "kycDocuments", "documentNames", "documentFiles"]);
+  else anyOf.push(["registrationNumber", "taxId", "kycDocuments", "documentNames", "documentFiles"]);
 
   return {
     requiredFields,

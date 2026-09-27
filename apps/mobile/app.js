@@ -333,6 +333,17 @@ const api = {
   uploadDocuments(files) {
     return this.request("/uploads", { method: "POST", body: { files } });
   },
+  uploadKycDocuments(payload = {}) {
+    return this.request("/kyc/documents", {
+      method: "POST",
+      body: {
+        files: Array.isArray(payload.files) ? payload.files : [],
+        companyId: payload.companyId || "",
+        businessId: payload.businessId || "",
+        workspaceOwnerUserId: payload.workspaceOwnerUserId || "",
+      },
+    });
+  },
   workspaces() {
     return this.request("/business/workspaces");
   },
@@ -537,29 +548,32 @@ function readFileAsDataUrl(file) {
 
 function normalizeUploadedDocumentMetadata(payload) {
   const files = Array.isArray(payload?.files) ? payload.files : [];
-  const documentFiles = files
+  const kycDocuments = files
     .filter((entry) => (
       entry
-      && typeof entry.storedName === "string"
-      && entry.storedName.trim()
-      && typeof entry.filePath === "string"
-      && entry.filePath.trim()
-      && typeof entry.mimeType === "string"
-      && entry.mimeType.trim()
+      && String(entry.documentId || entry.id || "").trim()
     ))
     .map((entry) => ({
-      storedName: entry.storedName,
-      filePath: entry.filePath,
-      mimeType: entry.mimeType,
+      documentId: String(entry.documentId || entry.id || "").trim(),
+      documentType: String(entry.documentType || "supporting").trim() || "supporting",
+      fileName: String(entry.fileName || entry.storedName || "").trim(),
+      mimeType: String(entry.mimeType || "").trim().toLowerCase(),
     }));
+  const documentFiles = kycDocuments.map((entry) => ({
+    storedName: entry.fileName || "",
+    filePath: "",
+    mimeType: entry.mimeType || "",
+    documentId: entry.documentId,
+    documentType: entry.documentType,
+  }));
   return {
+    kycDocuments,
     documentFiles,
     documentNames: documentFiles.map((entry) => entry.storedName),
   };
 }
-
 async function uploadBusinessDocuments(files = []) {
-  if (!Array.isArray(files) || files.length === 0) return { documentNames: [], documentFiles: [] };
+  if (!Array.isArray(files) || files.length === 0) return { kycDocuments: [], documentNames: [], documentFiles: [] };
 
   const uploadPayload = await Promise.all(files.map(async (file) => ({
     fileName: String(file?.name || "").trim(),
@@ -567,9 +581,13 @@ async function uploadBusinessDocuments(files = []) {
     dataUrl: await readFileAsDataUrl(file),
   })));
 
-  const response = await api.uploadDocuments(uploadPayload);
+  const response = await api.uploadKycDocuments({
+    files: uploadPayload,
+    companyId: activeCompany()?.id || "",
+    businessId: activeCompany()?.businessId || "",
+  });
   const normalized = normalizeUploadedDocumentMetadata(response);
-  if (normalized.documentFiles.length !== files.length) {
+  if (normalized.kycDocuments.length !== files.length) {
     throw new MobileApiError("Document upload failed. Please retry with valid PDF, PNG, or JPEG files.", 400, response || {});
   }
   return normalized;

@@ -1,6 +1,7 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createApi } from "../apps/api/src/index.js";
@@ -5331,6 +5332,235 @@ test("India individual KYC with aadhaarLast4 persists and clears paid-upgrade co
   }
 });
 
+
+test("new KYC document uploads are registry-backed with secure admin retrieval and legacy compatibility", async () => {
+  const uploadsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "eazinvoice-kyc-docservice-"));
+  const previousUploadsDir = process.env.EAZINVOICE_UPLOADS_DIR;
+  process.env.EAZINVOICE_UPLOADS_DIR = uploadsRoot;
+
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  async function request(pathname, { method = "GET", token = "", body } = {}) {
+    const response = await fetch(`${baseUrl}${pathname}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await response.text();
+    let payload = {};
+    try {
+      payload = text ? JSON.parse(text) : {};
+    } catch {
+      payload = { message: text };
+    }
+    return { response, payload };
+  }
+
+  async function signup(name, email, phone) {
+    const otp = await request("/auth/email-otp/request", {
+      method: "POST",
+      body: { mode: "signup", email, phone },
+    });
+    const created = await request("/auth/signup", {
+      method: "POST",
+      body: {
+        name,
+        email,
+        password: "Secure123",
+        phone,
+        otp: otp.payload.devOtp,
+      },
+    });
+    assert.equal(created.response.status, 201);
+    return created.payload;
+  }
+
+  const docPathFor = (businessId, documentId) => path.join(uploadsRoot, "business", businessId, "kyc", `${documentId}.pdf`);
+
+  try {
+    const admin = await signup("Support Admin", TEST_ADMIN_EMAIL, "9776600221");
+    const owner = await signup("KYC Doc Owner", "kyc-doc-owner@example.com", "9776600222");
+    const outsider = await signup("KYC Outsider", "kyc-doc-outsider@example.com", "9776600223");
+
+    const ownerCompany = await request("/companies", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        profilePurpose: "onboarding",
+        name: "DocService Owner Co",
+        entityType: "individual",
+        country: "IN",
+        address: "Owner lane",
+      },
+    });
+    assert.equal(ownerCompany.response.status, 201);
+
+    const outsiderCompany = await request("/companies", {
+      method: "POST",
+      token: outsider.token,
+      body: {
+        profilePurpose: "onboarding",
+        name: "DocService Other Co",
+        entityType: "individual",
+        country: "IN",
+        address: "Other lane",
+      },
+    });
+    assert.equal(outsiderCompany.response.status, 201);
+
+    const fileDataUrl = `data:application/pdf;base64,${Buffer.from("%PDF-1.4\nkyc docservice 1").toString("base64")}`;
+    const upload = await request("/kyc/documents", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        companyId: ownerCompany.payload.id,
+        files: [{
+          fileName: "owner-pan.pdf",
+          mimeType: "application/pdf",
+          documentType: "pan",
+          dataUrl: fileDataUrl,
+        }],
+      },
+    });
+    assert.equal(upload.response.status, 201);
+    assert.equal(Array.isArray(upload.payload.files), true);
+    const uploadedDoc = upload.payload.files[0];
+    assert.match(String(uploadedDoc.documentId || ""), /^doc_/);
+    assert.equal(String(uploadedDoc.filePath || ""), "");
+
+    const retryUpload = await request("/kyc/documents", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        companyId: ownerCompany.payload.id,
+        files: [{
+          fileName: "owner-pan.pdf",
+          mimeType: "application/pdf",
+          documentType: "pan",
+          dataUrl: fileDataUrl,
+        }],
+      },
+    });
+    assert.equal(retryUpload.response.status, 201);
+    assert.equal(retryUpload.payload.files[0].documentId, uploadedDoc.documentId);
+
+    const submitted = await request(`/companies/${ownerCompany.payload.id}`, {
+      method: "PATCH",
+      token: owner.token,
+      body: {
+        panNumber: "ABCDE1234F",
+        aadhaarLast4: "1234",
+        address: "1 Verified Lane",
+        addressProof: "utility bill",
+        kycDocuments: [{
+          documentId: uploadedDoc.documentId,
+          documentType: "pan",
+          fileName: uploadedDoc.fileName,
+          mimeType: uploadedDoc.mimeType,
+        }],
+      },
+    });
+    assert.equal(submitted.response.status, 200);
+    assert.equal(submitted.payload.kycStatus, "pending");
+    assert.equal(Array.isArray(submitted.payload.kycDocuments), true);
+    assert.equal(submitted.payload.kycDocuments[0].documentId, uploadedDoc.documentId);
+
+    const pendingUpgrade = await request("/subscriptions", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        plan: "standard",
+        amount: 199,
+        subscriberType: "company",
+      },
+    });
+    assert.equal(pendingUpgrade.response.status, 201);
+    assert.equal(pendingUpgrade.payload.status, "kyc_pending");
+
+    const queue = await request("/admin/kyc-review", { token: admin.token });
+    assert.equal(queue.response.status, 200);
+    const queued = queue.payload.companies.find((entry) => entry.id === ownerCompany.payload.id);
+    assert.ok(queued);
+    assert.ok(Array.isArray(queued.documents));
+    assert.equal(queued.documents[0].id, uploadedDoc.documentId);
+    assert.equal(queued.documents[0].available, true);
+
+    const unauth = await fetch(`${baseUrl}/admin/kyc-review/${ownerCompany.payload.id}/documents/${uploadedDoc.documentId}`);
+    assert.equal(unauth.status, 401);
+
+    const outsiderRead = await request(`/admin/kyc-review/${ownerCompany.payload.id}/documents/${uploadedDoc.documentId}`, { token: outsider.token });
+    assert.equal(outsiderRead.response.status, 403);
+
+    const wrongCompanyRead = await request(`/admin/kyc-review/${outsiderCompany.payload.id}/documents/${uploadedDoc.documentId}`, { token: admin.token });
+    assert.equal(wrongCompanyRead.response.status, 404);
+
+    const adminRead = await fetch(`${baseUrl}/admin/kyc-review/${ownerCompany.payload.id}/documents/${uploadedDoc.documentId}`, {
+      headers: { Authorization: `Bearer ${admin.token}` },
+    });
+    assert.equal(adminRead.status, 200);
+    assert.match(String(adminRead.headers.get("content-type") || ""), /application\/pdf/);
+
+    const firstPath = docPathFor(ownerCompany.payload.businessId, uploadedDoc.documentId);
+    assert.equal(fs.existsSync(firstPath), true);
+
+    fs.writeFileSync(firstPath, Buffer.from("tampered-bytes"));
+    const tamperedRead = await request(`/admin/kyc-review/${ownerCompany.payload.id}/documents/${uploadedDoc.documentId}`, { token: admin.token });
+    assert.equal(tamperedRead.response.status, 410);
+    assert.match(String(tamperedRead.payload.error || ""), /integrity|re-upload|unavailable/i);
+
+    const replacementUpload = await request("/kyc/documents", {
+      method: "POST",
+      token: owner.token,
+      body: {
+        companyId: ownerCompany.payload.id,
+        files: [{
+          fileName: "owner-pan-replacement.pdf",
+          mimeType: "application/pdf",
+          documentType: "pan",
+          dataUrl: `data:application/pdf;base64,${Buffer.from("%PDF-1.4\nkyc docservice 2").toString("base64")}`,
+        }],
+      },
+    });
+    assert.equal(replacementUpload.response.status, 201);
+    const replacementDoc = replacementUpload.payload.files[0];
+    assert.notEqual(replacementDoc.documentId, uploadedDoc.documentId);
+
+    const replaced = await request(`/companies/${ownerCompany.payload.id}`, {
+      method: "PATCH",
+      token: owner.token,
+      body: {
+        kycDocuments: [{
+          documentId: replacementDoc.documentId,
+          documentType: "pan",
+          fileName: replacementDoc.fileName,
+          mimeType: replacementDoc.mimeType,
+        }],
+      },
+    });
+    assert.equal(replaced.response.status, 200);
+    assert.equal(replaced.payload.kycDocuments[0].documentId, replacementDoc.documentId);
+    assert.equal(fs.existsSync(firstPath), true);
+
+    const replacementPath = docPathFor(ownerCompany.payload.businessId, replacementDoc.documentId);
+    fs.rmSync(replacementPath, { force: true });
+    const missingRead = await request(`/admin/kyc-review/${ownerCompany.payload.id}/documents/${replacementDoc.documentId}`, { token: admin.token });
+    assert.equal(missingRead.response.status, 410);
+    assert.match(String(missingRead.payload.error || ""), /re-upload|no longer available/i);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(uploadsRoot, { recursive: true, force: true });
+    if (previousUploadsDir === undefined) {
+      delete process.env.EAZINVOICE_UPLOADS_DIR;
+    } else {
+      process.env.EAZINVOICE_UPLOADS_DIR = previousUploadsDir;
+    }
+  }
+});
 test("razorpay webhooks require configured signature verification", async () => {
   const previousWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
   process.env.RAZORPAY_WEBHOOK_SECRET = "webhook_secret_for_signature";

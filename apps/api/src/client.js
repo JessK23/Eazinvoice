@@ -1,4 +1,4 @@
-﻿const API_BASE = typeof window !== "undefined" && window.location?.origin
+const API_BASE = typeof window !== "undefined" && window.location?.origin
   ? window.location.origin
   : "http://localhost:3001";
 
@@ -251,6 +251,19 @@ export const apiClient = {
   },
   uploadDocuments(token, files) {
     return request("/uploads", { method: "POST", token, body: { files } });
+  },
+  uploadKycDocuments(token, payload = {}) {
+    return request("/kyc/documents", {
+      method: "POST",
+      token,
+      body: {
+        files: Array.isArray(payload.files) ? payload.files : [],
+        companyId: payload.companyId || "",
+        businessId: payload.businessId || "",
+        workspaceOwnerUserId: payload.workspaceOwnerUserId || "",
+        idempotencyKey: payload.idempotencyKey || "",
+      },
+    });
   },
   getAdminMoney(token) {
     return request("/admin/money", { token });

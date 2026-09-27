@@ -1,4 +1,4 @@
-﻿import { apiClient, money, requireSession } from "./common.js?v=20260924-oauth-cleanup";
+import { apiClient, money, requireSession } from "./common.js?v=20260924-oauth-cleanup";
 import { normalizeActionError, openActionStatusModal } from "./action-error-modal.js?v=20260926-action-error-modal";
 
 const form = document.getElementById("subscriptionForm");
@@ -526,6 +526,7 @@ form?.addEventListener("submit", async (event) => {
     const entityType = data.get("entityType");
     const aadhaarNumber = String(data.get("aadhaarNumber") || "").replace(/\D/g, "");
     const hasAadhaar = aadhaarNumber.length >= 4;
+    const documentTypeByField = { panDocument: "pan", aadhaarDocument: "aadhaar", gstDocument: "gst" };
     const fileEntries = await Promise.all(["panDocument", "aadhaarDocument", "gstDocument"].map(async (field) => {
       const file = data.get(field);
       if (!file || typeof file === "string") return null;
@@ -539,10 +540,15 @@ form?.addEventListener("submit", async (event) => {
         fileName: file.name,
         mimeType: file.type,
         dataUrl,
+        documentType: documentTypeByField[field] || "supporting",
       };
     }));
     const uploaded = fileEntries.filter(Boolean).length
-      ? await apiClient.uploadDocuments(token, fileEntries.filter(Boolean))
+      ? await apiClient.uploadKycDocuments(token, {
+        files: fileEntries.filter(Boolean),
+        companyId: existingCompany?.id || "",
+        businessId: existingCompany?.businessId || "",
+      })
       : { files: [] };
     const payload = {
       ownerUserId: null,
@@ -562,9 +568,22 @@ form?.addEventListener("submit", async (event) => {
       aadhaarLast4: hasAadhaar ? aadhaarNumber.slice(-4) : "",
     };
     if (uploaded.files.length) {
-      payload.documentNames = uploaded.files.map((file) => file.storedName);
-      payload.documentFiles = uploaded.files;
+      payload.kycDocuments = uploaded.files.map((file) => ({
+        documentId: file.documentId || file.id,
+        documentType: file.documentType || "supporting",
+        fileName: file.fileName || file.storedName || "",
+        mimeType: file.mimeType || "",
+      }));
+      payload.documentNames = uploaded.files.map((file) => file.fileName || file.storedName || "document");
+      payload.documentFiles = uploaded.files.map((file) => ({
+        storedName: file.storedName || file.fileName || "",
+        filePath: "",
+        mimeType: file.mimeType || "",
+        documentId: file.documentId || file.id || "",
+        documentType: file.documentType || "supporting",
+      }));
     } else if (existingCompany) {
+      payload.kycDocuments = Array.isArray(existingCompany.kycDocuments) ? existingCompany.kycDocuments : [];
       payload.documentNames = Array.isArray(existingCompany.documentNames) ? existingCompany.documentNames : [];
       payload.documentFiles = Array.isArray(existingCompany.documentFiles) ? existingCompany.documentFiles : [];
     }
