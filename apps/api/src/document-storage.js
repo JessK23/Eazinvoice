@@ -1,5 +1,6 @@
 ﻿import path from "node:path";
 import { createLocalDocumentStorage } from "./local-document-storage.js";
+import { createAzureBlobDocumentStorage } from "./azure-blob-document-storage.js";
 
 export const DOCUMENT_CLASSIFICATIONS = Object.freeze({
   KYC: "kyc",
@@ -41,11 +42,22 @@ export function resolveUploadsRoot() {
 
 export function createDocumentStorage(options = {}) {
   const provider = String(options.provider || process.env.EAZINVOICE_DOCUMENT_STORAGE_PROVIDER || "local").trim().toLowerCase();
-  if (provider !== "local") {
-    throw new Error(`Unsupported document storage provider: ${provider}`);
+
+  if (provider === "local") {
+    return createLocalDocumentStorage({
+      rootDir: options.rootDir || resolveUploadsRoot(),
+      provider,
+    });
   }
-  return createLocalDocumentStorage({
-    rootDir: options.rootDir || resolveUploadsRoot(),
-    provider,
-  });
+
+  if (provider === "azure") {
+    return createAzureBlobDocumentStorage({
+      provider,
+      container: options.container || process.env.EAZINVOICE_AZURE_STORAGE_CONTAINER,
+      connectionString: options.connectionString || process.env.EAZINVOICE_AZURE_STORAGE_CONNECTION_STRING,
+      clientFactory: options.clientFactory,
+    });
+  }
+
+  throw new Error(`Unsupported document storage provider: ${provider}`);
 }

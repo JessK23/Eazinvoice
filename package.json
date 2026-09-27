@@ -11,6 +11,7 @@
     "db:check": "node scripts/postgres-check.mjs",
     "db:migrate": "node scripts/postgres-check.mjs --migrate",
     "db:verify-schema": "node scripts/postgres-check.mjs --verify-schema",
+    "deploy:render-predeploy": "node scripts/render-predeploy.mjs",
     "db:validate-p21b": "node scripts/postgres-p21b-validate.mjs",
     "db:import-json": "node scripts/postgres-import-json.mjs",
     "db:report-summary": "node scripts/postgres-report-summary.mjs",
@@ -39,6 +40,7 @@
     "@playwright/test": "^1.62.1"
   },
   "dependencies": {
+    "@azure/storage-blob": "^12.34.0",
     "@capacitor/app": "^8.1.1",
     "@capacitor/browser": "^8.0.4",
     "pg": "^8.22.0"

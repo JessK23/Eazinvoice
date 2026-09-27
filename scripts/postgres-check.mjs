@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { loadLocalEnv } from "./postgres-env.mjs";
 
 const ROOT = process.cwd();
 const MIGRATIONS_DIR = path.join(ROOT, "database", "migrations");
 const REQUIRED_SCHEMA_MIGRATION_DEFAULT = "024_document_registry_foundation";
+const MIGRATION_LOCK_KEY = "852004021";
 
 function maskDatabaseUrl(value) {
   return String(value || "").replace(/postgres:\/\/([^:]+):([^@]+)@/, "postgres://$1:***@");
@@ -157,6 +159,52 @@ function verifyDocumentRegistryStructure(psql, databaseUrl) {
   }
 }
 
+function toPsqlPath(filePath) {
+  return String(filePath || "").replace(/\\/g, "/");
+}
+
+function writeMigrationPlanFile(migrationFiles) {
+  const lines = [
+    "\\set ON_ERROR_STOP on",
+    "select case when pg_try_advisory_lock(" + MIGRATION_LOCK_KEY + ") then 'on' else 'off' end as migration_lock_acquired \\gset",
+    "\\if :migration_lock_acquired",
+    "\\echo Migration lock acquired.",
+    "create table if not exists eazinvoice_migrations (id bigserial primary key, migration_name text not null unique, applied_at timestamptz not null default now());",
+  ];
+
+  for (const migrationFile of migrationFiles) {
+    const migrationName = migrationNameFromFile(migrationFile);
+    const escapedName = migrationName.replace(/'/g, "''");
+    lines.push(`select case when exists (select 1 from eazinvoice_migrations where migration_name = '${escapedName}') then 1 else 0 end as migration_applied \\gset`);
+    lines.push("\\if :migration_applied");
+    lines.push(`\\echo Skipping applied migration: ${migrationName}`);
+    lines.push("\\else");
+    lines.push(`\\echo Applying migration: ${migrationName}`);
+    lines.push(`\\i ${toPsqlPath(migrationFile)}`);
+    lines.push("\\endif");
+  }
+
+  lines.push("select pg_advisory_unlock(" + MIGRATION_LOCK_KEY + ");");
+  lines.push("\\echo Postgres migrations completed.");
+  lines.push("\\else");
+  lines.push("\\echo Migration lock is already held by another runner. Failing closed.");
+  lines.push("select 1 / 0;");
+  lines.push("\\endif");
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eazinvoice-migrate-"));
+  const planPath = path.join(tempDir, "migration-plan.sql");
+  fs.writeFileSync(planPath, lines.join("\n") + "\n", "utf8");
+  return {
+    planPath,
+    cleanup() {
+      try {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch {
+      }
+    },
+  };
+}
+
 loadLocalEnv(ROOT);
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -184,33 +232,17 @@ if (process.argv.includes("--migrate")) {
     console.log("No migrations found.");
     process.exit(0);
   }
-  const appliedOutput = runPsql(psql, [
-    databaseUrl,
-    "-v",
-    "ON_ERROR_STOP=1",
-    "-At",
-    "-c",
-    "create table if not exists eazinvoice_migrations (id bigserial primary key, migration_name text not null unique, applied_at timestamptz not null default now()); select migration_name from eazinvoice_migrations order by migration_name;",
-  ], "Migration metadata check");
-  const applied = new Set(appliedOutput.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
-
-  for (const migrationFile of migrationFiles) {
-    const migrationName = migrationNameFromFile(migrationFile);
-    if (applied.has(migrationName)) {
-      console.log(`Skipping applied migration: ${migrationName}`);
-      continue;
-    }
-    console.log(`Applying migration: ${migrationName}`);
-    runPsql(psql, [
+  const plan = writeMigrationPlanFile(migrationFiles);
+  try {
+    const output = runPsql(psql, [
       databaseUrl,
-      "-v",
-      "ON_ERROR_STOP=1",
       "-f",
-      migrationFile,
-    ], `Migration ${migrationName}`);
+      plan.planPath,
+    ], "Postgres migration run");
+    if (output) console.log(output);
+  } finally {
+    plan.cleanup();
   }
-
-  console.log("Postgres migrations completed.");
 }
 
 if (process.argv.includes("--verify-schema")) {
