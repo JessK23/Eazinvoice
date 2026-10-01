@@ -16,6 +16,7 @@ export const AUTHORITY_SOURCES = Object.freeze({
   POSTGRES: "postgres",
   STORAGE_ADAPTER: "storage-adapter",
   DERIVED: "derived",
+  DOCUMENT_SERVICE: "document-service",
 });
 
 export const FALLBACK_POLICIES = Object.freeze({
@@ -49,6 +50,7 @@ const ENTITY_FAMILIES = Object.freeze([
   ["subscriptions", "subscription"],
   ["entitlements", "entitlement"],
   ["kyc-state", "state"],
+  ["kyc-document-authority", "kyc-document"],
   ["document-registry-metadata", "state"],
   ["document-binary-storage", "binary"],
   ["accounting-ledger-posting", "accounting"],
@@ -172,6 +174,20 @@ function buildEntityMatrix({ storageMode, postgresConfigured, dualWrite, coreTab
         fallbackPolicy: FALLBACK_POLICIES.NONE,
         targetAuthority: AUTHORITY_SOURCES.STORAGE_ADAPTER,
         cutoverState: "provider-selected-separately",
+        postgresConfigured,
+      };
+      continue;
+    }
+    if (kind === "kyc-document") {
+      matrix[name] = {
+        entityFamily: name,
+        currentMode: storageMode,
+        readAuthority: AUTHORITY_SOURCES.DOCUMENT_SERVICE,
+        writeAuthority: AUTHORITY_SOURCES.DOCUMENT_SERVICE,
+        mirror: "registry-metadata",
+        fallbackPolicy: FALLBACK_POLICIES.NONE,
+        targetAuthority: AUTHORITY_SOURCES.DOCUMENT_SERVICE,
+        cutoverState: "active-for-registry-backed-records-legacy-only-compatibility",
         postgresConfigured,
       };
       continue;

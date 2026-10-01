@@ -102,3 +102,13 @@ test("diagnostic output is structural and does not echo secrets", () => {
   assert.ok(result.entities["document-binary-storage"]);
 });
 
+test("KYC document authority is explicitly registry-backed through DocumentService", () => {
+  const result = authority({});
+  const kycDocuments = result.entities["kyc-document-authority"];
+  assert.equal(kycDocuments.readAuthority, AUTHORITY_SOURCES.DOCUMENT_SERVICE);
+  assert.equal(kycDocuments.writeAuthority, AUTHORITY_SOURCES.DOCUMENT_SERVICE);
+  assert.equal(kycDocuments.fallbackPolicy, FALLBACK_POLICIES.NONE);
+  assert.equal(kycDocuments.targetAuthority, AUTHORITY_SOURCES.DOCUMENT_SERVICE);
+  assert.match(kycDocuments.cutoverState, /legacy-only-compatibility/);
+});
+

@@ -267,6 +267,32 @@ export function createDocumentService({ api, storage }) {
       };
     },
 
+    async inspectDocumentForBusiness(documentId, businessId) {
+      const normalizedBusinessId = asText(businessId);
+      const document = api.getDocumentRecordById(documentId);
+      if (!document || asText(document.businessId) !== normalizedBusinessId) {
+        return { ok: false, status: "not_found" };
+      }
+      if (document.status === DOCUMENT_STATUSES.ARCHIVED) {
+        return { ok: false, status: "missing" };
+      }
+      if (isProviderMismatch(document, storage)) {
+        return { ok: false, status: "storage_error" };
+      }
+      let file;
+      try {
+        file = await storage.get(document.storageKey);
+      } catch {
+        return { ok: false, status: "missing" };
+      }
+      if (!file?.bytes) return { ok: false, status: "missing" };
+      const checksum = generateChecksum(file.bytes);
+      if (checksum.checksumSha256 !== asText(document.checksumSha256)) {
+        return { ok: false, status: "checksum_mismatch" };
+      }
+      return { ok: true, status: "available" };
+    },
+
     async reconcileDocument(documentId) {
       const document = api.getDocumentRecordById(documentId);
       if (!document) {

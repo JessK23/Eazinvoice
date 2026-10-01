@@ -42,6 +42,11 @@ import { sendSmtpMail } from "./smtp.js";
 import { UploadValidationError, validateUploadInput } from "./upload-security.js";
 import { createDocumentStorage, resolveUploadsRoot } from "./document-storage.js";
 import { createDocumentService } from "./document-service.js";
+import {
+  deriveLegacyKycMetadataFromReferences,
+  normalizeKycDocumentReferences,
+  normalizeKycDocumentType,
+} from "./kyc-document-authority.js";
 import { generateBusinessDocumentPdfBytes } from "./business-document-pdf.js";
 import { archiveAuthoritativeBusinessDocumentPdf, findArchivedBusinessDocument, resolveBusinessDocumentFileName, safePdfDownloadName } from "./business-document-archive.js";
 
@@ -827,51 +832,7 @@ async function saveBase64File(input, options = {}) {
 }
 
 const ALLOWED_DOCUMENT_MIME_TYPES = new Set(["application/pdf", "image/png", "image/jpeg"]);
-const KYC_DOCUMENT_TYPES = new Set(["pan", "aadhaar", "gst", "address_proof", "registration", "tax_id", "identity", "supporting"]);
 
-function normalizeKycDocumentType(value = "") {
-  const normalized = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-  if (!normalized) return "supporting";
-  return KYC_DOCUMENT_TYPES.has(normalized) ? normalized : "supporting";
-}
-
-function normalizeKycDocumentReferences(value = []) {
-  const references = [];
-  const input = Array.isArray(value) ? value : [];
-  for (const entry of input) {
-    if (!entry) continue;
-    const object = typeof entry === "string" ? { documentId: entry } : entry;
-    const documentId = String(object.documentId || object.id || "").trim();
-    if (!documentId) continue;
-    references.push({
-      documentId,
-      documentType: normalizeKycDocumentType(object.documentType || object.kind),
-      fileName: String(object.fileName || object.originalFilename || "").trim(),
-      mimeType: String(object.mimeType || "").trim().toLowerCase(),
-    });
-  }
-  return references;
-}
-
-function deriveLegacyKycMetadataFromReferences(references = []) {
-  const files = [];
-  const names = [];
-  for (const entry of references) {
-    const safeName = String(entry.fileName || `${entry.documentType || "kyc"}.document`).trim().replace(/[\\/]+/g, "_");
-    names.push(safeName);
-    files.push({
-      storedName: safeName,
-      filePath: "",
-      mimeType: String(entry.mimeType || "application/octet-stream").trim().toLowerCase(),
-      documentId: String(entry.documentId || "").trim(),
-      documentType: normalizeKycDocumentType(entry.documentType),
-    });
-  }
-  return {
-    documentNames: names,
-    documentFiles: files,
-  };
-}
 
 function sanitizeStoredUploadName(value = "") {
   const normalized = String(value || "").trim().replace(/\\+/g, "/");
