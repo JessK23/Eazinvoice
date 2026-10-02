@@ -114,6 +114,21 @@ export const apiClient = {
   reactivateVendor(token, vendorId, body = {}) {
     return request(`/vendors/${vendorId}/reactivate`, { method: "POST", token, body });
   },
+  listVendorBills(token, options = {}) {
+    return request(`/vendor-bills${queryString(options)}`, { token });
+  },
+  createVendorBill(token, body) {
+    return request("/vendor-bills", { method: "POST", token, body });
+  },
+  getVendorBill(token, billId, options = {}) {
+    return request(`/vendor-bills/${billId}${queryString(options)}`, { token });
+  },
+  updateVendorBill(token, billId, body) {
+    return request(`/vendor-bills/${billId}`, { method: "PATCH", token, body });
+  },
+  recordVendorBillPayment(token, billId, body) {
+    return request(`/vendor-bills/${billId}/payments`, { method: "POST", token, body });
+  },
   listInvoices(token, options = {}) {
     return request(`/invoices${queryString(options)}`, { token });
   },

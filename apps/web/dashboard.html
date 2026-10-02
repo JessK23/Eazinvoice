@@ -71,6 +71,7 @@
           <summary class="nav-item nav-item-toggle">Vendors and Bills</summary>
           <div class="nav-subitems">
             <a class="nav-subitem" href="/apps/web/dashboard.html#vendors" data-page-link="vendors">Vendors</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#vendor-bills" data-page-link="vendor-bills">Vendor Bills</a>
             <a class="nav-subitem" href="/apps/web/dashboard.html#report-expenses" data-page-link="report-expenses">Expenses and A/P</a>
             <a class="nav-subitem" href="/apps/web/dashboard.html#accounting" data-page-link="accounting">Vendor Credits and Recoveries <small>Ledger</small></a>
           </div>
@@ -786,6 +787,66 @@
             <div id="createdPoList" class="list"></div>
           </section>
         </div>
+      </section>
+      <section id="vendor-bills" class="panel dashboard-page" data-dashboard-page="vendor-bills" data-surface-owner="purchases" data-surface-purpose="vendor-bills">
+        <div class="panel-head">
+          <div>
+            <span class="pill blue">Purchases</span>
+            <h2>Vendor Bills</h2>
+          </div>
+          <span class="hint">Existing Vendor Bill and payable authority</span>
+        </div>
+        <form id="vendorBillForm" class="stacked-form" data-surface-action="vendor-bill.create">
+          <div class="form-grid two">
+            <label>Vendor
+              <select id="vendorBillVendorId" name="vendorId"><option value="">Select vendor</option></select>
+            </label>
+            <label>Bill Number
+              <input name="vendorBillNumber" placeholder="Supplier bill number" />
+            </label>
+            <label>Bill Date
+              <input name="billDate" type="date" />
+            </label>
+            <label>Due Date
+              <input name="dueDate" type="date" />
+            </label>
+            <label>Currency
+              <input name="currency" value="INR" />
+            </label>
+            <label>Tax Rate (%)
+              <input name="taxRate" type="number" min="0" step="0.01" value="0" />
+            </label>
+            <label>Expense Category
+              <input name="expenseCategory" value="Operating Expense" />
+            </label>
+            <label>GST Mode
+              <select name="gstMode">
+                <option value="intra">Intra-state</option>
+                <option value="inter">Inter-state</option>
+                <option value="none">No tax</option>
+              </select>
+            </label>
+          </div>
+          <div class="form-grid three">
+            <label>Line Description
+              <input name="itemDescription" required placeholder="What was purchased" />
+            </label>
+            <label>Quantity
+              <input name="itemQuantity" type="number" min="0.01" step="0.01" value="1" required />
+            </label>
+            <label>Rate
+              <input name="itemRate" type="number" min="0" step="0.01" required />
+            </label>
+          </div>
+          <label>Notes
+            <textarea name="notes" rows="2" placeholder="Optional internal note"></textarea>
+          </label>
+          <div class="row-actions">
+            <button class="primary" type="submit">Create Vendor Bill</button>
+            <span id="vendorBillFormStatus" class="hint" aria-live="polite"></span>
+          </div>
+        </form>
+        <div id="vendorBillsList" class="management-list"></div>
       </section>
       <section id="business-profiles" class="panel dashboard-page" data-dashboard-page="business-profiles">
         <div class="panel-head">

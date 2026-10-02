@@ -122,6 +122,10 @@ const dashboardPageLinks = document.querySelectorAll("[data-page-link]");
 const businessProfilesList = document.getElementById("businessProfilesList");
 const customersList = document.getElementById("customersList");
 const vendorsList = document.getElementById("vendorsList");
+const vendorBillForm = document.getElementById("vendorBillForm");
+const vendorBillVendorId = document.getElementById("vendorBillVendorId");
+const vendorBillFormStatus = document.getElementById("vendorBillFormStatus");
+const vendorBillsList = document.getElementById("vendorBillsList");
 const customerForm = document.getElementById("customerForm");
 const customerFormStatus = document.getElementById("customerFormStatus");
 const vendorForm = document.getElementById("vendorForm");
@@ -271,6 +275,7 @@ let dashboardCompanies = [];
 let dashboardPurchaseOrders = [];
 let dashboardCustomers = [];
 let dashboardVendors = [];
+let dashboardVendorBills = [];
 let dashboardPayments = [];
 let dashboardReportSummary = null;
 let detailReportSummary = null;
@@ -4215,6 +4220,71 @@ function renderVendors(vendors = dashboardVendors, purchaseOrders = dashboardPur
   });
 }
 
+function renderVendorBills(bills = dashboardVendorBills) {
+  if (!vendorBillsList) return;
+  if (vendorBillVendorId) {
+    const selected = vendorBillVendorId.value;
+    vendorBillVendorId.innerHTML = `<option value="">Select vendor</option>${dashboardVendors
+      .filter((vendor) => String(vendor.status || "active").toLowerCase() !== "deleted")
+      .map((vendor) => `<option value="${escapeHtml(vendor.id)}">${escapeHtml(vendor.businessName || vendor.name || vendor.vendorCode || vendor.id)}</option>`)
+      .join("")}`;
+    if (selected) vendorBillVendorId.value = selected;
+  }
+  const vendorName = (bill) => {
+    const vendor = dashboardVendors.find((entry) => entry.id === bill.vendorId);
+    return vendor?.businessName || vendor?.name || bill.vendorId || "Vendor not selected";
+  };
+  vendorBillsList.innerHTML = bills.length
+    ? bills.map((bill) => {
+      const status = String(bill.status || "draft").toLowerCase();
+      const paymentStatus = bill.paymentStatus || (status === "draft" ? "draft" : "unpaid");
+      const editAction = status === "draft"
+        ? `<button class="ghost small" type="button" data-edit-vendor-bill="${escapeHtml(bill.id)}">Edit draft</button>`
+        : "";
+      return `<article class="management-card" data-vendor-bill-id="${escapeHtml(bill.id)}">
+        <div>
+          <div class="badge-row">
+            <span class="pill blue">${escapeHtml(bill.vendorBillNumber || bill.internalBillNumber || bill.id)}</span>
+            <span class="pill ${status === "draft" ? "gold" : "green"}">${escapeHtml(status.toUpperCase())}</span>
+          </div>
+          <h3>${escapeHtml(vendorName(bill))}</h3>
+          <p>${escapeHtml(bill.billDate || "Bill date not saved")} · Due ${escapeHtml(bill.dueDate || "not set")}</p>
+          <p class="hint">${escapeHtml(bill.currency || "INR")} ${money(bill.total || 0)} · Paid ${money(bill.paidAmount || 0)} · Balance ${money(bill.balanceAmount || 0)}</p>
+          <p class="hint">Payment: ${escapeHtml(paymentStatus)} · Items: ${Array.isArray(bill.items) ? bill.items.length : 0}</p>
+        </div>
+        <div class="row-actions">${editAction}</div>
+      </article>`;
+    }).join("")
+    : '<div class="notice">No Vendor Bills yet. Create the first bill from this Purchases surface.</div>';
+
+  document.querySelectorAll("[data-edit-vendor-bill]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!workspaceCanWriteRecords()) {
+        setInlineStatus(vendorBillFormStatus, workspaceWriteLockMessage("edit vendor bills"), "error");
+        return;
+      }
+      const bill = dashboardVendorBills.find((entry) => entry.id === button.getAttribute("data-edit-vendor-bill"));
+      if (!bill) return;
+      const dueDate = window.prompt("Due date", bill.dueDate || "");
+      if (dueDate === null) return;
+      const notes = window.prompt("Notes", bill.notes || "");
+      if (notes === null) return;
+      try {
+        const updated = await apiClient.updateVendorBill(token, bill.id, {
+          ...selectedWorkspaceOptions(),
+          dueDate,
+          notes,
+        });
+        dashboardVendorBills = dashboardVendorBills.map((entry) => (entry.id === updated.id ? updated : entry));
+        renderVendorBills(dashboardVendorBills);
+        setInlineStatus(vendorBillFormStatus, "Vendor Bill updated. Remaining in Vendor Bills.", "success");
+      } catch (error) {
+        setInlineStatus(vendorBillFormStatus, error.message || "Could not update Vendor Bill.", "error");
+      }
+    });
+  });
+}
+
 function setPaymentModalStatus(message, tone = "") {
   if (!paymentModalStatus) return;
   paymentModalStatus.textContent = message || "";
@@ -5963,6 +6033,48 @@ workspaceGroups.forEach((group) => {
   });
 });
 
+vendorBillForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!workspaceCanWriteRecords()) {
+    setInlineStatus(vendorBillFormStatus, workspaceWriteLockMessage("create vendor bills"), "error");
+    return;
+  }
+  const formData = new FormData(vendorBillForm);
+  const description = String(formData.get("itemDescription") || "").trim();
+  const quantity = Number(formData.get("itemQuantity"));
+  const rate = Number(formData.get("itemRate"));
+  if (!vendorBillVendorId?.value) {
+    setInlineStatus(vendorBillFormStatus, "Select the vendor before saving.", "error");
+    return;
+  }
+  if (!description || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(rate) || rate < 0) {
+    setInlineStatus(vendorBillFormStatus, "Enter a description, positive quantity, and valid rate.", "error");
+    return;
+  }
+  setInlineStatus(vendorBillFormStatus, "Saving Vendor Bill...", "");
+  try {
+    const bill = await apiClient.createVendorBill(token, {
+      ...selectedWorkspaceOptions(),
+      vendorId: vendorBillVendorId.value,
+      vendorBillNumber: formData.get("vendorBillNumber"),
+      billDate: formData.get("billDate"),
+      dueDate: formData.get("dueDate"),
+      currency: formData.get("currency"),
+      taxRate: Number(formData.get("taxRate") || 0),
+      expenseCategory: formData.get("expenseCategory"),
+      gstMode: formData.get("gstMode"),
+      notes: formData.get("notes"),
+      items: [{ description, quantity, rate }],
+    });
+    dashboardVendorBills = [bill, ...dashboardVendorBills.filter((entry) => entry.id !== bill.id)];
+    vendorBillForm.reset();
+    renderVendorBills(dashboardVendorBills);
+    setInlineStatus(vendorBillFormStatus, `${bill.vendorBillNumber || bill.internalBillNumber || "Vendor Bill"} created. Remaining in Vendor Bills.`, "success");
+  } catch (error) {
+    setInlineStatus(vendorBillFormStatus, error.message || "Could not create Vendor Bill.", "error");
+  }
+});
+
 customerForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!workspaceCanWriteRecords()) {
@@ -6117,10 +6229,11 @@ async function initializeDashboard() {
       }
     }
     const workspaceOptions = selectedWorkspaceOptions();
-    const [companies, customers, vendors, reports, invoices, archivedInvoices, purchaseOrders, payments] = await Promise.all([
+    const [companies, customers, vendors, vendorBills, reports, invoices, archivedInvoices, purchaseOrders, payments] = await Promise.all([
       apiClient.listCompanies(token, workspaceOptions).catch(() => []),
       apiClient.listCustomers(token, workspaceOptions).catch(() => []),
       apiClient.listVendors(token, workspaceOptions).catch(() => []),
+      apiClient.listVendorBills(token, workspaceOptions).catch(() => []),
       apiClient.listReports(token, workspaceOptions).catch(() => []),
       apiClient.listInvoices(token, workspaceOptions),
       apiClient.listInvoices(token, { ...workspaceOptions, archived: "only" }).catch(() => []),
@@ -6147,6 +6260,7 @@ async function initializeDashboard() {
   dashboardCompanies = companies;
   dashboardCustomers = customers;
   dashboardVendors = vendors;
+  dashboardVendorBills = vendorBills;
   dashboardPurchaseOrders = purchaseOrders;
   dashboardPayments = payments;
   showProfileSetupDialog(getProfileSetupState(currentUser, dashboardCompanies));
@@ -6162,6 +6276,7 @@ async function initializeDashboard() {
   renderBusinessProfiles(dashboardCompanies);
   renderCustomers(dashboardCustomers);
   renderVendors(dashboardVendors, dashboardPurchaseOrders);
+  renderVendorBills(dashboardVendorBills);
   renderProfile(currentUser, activeOrg);
   if (activeOrg) {
     if (orgName) orgName.textContent = activeOrg.entityType === "freelancer" || activeOrg.entityType === "consultant" ? activeOrg.name : activeOrg.legalName || activeOrg.name;
