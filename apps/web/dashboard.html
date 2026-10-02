@@ -337,7 +337,7 @@
           <a href="/apps/web/invoice.html?type=gst">Create GST Invoice</a>
           <span class="quick-action-disabled" title="Quotation workflow is paused until the backend quotation model is implemented.">Quotation Coming Later</span>
           <a href="/apps/web/invoice.html?type=po">Create Purchase Order</a>
-          <a href="/apps/web/invoice.html#customerStep">Add Customer</a>
+          <a href="/apps/web/dashboard.html#customers" data-page-link="customers">Add Customer</a>
           <a href="/apps/web/invoice.html#itemsStep">Add Item</a>
         </div>
       </section>
@@ -805,24 +805,44 @@
         </div>
         <div id="businessProfilesList" class="management-list"></div>
       </section>
-      <section id="customers" class="panel dashboard-page" data-dashboard-page="customers">
+      <section id="customers" class="panel dashboard-page" data-dashboard-page="customers" data-surface-owner="sales" data-surface-purpose="customer-master">
         <div class="panel-head">
           <div>
             <span class="pill blue">Customer directory</span>
             <h2>Customers</h2>
           </div>
-          <a class="primary" href="/apps/web/invoice.html#customerStep">Add Customer</a>
+          <a class="primary" href="/apps/web/dashboard.html#customers" data-page-link="customers">Add Customer</a>
         </div>
-        <div class="notice">Customer edit/delete screens will connect to backend customer-management routes when those routes are added. Invoice dues are calculated from created invoices.</div>
+        <form id="customerForm" class="stacked-form" data-surface-action="customer.create">
+          <div class="form-grid two">
+            <label>Customer Name
+              <input name="name" required placeholder="Customer or business name" />
+            </label>
+            <label>Email
+              <input name="email" type="email" placeholder="customer@example.com" />
+            </label>
+            <label>GST Number
+              <input name="gstNumber" placeholder="Optional GST number" />
+            </label>
+            <label>Billing Address
+              <textarea name="billingAddress" placeholder="Customer billing address"></textarea>
+            </label>
+          </div>
+          <div class="row-actions">
+            <button class="primary" type="submit">Add Customer</button>
+            <span id="customerFormStatus" class="hint" aria-live="polite"></span>
+          </div>
+        </form>
+        <div class="notice">Customer management is owned by Sales. Invoice dues are calculated from created invoices.</div>
         <div id="customersList" class="management-list"></div>
       </section>
-      <section id="vendors" class="panel dashboard-page" data-dashboard-page="vendors">
+      <section id="vendors" class="panel dashboard-page" data-dashboard-page="vendors" data-surface-owner="purchases" data-surface-purpose="vendor-master">
         <div class="panel-head">
           <div>
             <span class="pill blue">Vendor directory</span>
             <h2>Vendors</h2>
           </div>
-          <a class="primary" href="/apps/web/invoice.html?type=po">Add Vendor Through PO/WO</a>
+          <a class="primary" href="/apps/web/dashboard.html#vendors" data-page-link="vendors">Add Vendor</a>
         </div>
         <form id="vendorForm" class="stacked-form">
           <div class="form-grid two">

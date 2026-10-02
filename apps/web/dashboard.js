@@ -122,6 +122,8 @@ const dashboardPageLinks = document.querySelectorAll("[data-page-link]");
 const businessProfilesList = document.getElementById("businessProfilesList");
 const customersList = document.getElementById("customersList");
 const vendorsList = document.getElementById("vendorsList");
+const customerForm = document.getElementById("customerForm");
+const customerFormStatus = document.getElementById("customerFormStatus");
 const vendorForm = document.getElementById("vendorForm");
 const vendorFormStatus = document.getElementById("vendorFormStatus");
 const reportDetailBadge = document.getElementById("reportDetailBadge");
@@ -5959,6 +5961,36 @@ workspaceGroups.forEach((group) => {
     });
     syncWorkspaceSectionControls(group.id);
   });
+});
+
+customerForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!workspaceCanWriteRecords()) {
+    setInlineStatus(customerFormStatus, workspaceWriteLockMessage("create customers"), "error");
+    return;
+  }
+  const formData = new FormData(customerForm);
+  const customerName = String(formData.get("name") || "").trim();
+  if (!customerName) {
+    setInlineStatus(customerFormStatus, "Enter the customer name before saving.", "error");
+    return;
+  }
+  setInlineStatus(customerFormStatus, "Saving customer...", "");
+  try {
+    const customer = await apiClient.createCustomer(token, {
+      ...selectedWorkspaceOptions(),
+      name: customerName,
+      email: formData.get("email"),
+      gstNumber: formData.get("gstNumber"),
+      billingAddress: formData.get("billingAddress"),
+    });
+    dashboardCustomers = [customer, ...dashboardCustomers.filter((item) => item.id !== customer.id)];
+    customerForm.reset();
+    renderCustomers(dashboardCustomers);
+    setInlineStatus(customerFormStatus, `${customer.customerCode || "Customer"} saved.`, "success");
+  } catch (error) {
+    setInlineStatus(customerFormStatus, error.message || "Could not save customer.", "error");
+  }
 });
 
 vendorForm?.addEventListener("submit", async (event) => {
