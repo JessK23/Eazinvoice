@@ -4052,7 +4052,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
             billingCycle: orderContext.billingCycle || "",
           },
         });
-        api.createBillingOrder({
+        await api.createBillingOrder({
           ...orderContext,
           gateway: "razorpay",
           gatewayOrderId: order.id,
