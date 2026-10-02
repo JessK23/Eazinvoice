@@ -83,6 +83,15 @@ const journalEntriesList = document.getElementById("journalEntriesList");
 const bankBookList = document.getElementById("bankBookList");
 const cashBookList = document.getElementById("cashBookList");
 const ledgerDrilldownList = document.getElementById("ledgerDrilldownList");
+const generalLedgerFilterForm = document.getElementById("generalLedgerFilterForm");
+const generalLedgerFrom = document.getElementById("generalLedgerFrom");
+const generalLedgerTo = document.getElementById("generalLedgerTo");
+const generalLedgerAccountCode = document.getElementById("generalLedgerAccountCode");
+const generalLedgerList = document.getElementById("generalLedgerList");
+const generalLedgerMeta = document.getElementById("generalLedgerMeta");
+const generalLedgerStatus = document.getElementById("generalLedgerStatus");
+const refreshGeneralLedgerBtn = document.getElementById("refreshGeneralLedgerBtn");
+const generalLedgerClearBtn = document.getElementById("generalLedgerClearBtn");
 const accountingGstCards = document.getElementById("accountingGstCards");
 const accountingGstEntries = document.getElementById("accountingGstEntries");
 const balanceSheetSummary = document.getElementById("balanceSheetSummary");
@@ -384,6 +393,7 @@ function showDashboardPage(page = currentDashboardPage()) {
   if (page === "reports") renderMainReportCharts();
   if (page === "advanced-workflows") loadAdvancedWorkflows();
   if (page === "admin-operations") loadAdminOperations();
+  if (visiblePage === "general-ledger") loadGeneralLedger();
 }
 
 function syncWorkspaceSectionControls(groupId) {
@@ -3278,6 +3288,80 @@ async function loadLedgerDrilldown(accountId) {
   }
 }
 
+function generalLedgerFilters() {
+  const filters = selectedWorkspaceOptions();
+  const from = String(generalLedgerFrom?.value || "").trim();
+  const to = String(generalLedgerTo?.value || "").trim();
+  const accountCode = String(generalLedgerAccountCode?.value || "").trim();
+  if (from) filters.from = from;
+  if (to) filters.to = to;
+  if (accountCode) filters.accountCode = accountCode;
+  return filters;
+}
+
+function generalLedgerAmount(value) {
+  return value === null || value === undefined || value === "" ? "-" : money(value);
+}
+
+function renderGeneralLedger(payload = {}) {
+  if (!generalLedgerList) return;
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  const period = payload.period || {};
+  if (generalLedgerMeta) {
+    const periodText = period.from || period.to
+      ? `${period.from || "beginning"} → ${period.to || "present"}`
+      : "All available dates";
+    generalLedgerMeta.textContent = `${rows.length} entr${rows.length === 1 ? "y" : "ies"} · ${periodText} · Server-authoritative read`;
+  }
+  if (!rows.length) {
+    generalLedgerList.innerHTML = "<p class=\"hint\">No General Ledger entries match the selected scope or filters.</p>";
+    return;
+  }
+  generalLedgerList.innerHTML = `
+    <div class="mini-table-row table-header">
+      <span>Date</span><span>Account</span><span>Journal / Source</span><span>Description</span><span>Debit</span><span>Credit</span><span>Balance</span>
+    </div>
+    ${rows.map((row) => {
+      const account = [row.accountCode, row.accountName].filter(Boolean).join(" · ") || "Account";
+      const source = [row.journalNumber || row.journalId, row.sourceType, row.sourceId].filter(Boolean).join(" · ") || "-";
+      return `<div class="mini-table-row">
+        <span>${escapeHtml(row.date || "-")}</span>
+        <strong>${escapeHtml(account)}</strong>
+        <span>${escapeHtml(source)}</span>
+        <span>${escapeHtml(row.description || "-")}</span>
+        <span>${escapeHtml(generalLedgerAmount(row.debit))}</span>
+        <span>${escapeHtml(generalLedgerAmount(row.credit))}</span>
+        <span>${escapeHtml(generalLedgerAmount(row.runningBalance))} ${escapeHtml(row.runningBalanceSide || "")}</span>
+      </div>`;
+    }).join("")}`;
+}
+
+async function loadGeneralLedger() {
+  if (!generalLedgerList || currentDashboardPage() !== "general-ledger") return null;
+  if (generalLedgerStatus) {
+    generalLedgerStatus.textContent = "Loading General Ledger...";
+    generalLedgerStatus.className = "form-status";
+  }
+  generalLedgerList.innerHTML = "<p class=\"hint\">Loading General Ledger entries...</p>";
+  try {
+    const payload = await apiClient.getGeneralLedger(token, generalLedgerFilters());
+    renderGeneralLedger(payload);
+    if (generalLedgerStatus) {
+      generalLedgerStatus.textContent = "General Ledger loaded.";
+      generalLedgerStatus.className = "form-status success";
+    }
+    return payload;
+  } catch (error) {
+    if (generalLedgerMeta) generalLedgerMeta.textContent = "";
+    if (generalLedgerList) generalLedgerList.innerHTML = `<p class="hint">${escapeHtml(error.message || "Could not load General Ledger.")}</p>`;
+    if (generalLedgerStatus) {
+      generalLedgerStatus.textContent = error.message || "Could not load General Ledger.";
+      generalLedgerStatus.className = "form-status error";
+    }
+    return null;
+  }
+}
+
 function reportSourceInvoices() {
   const summary = activeReportSummary();
   return summary?.available && Array.isArray(summary.invoices)
@@ -6142,6 +6226,20 @@ window.addEventListener("hashchange", () => showDashboardPage());
 
 refreshAccountingBtn?.addEventListener("click", () => {
   refreshAccountingSummary();
+});
+
+generalLedgerFilterForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  loadGeneralLedger();
+});
+
+refreshGeneralLedgerBtn?.addEventListener("click", () => {
+  loadGeneralLedger();
+});
+
+generalLedgerClearBtn?.addEventListener("click", () => {
+  generalLedgerFilterForm?.reset();
+  loadGeneralLedger();
 });
 
 ledgerAccountForm?.addEventListener("submit", async (event) => {

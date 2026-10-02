@@ -374,6 +374,9 @@ export const apiClient = {
   getAccountingSummary(token, filters = {}) {
     return request(`/accounting/summary${queryString(filters)}`, { token });
   },
+  getGeneralLedger(token, filters = {}) {
+    return request(`/accounting/general-ledger${queryString(filters)}`, { token });
+  },
   listLedgerAccounts(token, filters = {}) {
     return request(`/accounting/accounts${queryString(filters)}`, { token });
   },

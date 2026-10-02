@@ -85,6 +85,7 @@
           <div class="nav-subitems">
             <a class="nav-subitem" href="/apps/web/dashboard.html#accounting" data-page-link="accounting">Accounting Overview</a>
             <a class="nav-subitem" href="/apps/web/dashboard.html#accounting" data-page-link="accounting">Chart and Trial Balance</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#general-ledger" data-page-link="general-ledger">General Ledger</a>
             <a class="nav-subitem" href="/apps/web/dashboard.html#advanced-workflows" data-page-link="advanced-workflows">Accounting Governance</a>
             <a class="nav-subitem" href="/apps/web/dashboard.html#report-profit-loss" data-page-link="report-profit-loss">Profit and Loss</a>
             <a class="nav-subitem" href="/apps/web/dashboard.html#accounting" data-page-link="accounting">Balance Sheet and Cash Flow</a>
@@ -596,6 +597,46 @@
           </article>
         </div>
         <p id="accountingStatus" class="form-status"></p>
+      </section>
+
+      <section id="general-ledger" class="panel dashboard-page" data-dashboard-page="general-ledger" data-surface-owner="accounting" data-surface-purpose="general-ledger-read">
+        <div class="dashboard-head">
+          <div>
+            <span class="pill green">Accounting</span>
+            <h1>General Ledger</h1>
+            <p class="hint">Read-only ledger entries from the existing server-side accounting authority.</p>
+          </div>
+          <button id="refreshGeneralLedgerBtn" class="ghost" type="button">Refresh General Ledger</button>
+        </div>
+        <form id="generalLedgerFilterForm" class="quick-card stacked-form" data-surface-action="general-ledger.read">
+          <div class="form-grid three">
+            <label>From
+              <input id="generalLedgerFrom" name="from" type="date" />
+            </label>
+            <label>To
+              <input id="generalLedgerTo" name="to" type="date" />
+            </label>
+            <label>Account code
+              <input id="generalLedgerAccountCode" name="accountCode" inputmode="numeric" placeholder="Optional, e.g. 1100" />
+            </label>
+          </div>
+          <div class="row-actions">
+            <button class="primary" type="submit">Load Ledger</button>
+            <button id="generalLedgerClearBtn" class="ghost" type="button">Clear filters</button>
+          </div>
+          <p id="generalLedgerStatus" class="form-status" aria-live="polite"></p>
+        </form>
+        <article class="quick-card">
+          <div class="panel-head compact-head">
+            <div>
+              <strong>Ledger Entries</strong>
+              <p class="hint">Debit, credit, and running balances are returned by the accounting authority.</p>
+            </div>
+            <span class="pill blue">Read only</span>
+          </div>
+          <div id="generalLedgerMeta" class="hint"></div>
+          <div id="generalLedgerList" class="mini-table"></div>
+        </article>
       </section>
 
       <section id="report-detail" class="panel dashboard-page" data-dashboard-page="report-detail" data-surface-owner="reports" data-surface-purpose="report-consumption">
