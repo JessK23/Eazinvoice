@@ -299,7 +299,7 @@ async function sendBusinessApprovalNotification(api, user, approval, body = {}, 
       notificationRecipient: "",
     };
     try {
-      api.recordBusinessEmailDelivery(user, {
+      await api.recordBusinessEmailDelivery(user, {
         workspaceOwnerUserId: approval.ownerUserId || null,
         companyId: approval.companyId || null,
         status: result.notificationStatus,
@@ -307,7 +307,9 @@ async function sendBusinessApprovalNotification(api, user, approval, body = {}, 
         recipient: result.notificationRecipient,
         action: "approval_notification",
       }, { ...options, permission: "approvals" });
-    } catch {}
+    } catch (error) {
+      throw error;
+    }
     try {
       return api.recordApprovalNotification(user, approval.id, {
         status: result.notificationStatus,
@@ -343,7 +345,7 @@ async function sendBusinessApprovalNotification(api, user, approval, body = {}, 
       notificationRecipient: recipient,
     };
     try {
-      api.recordBusinessEmailDelivery(user, {
+      await api.recordBusinessEmailDelivery(user, {
         workspaceOwnerUserId: approval.ownerUserId || null,
         companyId: approval.companyId || null,
         status: result.notificationStatus,
@@ -351,7 +353,9 @@ async function sendBusinessApprovalNotification(api, user, approval, body = {}, 
         recipient,
         action: "approval_notification",
       }, { ...options, permission: "approvals" });
-    } catch {}
+    } catch (error) {
+      throw error;
+    }
     return api.recordApprovalNotification(user, approval.id, {
       status: result.notificationStatus,
       message: result.notificationMessage,
@@ -365,7 +369,7 @@ async function sendBusinessApprovalNotification(api, user, approval, body = {}, 
       notificationRecipient: recipient,
     };
     try {
-      api.recordBusinessEmailDelivery(user, {
+      await api.recordBusinessEmailDelivery(user, {
         workspaceOwnerUserId: approval.ownerUserId || null,
         companyId: approval.companyId || null,
         status: result.notificationStatus,
@@ -373,7 +377,9 @@ async function sendBusinessApprovalNotification(api, user, approval, body = {}, 
         recipient,
         action: "approval_notification",
       }, { ...options, permission: "approvals" });
-    } catch {}
+    } catch (error) {
+      throw error;
+    }
     try {
       return api.recordApprovalNotification(user, approval.id, {
         status: result.notificationStatus,
@@ -551,7 +557,7 @@ async function sendBusinessOperationalEmail(api, user, body = {}, options = {}, 
   if (!businessSmtpReady(deliverySettings)) {
     const message = smtpNotConfiguredMessage(actionPhrase);
     try {
-      api.recordBusinessEmailDelivery(user, {
+      await api.recordBusinessEmailDelivery(user, {
         workspaceOwnerUserId: body.workspaceOwnerUserId || config.ownerUserId || null,
         companyId: body.companyId || config.companyId || null,
         status: "not_configured",
@@ -559,7 +565,9 @@ async function sendBusinessOperationalEmail(api, user, body = {}, options = {}, 
         recipient,
         action: deliveryAction,
       }, { previewPlan: options.previewPlan });
-    } catch {}
+    } catch (error) {
+      throw error;
+    }
     if (typeof config.auditRecorder === "function") await config.auditRecorder(user, {
       ownerUserId: body.workspaceOwnerUserId || config.ownerUserId || user.id,
       companyId: body.companyId || config.companyId || null,
@@ -584,7 +592,7 @@ async function sendBusinessOperationalEmail(api, user, body = {}, options = {}, 
     });
     const deliveryMessage = config.successMessage || `Business notification sent to ${recipient}`;
     try {
-      api.recordBusinessEmailDelivery(user, {
+      await api.recordBusinessEmailDelivery(user, {
         workspaceOwnerUserId: body.workspaceOwnerUserId || config.ownerUserId || null,
         companyId: body.companyId || config.companyId || null,
         status: "sent",
@@ -592,7 +600,9 @@ async function sendBusinessOperationalEmail(api, user, body = {}, options = {}, 
         recipient,
         action: deliveryAction,
       }, { previewPlan: options.previewPlan });
-    } catch {}
+    } catch (error) {
+      throw error;
+    }
     if (typeof config.auditRecorder === "function") await config.auditRecorder(user, {
       ownerUserId: body.workspaceOwnerUserId || config.ownerUserId || user.id,
       companyId: body.companyId || config.companyId || null,
@@ -609,7 +619,7 @@ async function sendBusinessOperationalEmail(api, user, body = {}, options = {}, 
   } catch (error) {
     const deliveryMessage = publicSmtpErrorMessage(error, actionPhrase);
     try {
-      api.recordBusinessEmailDelivery(user, {
+      await api.recordBusinessEmailDelivery(user, {
         workspaceOwnerUserId: body.workspaceOwnerUserId || config.ownerUserId || null,
         companyId: body.companyId || config.companyId || null,
         status: "failed",
@@ -617,7 +627,9 @@ async function sendBusinessOperationalEmail(api, user, body = {}, options = {}, 
         recipient,
         action: deliveryAction,
       }, { previewPlan: options.previewPlan });
-    } catch {}
+    } catch (error) {
+      throw error;
+    }
     if (typeof config.auditRecorder === "function") await config.auditRecorder(user, {
       ownerUserId: body.workspaceOwnerUserId || config.ownerUserId || user.id,
       companyId: body.companyId || config.companyId || null,
@@ -753,6 +765,12 @@ function corsHeadersForRequest(req, allowedOrigins) {
 }
 
 function sendJson(res, status, payload) {
+  if (payload && typeof payload.then === "function") {
+    payload
+      .then((resolved) => sendJson(res, status, resolved))
+      .catch((error) => sendJson(res, knownRequestErrorStatus(error), { error: error.message }));
+    return;
+  }
   res.writeHead(status, {
     ...securityHeaders(),
     "Content-Type": "application/json; charset=utf-8",
@@ -1901,6 +1919,7 @@ export function createServer(options = {}) {
   }
 
   async function sendSubscriptionLifecycleResult(res, subscription, source, statusCode = 200) {
+    subscription = await subscription;
     const entitlementSync = await syncUserSubscriptionEntitlements(subscription.userId, source);
     sendJson(res, statusCode, { ...subscription, entitlementSync });
   }
@@ -1967,7 +1986,7 @@ export function createServer(options = {}) {
 
   async function recordBusinessAudit(user, input = {}, auditOptions = {}, source = "business-audit") {
     try {
-      const event = api.recordBusinessAuditEvent(user, input, auditOptions);
+      const event = await api.recordBusinessAuditEvent(user, input, auditOptions);
       await syncBusinessWorkspaceRows(source);
       return event;
     } catch (error) {
@@ -2294,7 +2313,7 @@ export function createServer(options = {}) {
   async function activateVerifiedRazorpayOrder(orderMeta, paymentId, orderId) {
     if (!orderMeta) return null;
     const now = new Date().toISOString();
-    api.updateBillingOrder(orderId, {
+    await api.updateBillingOrder(orderId, {
       status: "verified",
       gatewayPaymentId: paymentId,
       verifiedAt: now,
@@ -2323,7 +2342,7 @@ export function createServer(options = {}) {
         const entitlementSync = await syncUserSubscriptionEntitlements(existing.userId, "razorpay-duplicate-verification");
         return { ok: true, type: "subscription", subscription: existing, duplicate: true, entitlementSync };
       }
-      const subscription = api.createSubscription({
+      const subscription = await api.createSubscription({
         subscriberType: "individual",
         subscriberName: subscriptionUser?.name || subscriptionUser?.email || "Subscriber",
         companyId: orderMeta.companyId || eligibility.companyId || null,
@@ -2359,7 +2378,7 @@ export function createServer(options = {}) {
           gatewayPaymentId: paymentId,
         },
       }, { previewPlan: subscription.plan }, "business-razorpay-subscription-audit");
-      api.updateBillingOrder(orderId, { status: "consumed", consumedAt: new Date().toISOString() });
+      await api.updateBillingOrder(orderId, { status: "consumed", consumedAt: new Date().toISOString() });
       return { ok: true, type: "subscription", subscription, entitlementSync };
     }
 
@@ -2371,7 +2390,7 @@ export function createServer(options = {}) {
         const reportSync = await syncInvoicePaymentReportRows({ invoice, payment: alreadyCaptured });
         return { ok: true, type: "invoice", invoice, payment: alreadyCaptured, duplicate: true, reportSync };
       }
-      const recorded = api.recordInvoicePayment(orderMeta.invoiceId, {
+      const recorded = await api.recordInvoicePayment(orderMeta.invoiceId, {
         amount: orderMeta.amount,
         currency: orderMeta.currency,
         mode: "payment_gateway",
@@ -2402,19 +2421,19 @@ export function createServer(options = {}) {
         },
       }, { previewPlan: "business" }, "business-razorpay-invoice-payment-audit");
       const reportSync = await syncInvoicePaymentReportRows(recorded);
-      api.updateBillingOrder(orderId, { status: "consumed", consumedAt: new Date().toISOString() });
+      await api.updateBillingOrder(orderId, { status: "consumed", consumedAt: new Date().toISOString() });
       return { ok: true, type: "invoice", ...recorded, reportSync };
     }
 
     return null;
   }
 
-  function createE2eSession(body = {}, req = null) {
+  async function createE2eSession(body = {}, req = null) {
     assertE2eAuthRequest(req);
     const ownerEmail = String(body.email || e2eEmail("owner")).trim().toLowerCase();
     const betaOwnerEmail = String(body.betaOwnerEmail || e2eEmail("beta-owner")).trim().toLowerCase();
     const passwordHash = hashPassword(String(body.password || "EazInvoice-E2E-Only-Password-2026"));
-    const owner = api.createUser({
+    const owner = await api.createUser({
       name: String(body.name || "P2C Alpha Books"),
       email: ownerEmail,
       phone: "+919999999991",
@@ -2430,7 +2449,7 @@ export function createServer(options = {}) {
       },
       role: "user",
     });
-    const betaOwner = api.createUser({
+    const betaOwner = await api.createUser({
       name: String(body.betaBusinessName || "P2C Beta Books"),
       email: betaOwnerEmail,
       phone: "+919999999992",
@@ -2448,7 +2467,7 @@ export function createServer(options = {}) {
     });
     const alphaBusiness = store.getBusinessById(owner.id);
     const betaBusiness = store.getBusinessById(betaOwner.id);
-    api.createSubscription({
+    await api.createSubscription({
       subscriberType: "company",
       subscriberName: owner.name,
       userId: owner.id,
@@ -2464,7 +2483,7 @@ export function createServer(options = {}) {
       gatewayOrderId: `e2e_${owner.id}`,
       gatewayPaymentId: `e2e_pay_${owner.id}`,
     });
-    api.createSubscription({
+    await api.createSubscription({
       subscriberType: "company",
       subscriberName: betaOwner.name,
       userId: betaOwner.id,
@@ -2480,7 +2499,7 @@ export function createServer(options = {}) {
       gatewayOrderId: `e2e_${betaOwner.id}`,
       gatewayPaymentId: `e2e_pay_${betaOwner.id}`,
     });
-    store.createTeamMember({
+    await store.createTeamMember({
       ownerUserId: betaOwner.id,
       businessId: betaBusiness?.id || null,
       name: owner.name,
@@ -2641,7 +2660,7 @@ export function createServer(options = {}) {
           sendJson(res, 200, activated);
           return;
         }
-        const recorded = api.recordGatewayPayment({
+        const recorded = await api.recordGatewayPayment({
           invoiceId: payload.invoiceId || payload.notes?.invoiceId,
           paymentLinkId: payload.paymentLinkId || payload.payment_link_id || payload.id,
           amount: payload.amount ? Number(payload.amount) / 100 : payload.amountPaid,
@@ -2779,7 +2798,7 @@ export function createServer(options = {}) {
         return;
       }
       const user = promoteAdmin(existing
-        ? api.updateUserAuthDetails(existing.id, {
+        ? await api.updateUserAuthDetails(existing.id, {
           phone: normalizedPhone,
           mobileVerified: false,
           emailVerified: true,
@@ -2787,7 +2806,7 @@ export function createServer(options = {}) {
           subscriberType: body.subscriberType || existing.subscriberType || "individual",
           registrant,
         })
-        : api.createUser({
+        : await api.createUser({
         name: body.name ?? "",
         email: body.email ?? "",
         phone: normalizedPhone,
@@ -2842,7 +2861,7 @@ export function createServer(options = {}) {
         return;
       }
       const user = promoteAdmin(existing
-        ? api.updateUserAuthDetails(existing.id, {
+        ? await api.updateUserAuthDetails(existing.id, {
           emailVerified: true,
         })
         : null);
@@ -2873,7 +2892,7 @@ export function createServer(options = {}) {
           emailOtps.verify({ otp: body.otp, email: body.email, mode: "reset-password" });
         }
         const passwordHash = hashPassword(body.newPassword);
-        const user = promoteAdmin(api.updateUserAuthDetails(existing.id, {
+        const user = promoteAdmin(await api.updateUserAuthDetails(existing.id, {
           passwordHash,
           emailVerified: true,
         }));
@@ -3022,8 +3041,8 @@ export function createServer(options = {}) {
 
       const existing = api.getUserByEmail(profile.email || "");
       const user = existing
-        ? promoteAdmin(api.updateUserAuthDetails(existing.id, { emailVerified: true }))
-        : promoteAdmin(api.createUser({
+        ? promoteAdmin(await api.updateUserAuthDetails(existing.id, { emailVerified: true }))
+        : promoteAdmin(await api.createUser({
           name: profile.name || profile.email || "Google User",
           email: profile.email || "google-user@example.com",
           emailVerified: true,
@@ -3080,7 +3099,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
       }
       try {
         const body = await readBody(req);
-        sendJson(res, 201, createE2eSession(body, req));
+        sendJson(res, 201, await createE2eSession(body, req));
       } catch (error) {
         sendJson(res, /secret|local|disabled/i.test(error.message) ? 403 : 400, { error: error.message });
       }
@@ -3131,7 +3150,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
         sendJson(res, 400, { error: "Current password is incorrect" });
         return;
       }
-      const updated = api.updateUserProfile(user.id, {
+      const updated = await api.updateUserProfile(user.id, {
         name: body.name,
         phone: body.phone ? normalizePhone(body.phone) : undefined,
         panNumber: body.panNumber,
@@ -3140,7 +3159,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
         registrant,
       });
       if (newPassword) {
-        api.updateUserAuthDetails(user.id, { passwordHash: hashPassword(newPassword) });
+        await api.updateUserAuthDetails(user.id, { passwordHash: hashPassword(newPassword) });
       }
       sendJson(res, 200, {
         user: updated,
@@ -3510,7 +3529,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
         sendJson(res, 400, { error: "Rejection reason is required." });
         return;
       }
-      const updated = api.updateCompanyKyc(companyId, {
+      const updated = await api.updateCompanyKyc(companyId, {
         kycStatus: action === "approve" ? "verified" : "rejected",
         reviewStatus: action === "approve" ? "approved" : "rejected",
         reviewNotes: reason || (action === "approve" ? "KYC approved" : "KYC rejected"),
@@ -3627,7 +3646,7 @@ if (url.pathname.startsWith("/admin/users/") && req.method === "PATCH") {
         const permissions = adminRoleForEmail(targetUser?.email)
           ? requestedPermissions
           : requestedPermissions.filter((permission) => permission !== "admin");
-        const updated = api.setUserPermissions(userId, permissions);
+        const updated = await api.setUserPermissions(userId, permissions);
         if (!updated) {
           sendJson(res, 404, { error: "User not found" });
           return;
@@ -3635,7 +3654,7 @@ if (url.pathname.startsWith("/admin/users/") && req.method === "PATCH") {
         sendJson(res, 200, updated);
         return;
       }
-      const updated = api.setUserRestriction(userId, {
+      const updated = await api.setUserRestriction(userId, {
         accountStatus: action === "restore" ? "active" : "restricted",
         restrictedReason: body.reason || (action === "restore" ? "" : "Suspicious activity review"),
         restrictedAt: action === "restore" ? "" : new Date().toISOString(),
@@ -3770,7 +3789,7 @@ if (url.pathname.startsWith("/admin/users/") && req.method === "PATCH") {
         updates.kycDocuments = [];
       }
 
-      let updated = api.updateCompany(companyId, updates, {
+      let updated = await api.updateCompany(companyId, updates, {
         user,
         previewPlan,
         workspaceOwnerUserId: workspaceOwnerUserId || existingCompany.ownerUserId,
@@ -3786,7 +3805,7 @@ if (url.pathname.startsWith("/admin/users/") && req.method === "PATCH") {
         && lifecycleAfter === "not_started";
 
       if (shouldSubmitForReview) {
-        updated = api.updateCompanyKyc(companyId, {
+        updated = await api.updateCompanyKyc(companyId, {
           kycStatus: "pending",
           reviewStatus: "pending",
           reviewNotes: "",
@@ -3829,7 +3848,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
         sendJson(res, 404, { error: "Customer not found or not available in this workspace." });
         return;
       }
-      const customer = api.updateCustomer(customerId, body, {
+      const customer = await api.updateCustomer(customerId, body, {
         user,
         previewPlan,
         workspaceOwnerUserId: body.workspaceOwnerUserId || existing.ownerUserId || null,
@@ -3841,7 +3860,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
 
     if (url.pathname.startsWith("/customers/") && req.method === "DELETE") {
       const customerId = url.pathname.split("/")[2];
-      const customer = api.deleteCustomer(customerId, user, {
+      const customer = await api.deleteCustomer(customerId, user, {
         previewPlan,
         workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
         businessId: url.searchParams.get("businessId") || null,
@@ -3859,7 +3878,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       if (customerActionMatch && req.method === "POST") {
         const [, customerId] = customerActionMatch;
         const body = await readBody(req).catch(() => ({}));
-        const customer = api.reactivateCustomer(customerId, user, {
+        const customer = await api.reactivateCustomer(customerId, user, {
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || url.searchParams.get("workspaceOwnerUserId") || null,
           businessId: body.businessId || url.searchParams.get("businessId") || null,
@@ -3904,7 +3923,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
         sendJson(res, 404, { error: "Vendor not found or not available in this workspace." });
         return;
       }
-      const vendor = api.updateVendor(vendorId, body, {
+      const vendor = await api.updateVendor(vendorId, body, {
         user,
         previewPlan,
         workspaceOwnerUserId: body.workspaceOwnerUserId || existing.ownerUserId || null,
@@ -3916,7 +3935,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
 
     if (url.pathname.startsWith("/vendors/") && req.method === "DELETE") {
       const vendorId = url.pathname.split("/")[2];
-      const vendor = api.deleteVendor(vendorId, user, {
+      const vendor = await api.deleteVendor(vendorId, user, {
         previewPlan,
         workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
         businessId: url.searchParams.get("businessId") || null,
@@ -3934,7 +3953,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       if (vendorActionMatch && req.method === "POST") {
         const [, vendorId] = vendorActionMatch;
         const body = await readBody(req).catch(() => ({}));
-        const vendor = api.reactivateVendor(vendorId, user, {
+        const vendor = await api.reactivateVendor(vendorId, user, {
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || url.searchParams.get("workspaceOwnerUserId") || null,
           businessId: body.businessId || url.searchParams.get("businessId") || null,
@@ -4123,7 +4142,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
           body.billingCycle = "yearly";
         }
       }
-      const subscription = api.createSubscription({
+      const subscription = await api.createSubscription({
         ...body,
         userId: user.id,
         adminUserId: isConfiguredAdminUser(user) ? user.id : null,
@@ -4139,7 +4158,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
         return;
       }
       const body = await readBody(req).catch(() => ({}));
-      const expired = api.expireSubscriptions(body.now || new Date().toISOString());
+      const expired = await api.expireSubscriptions(body.now || new Date().toISOString());
       const userIds = [...new Set(expired.map((subscription) => subscription.userId).filter(Boolean))];
       const entitlementSync = [];
       for (const userId of userIds) {
@@ -4164,7 +4183,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
         }
         const body = await readBody(req).catch(() => ({}));
         if (action === "cancel") {
-          const cancelled = api.cancelSubscription(subscriptionId, body);
+          const cancelled = await api.cancelSubscription(subscriptionId, body);
           await sendSubscriptionLifecycleResult(res, cancelled, "subscription-cancelled");
           return;
         }
@@ -4188,7 +4207,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
               return;
             }
           }
-          const renewed = api.renewSubscription(subscriptionId, {
+          const renewed = await api.renewSubscription(subscriptionId, {
             ...body,
             amount: body.amount ?? annualPlanCharge(plan),
             monthlyAmount: body.monthlyAmount ?? (plan.monthlyAmount ?? plan.amount),
@@ -4220,7 +4239,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
               return;
             }
           }
-          const downgraded = api.createSubscription({
+          const downgraded = await api.createSubscription({
             subscriberType: existing.subscriberType || "individual",
             subscriberName: existing.subscriberName || user.name || user.email || "Subscriber",
             companyId: existing.companyId || null,
@@ -4503,7 +4522,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       try {
         const id = decodeURIComponent(url.pathname.split("/")[2] || "");
         const body = await readBody(req);
-        sendJson(res, 201, api.recordVendorBillPayment(id, body, {
+        sendJson(res, 201, await api.recordVendorBillPayment(id, body, {
           user,
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
@@ -4535,7 +4554,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       try {
         const id = decodeURIComponent(url.pathname.split("/")[2] || "");
         const body = await readBody(req);
-        const bill = api.updateVendorBill(id, body, {
+        const bill = await api.updateVendorBill(id, body, {
           user,
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
@@ -4597,7 +4616,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       try {
         const id = decodeURIComponent(url.pathname.split("/")[2] || "");
         const body = await readBody(req);
-        const note = api.updateCreditNote(id, body, {
+        const note = await api.updateCreditNote(id, body, {
           user,
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
@@ -4659,7 +4678,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       try {
         const id = decodeURIComponent(url.pathname.split("/")[2] || "");
         const body = await readBody(req);
-        const credit = api.updateVendorCredit(id, body, {
+        const credit = await api.updateVendorCredit(id, body, {
           user,
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
@@ -4689,7 +4708,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
     if (url.pathname === "/payment-reversals" && req.method === "POST") {
       try {
         const body = await readBody(req);
-        sendJson(res, 201, api.reverseCustomerPayment(body, {
+        sendJson(res, 201, await api.reverseCustomerPayment(body, {
           user,
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
@@ -4717,7 +4736,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
     if (url.pathname === "/vendor-payment-reversals" && req.method === "POST") {
       try {
         const body = await readBody(req);
-        sendJson(res, 201, api.reverseVendorPayment(body, {
+        sendJson(res, 201, await api.reverseVendorPayment(body, {
           user,
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
@@ -5075,7 +5094,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       try {
         const body = await readBody(req);
         const id = decodeURIComponent(url.pathname.split("/")[3] || "");
-        const obligation = api.updateComplianceObligation(user, id, body, {
+        const obligation = await api.updateComplianceObligation(user, id, body, {
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
           businessId: body.businessId || null,
@@ -5177,7 +5196,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
     if (url.pathname.startsWith("/bank/reconciliation/matches/") && req.method === "DELETE") {
       try {
         const id = decodeURIComponent(url.pathname.split("/")[4] || "");
-        const match = api.unmatchBankReconciliation(user, id, {
+        const match = await api.unmatchBankReconciliation(user, id, {
           previewPlan,
           workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
           businessId: url.searchParams.get("businessId") || null,
@@ -5297,14 +5316,14 @@ if (url.pathname === "/customers" && req.method === "GET") {
               deliveryMessage = publicSmtpErrorMessage(deliveryError, "send sub-user access email");
             }
           }
-          member = api.updateTeamMember(user, member.id, {
+          member = await api.updateTeamMember(user, member.id, {
             workspaceOwnerUserId: body.workspaceOwnerUserId || member.ownerUserId || null,
             inviteDeliveryStatus: deliveryStatus,
             inviteDeliveryMessage: deliveryMessage,
             inviteSentAt: deliveryStatus === "sent" ? new Date().toISOString() : member.inviteSentAt,
           }, { previewPlan });
           try {
-            api.recordBusinessEmailDelivery(user, {
+            await api.recordBusinessEmailDelivery(user, {
               workspaceOwnerUserId: body.workspaceOwnerUserId || member.ownerUserId || null,
               companyId: body.companyId || member.companyId || null,
               status: deliveryStatus,
@@ -5312,7 +5331,9 @@ if (url.pathname === "/customers" && req.method === "GET") {
               recipient: member.email,
               action: "sub_user_access_email_retry",
             }, { previewPlan, permission: "manageTeam" });
-          } catch {}
+          } catch (error) {
+            throw error;
+          }
           await recordBusinessAudit(user, {
             ownerUserId: body.workspaceOwnerUserId || member.ownerUserId || user.id,
             companyId: body.companyId || member.companyId || null,
@@ -5379,7 +5400,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
               deliveryMessage = publicSmtpErrorMessage(deliveryError, "send compliance reminder");
             }
           }
-          const updatedTask = api.recordComplianceReminderDelivery(user, task.id, {
+          const updatedTask = await api.recordComplianceReminderDelivery(user, task.id, {
             companyId: body.companyId || null,
             workspaceOwnerUserId: body.workspaceOwnerUserId || null,
             to: recipient,
@@ -5387,7 +5408,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
             message: deliveryMessage,
           }, { previewPlan });
           try {
-            api.recordBusinessEmailDelivery(user, {
+            await api.recordBusinessEmailDelivery(user, {
               workspaceOwnerUserId: body.workspaceOwnerUserId || null,
               companyId: body.companyId || null,
               status: deliveryStatus,
@@ -5395,7 +5416,9 @@ if (url.pathname === "/customers" && req.method === "GET") {
               recipient,
               action: "compliance_reminder_retry",
             }, { previewPlan, permission: "compliance" });
-          } catch {}
+          } catch (error) {
+            throw error;
+          }
           await recordBusinessAudit(user, {
             ownerUserId: body.workspaceOwnerUserId || user.id,
             companyId: body.companyId || null,
@@ -5460,7 +5483,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
     if (url.pathname === "/business/settings" && req.method === "PATCH") {
       try {
         const body = await readBody(req);
-        const settings = api.updateBusinessSettings(user, body, { previewPlan });
+        const settings = await api.updateBusinessSettings(user, body, { previewPlan });
         if (body.emailSettings) {
           await recordBusinessAudit(user, {
             ownerUserId: body.workspaceOwnerUserId || user.id,
@@ -5530,7 +5553,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
               subject: "EazInvoice SMTP test email",
               text: `Hi,\n\nThis is a test email from EazInvoice Business Workspace for ${deliverySettings.senderName || user.name || "your business"}.\n\nIf you received this, SMTP delivery is working.\n\nEazInvoice`,
             });
-            const emailDelivery = api.recordBusinessEmailDelivery(user, {
+            const emailDelivery = await api.recordBusinessEmailDelivery(user, {
               workspaceOwnerUserId: body.workspaceOwnerUserId || null,
               companyId: body.companyId || null,
               status: "sent",
@@ -5560,7 +5583,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
             });
           } catch (deliveryError) {
             const deliveryMessage = publicSmtpErrorMessage(deliveryError, "send SMTP test email");
-            const emailDelivery = api.recordBusinessEmailDelivery(user, {
+            const emailDelivery = await api.recordBusinessEmailDelivery(user, {
               workspaceOwnerUserId: body.workspaceOwnerUserId || null,
               companyId: body.companyId || null,
               status: "failed",
@@ -5654,7 +5677,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
         ).trim();
         if (!businessSmtpReady(deliverySettings)) {
           try {
-            api.recordBusinessEmailDelivery(user, {
+            await api.recordBusinessEmailDelivery(user, {
               workspaceOwnerUserId: body.workspaceOwnerUserId || null,
               companyId: body.companyId || null,
               status: "not_configured",
@@ -5662,7 +5685,9 @@ if (url.pathname === "/customers" && req.method === "GET") {
               recipient,
               action: "compliance_reminder",
             }, { previewPlan, permission: "compliance" });
-          } catch {}
+          } catch (error) {
+            throw error;
+          }
           await recordBusinessAudit(user, {
             ownerUserId: body.workspaceOwnerUserId || user.id,
             companyId: body.companyId || null,
@@ -5684,7 +5709,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
         }
         try {
           await businessSmtpSender(deliverySettings, buildComplianceReminderMessage(deliverySettings, task, recipient));
-          const updatedTask = api.recordComplianceReminderDelivery(user, taskId, {
+          const updatedTask = await api.recordComplianceReminderDelivery(user, taskId, {
             companyId: body.companyId || null,
             workspaceOwnerUserId: body.workspaceOwnerUserId || null,
             to: recipient,
@@ -5692,7 +5717,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
             message: `Reminder sent to ${recipient}`,
           }, { previewPlan });
           try {
-            api.recordBusinessEmailDelivery(user, {
+            await api.recordBusinessEmailDelivery(user, {
               workspaceOwnerUserId: body.workspaceOwnerUserId || null,
               companyId: body.companyId || null,
               status: "sent",
@@ -5700,7 +5725,9 @@ if (url.pathname === "/customers" && req.method === "GET") {
               recipient,
               action: "compliance_reminder",
             }, { previewPlan, permission: "compliance" });
-          } catch {}
+          } catch (error) {
+            throw error;
+          }
           await recordBusinessAudit(user, {
             ownerUserId: body.workspaceOwnerUserId || user.id,
             companyId: body.companyId || null,
@@ -5722,7 +5749,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
           });
         } catch (deliveryError) {
           const deliveryMessage = publicSmtpErrorMessage(deliveryError, "send compliance reminder");
-          const updatedTask = api.recordComplianceReminderDelivery(user, taskId, {
+          const updatedTask = await api.recordComplianceReminderDelivery(user, taskId, {
             companyId: body.companyId || null,
             workspaceOwnerUserId: body.workspaceOwnerUserId || null,
             to: recipient,
@@ -5730,7 +5757,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
             message: deliveryMessage,
           }, { previewPlan });
           try {
-            api.recordBusinessEmailDelivery(user, {
+            await api.recordBusinessEmailDelivery(user, {
               workspaceOwnerUserId: body.workspaceOwnerUserId || null,
               companyId: body.companyId || null,
               status: "failed",
@@ -5738,7 +5765,9 @@ if (url.pathname === "/customers" && req.method === "GET") {
               recipient,
               action: "compliance_reminder",
             }, { previewPlan, permission: "compliance" });
-          } catch {}
+          } catch (error) {
+            throw error;
+          }
           await recordBusinessAudit(user, {
             ownerUserId: body.workspaceOwnerUserId || user.id,
             companyId: body.companyId || null,
@@ -5769,7 +5798,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       try {
         const taskId = decodeURIComponent(url.pathname.split("/").pop() || "");
         const body = await readBody(req);
-        const task = api.updateComplianceTask(user, taskId, body, { previewPlan });
+        const task = await api.updateComplianceTask(user, taskId, body, { previewPlan });
         await recordBusinessAudit(user, {
           ownerUserId: body.workspaceOwnerUserId || user.id,
           companyId: body.companyId || null,
@@ -5793,7 +5822,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
     if (url.pathname === "/business/team" && req.method === "POST") {
       try {
         const body = await readBody(req);
-        let member = api.createTeamMember(user, body, { previewPlan });
+        let member = await api.createTeamMember(user, body, { previewPlan });
         let deliveryStatus = member.inviteDeliveryStatus || "queued";
         let deliveryMessage = smtpNotConfiguredMessage("send the sub-user access email");
         try {
@@ -5806,14 +5835,14 @@ if (url.pathname === "/customers" && req.method === "GET") {
             await businessSmtpSender(deliverySettings, buildTeamInviteMessage(deliverySettings, member, user, req));
             deliveryStatus = "sent";
             deliveryMessage = `Sub-user access email sent to ${member.email}. They must log in with this same email address.`;
-            member = api.updateTeamMember(user, member.id, {
+            member = await api.updateTeamMember(user, member.id, {
               inviteDeliveryStatus: deliveryStatus,
               inviteDeliveryMessage: deliveryMessage,
               inviteSentAt: new Date().toISOString(),
             }, { previewPlan });
           } else {
             deliveryStatus = "not_configured";
-            member = api.updateTeamMember(user, member.id, {
+            member = await api.updateTeamMember(user, member.id, {
               inviteDeliveryStatus: deliveryStatus,
               inviteDeliveryMessage: deliveryMessage,
             }, { previewPlan });
@@ -5821,13 +5850,13 @@ if (url.pathname === "/customers" && req.method === "GET") {
         } catch (deliveryError) {
           deliveryStatus = "failed";
           deliveryMessage = publicSmtpErrorMessage(deliveryError, "send sub-user access email");
-          member = api.updateTeamMember(user, member.id, {
+          member = await api.updateTeamMember(user, member.id, {
             inviteDeliveryStatus: deliveryStatus,
             inviteDeliveryMessage: deliveryMessage,
           }, { previewPlan });
         }
         try {
-          api.recordBusinessEmailDelivery(user, {
+          await api.recordBusinessEmailDelivery(user, {
             workspaceOwnerUserId: body.workspaceOwnerUserId || member.ownerUserId || null,
             companyId: body.companyId || member.companyId || null,
             status: deliveryStatus,
@@ -5835,7 +5864,9 @@ if (url.pathname === "/customers" && req.method === "GET") {
             recipient: member.email,
             action: "sub_user_access_email",
           }, { previewPlan, permission: "manageTeam" });
-        } catch {}
+        } catch (error) {
+          throw error;
+        }
         await recordBusinessAudit(user, {
           ownerUserId: body.workspaceOwnerUserId || user.id,
           companyId: body.companyId || null,
@@ -5877,7 +5908,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       try {
         const id = url.pathname.split("/")[3];
         const body = await readBody(req);
-        const member = api.updateTeamMember(user, id, body, { previewPlan });
+        const member = await api.updateTeamMember(user, id, body, { previewPlan });
         await recordBusinessAudit(user, {
           ownerUserId: body.workspaceOwnerUserId || member.ownerUserId || user.id,
           companyId: body.companyId || member.companyId || null,
@@ -5938,7 +5969,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
     if (url.pathname === "/business/approvals" && req.method === "POST") {
       try {
         const body = await readBody(req);
-        const approval = api.createApprovalRequest(user, body, { previewPlan });
+        const approval = await api.createApprovalRequest(user, body, { previewPlan });
         const notification = await sendBusinessApprovalNotification(api, user, approval, body, { previewPlan }, "created", businessSmtpSender);
         await recordBusinessAudit(user, {
           ownerUserId: body.workspaceOwnerUserId || approval.ownerUserId || user.id,
@@ -5976,7 +6007,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       try {
         const id = url.pathname.split("/")[3];
         const body = await readBody(req);
-        const approval = api.decideApprovalRequest(user, id, body, { previewPlan });
+        const approval = await api.decideApprovalRequest(user, id, body, { previewPlan });
         const notification = await sendBusinessApprovalNotification(api, user, approval, body, { previewPlan }, "decision", businessSmtpSender);
         await recordBusinessAudit(user, {
           ownerUserId: body.workspaceOwnerUserId || approval.ownerUserId || user.id,
@@ -6026,7 +6057,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
     if (url.pathname === "/business/api-keys" && req.method === "POST") {
       try {
         const body = await readBody(req);
-        const apiKey = api.createApiKey(user, body, { previewPlan, businessId: body.businessId || null });
+        const apiKey = await api.createApiKey(user, body, { previewPlan, businessId: body.businessId || null });
         await recordBusinessAudit(user, {
           ownerUserId: body.workspaceOwnerUserId || apiKey.ownerUserId || user.id,
           businessId: body.businessId || apiKey.businessId || null,
@@ -6055,7 +6086,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
     if (url.pathname.startsWith("/business/api-keys/") && req.method === "DELETE") {
       try {
         const id = url.pathname.split("/")[3];
-        const apiKey = api.revokeApiKey(user, id, {
+        const apiKey = await api.revokeApiKey(user, id, {
           previewPlan,
           workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
           businessId: url.searchParams.get("businessId") || null,
@@ -6147,7 +6178,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
         return;
       }
       const body = await readBody(req).catch(() => ({}));
-      const result = api.runRecurringInvoiceSchedulerForAllUsers({
+      const result = await api.runRecurringInvoiceSchedulerForAllUsers({
         targetDate: body.targetDate,
         maxPerTemplate: body.maxPerTemplate,
       });
@@ -6235,6 +6266,57 @@ if (url.pathname === "/customers" && req.method === "GET") {
       return;
     }
 
+    if (url.pathname === "/payment-allocations" && req.method === "GET") {
+      sendJson(res, 200, api.listPaymentAllocations(user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
+        paymentId: url.searchParams.get("paymentId") || null,
+        documentType: url.searchParams.get("documentType") || null,
+        documentId: url.searchParams.get("documentId") || null,
+        includeReversed: url.searchParams.get("includeReversed") === "true",
+      }));
+      return;
+    }
+
+    if (url.pathname === "/payment-allocations" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        const result = await api.createPaymentAllocation(body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        });
+        sendJson(res, 201, result);
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/payment-allocations/") && url.pathname.endsWith("/reverse") && req.method === "POST") {
+      try {
+        const parts = url.pathname.split("/");
+        const id = decodeURIComponent(parts[2] || "");
+        const body = await readBody(req).catch(() => ({}));
+        const result = await api.reversePaymentAllocation(id, body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        });
+        if (!result) {
+          sendJson(res, 404, { error: "Payment allocation not found" });
+          return;
+        }
+        sendJson(res, 200, result);
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
     if (url.pathname === "/invoices" && req.method === "POST") {
       const body = sanitizeStandardInvoiceFeatures(api, user, previewPlan, await readBody(req));
       const workspace = api.resolveRecordsWorkspaceAccess(user, {
@@ -6246,7 +6328,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       });
       if (!entitlement) return;
       try {
-        const invoice = api.createInvoice({
+        const invoice = await api.createInvoice({
           ...body,
           ownerUserId: workspace.ownerUserId,
           businessId: workspace.businessId,
@@ -6266,7 +6348,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
         }, "writeRecords");
-        const result = api.runRecurringInvoiceScheduler(user, {
+        const result = await api.runRecurringInvoiceScheduler(user, {
           previewPlan,
           workspaceOwnerUserId: workspace.ownerUserId,
           targetDate: body.targetDate,
@@ -6306,7 +6388,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       }, "writeRecords");
       const entitlement = await resolveWriteEntitlement(api, workspace.owner, previewPlan, options);
       try {
-        const invoice = api.finalizeInvoice(id, body, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
+        const invoice = await api.finalizeInvoice(id, body, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
         const reportSync = await syncInvoiceReportRows(invoice, "invoice-finalize");
         const archive = await archiveAuthoritativeBusinessDocumentPdf({
           api,
@@ -6358,7 +6440,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       const id = url.pathname.split("/")[2];
       const body = await readBody(req).catch(() => ({}));
       try {
-        const invoice = api.archiveInvoice(id, body, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null, businessId: body.businessId || null });
+        const invoice = await api.archiveInvoice(id, body, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null, businessId: body.businessId || null });
         if (!invoice) {
           sendJson(res, 404, { error: "Not found" });
           return;
@@ -6375,7 +6457,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       const id = url.pathname.split("/")[2];
       const body = await readBody(req).catch(() => ({}));
       try {
-        const invoice = api.restoreInvoice(id, body, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null, businessId: body.businessId || null });
+        const invoice = await api.restoreInvoice(id, body, { user, previewPlan, workspaceOwnerUserId: body.workspaceOwnerUserId || null, businessId: body.businessId || null });
         if (!invoice) {
           sendJson(res, 404, { error: "Not found" });
           return;
@@ -6453,7 +6535,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
         return;
       }
       try {
-        const recorded = api.recordInvoicePayment(id, {
+        const recorded = await api.recordInvoicePayment(id, {
           amount,
           currency: body.currency || existing.currency,
           mode: body.mode || "manual",
@@ -6507,7 +6589,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
         return;
       }
       try {
-        const invoice = api.createInvoicePaymentLink(id, {
+        const invoice = await api.createInvoicePaymentLink(id, {
           gateway: body.gateway || "razorpay",
           url: body.url,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
@@ -6575,7 +6657,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       }, "writeRecords");
       const entitlement = await resolveWriteEntitlement(api, workspace.owner, previewPlan, options);
       try {
-        const invoice = api.updateInvoice(id, body, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId });
+        const invoice = await api.updateInvoice(id, body, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId });
         const reportSync = await syncInvoiceReportRows(invoice, "invoice-update");
         sendJson(res, 200, { ...invoice, reportSync });
       } catch (error) {
@@ -6587,7 +6669,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
     if (url.pathname.startsWith("/invoices/") && req.method === "DELETE") {
       const id = url.pathname.split("/")[2];
       try {
-        const deleted = api.deleteInvoice(id, user, {
+        const deleted = await api.deleteInvoice(id, user, {
           previewPlan,
           workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
         });
@@ -6621,7 +6703,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       }, "writeRecords");
       const entitlement = await resolveWriteEntitlement(api, workspace.owner, previewPlan, options);
       try {
-        const purchaseOrder = api.createPurchaseOrder({
+        const purchaseOrder = await api.createPurchaseOrder({
           ...body,
           ownerUserId: workspace.ownerUserId,
           businessId: workspace.businessId,
@@ -6653,7 +6735,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       }, "writeRecords");
       const entitlement = await resolveWriteEntitlement(api, workspace.owner, previewPlan, options);
       try {
-        const purchaseOrder = api.issuePurchaseOrder(id, body, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
+        const purchaseOrder = await api.issuePurchaseOrder(id, body, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId, businessId: workspace.businessId });
         const reportSync = await syncPurchaseOrderReportRows(purchaseOrder, "purchase-order-issue");
         const archive = await archiveAuthoritativeBusinessDocumentPdf({
           api,
@@ -6767,7 +6849,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
       }, "writeRecords");
       const entitlement = await resolveWriteEntitlement(api, workspace.owner, previewPlan, options);
       try {
-        const purchaseOrder = api.updatePurchaseOrder(id, body, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId });
+        const purchaseOrder = await api.updatePurchaseOrder(id, body, { user, previewPlan, planLimits: entitlement.limits, workspaceOwnerUserId: workspace.ownerUserId });
         const reportSync = await syncPurchaseOrderReportRows(purchaseOrder, "purchase-order-update");
         sendJson(res, 200, { ...purchaseOrder, reportSync });
       } catch (error) {
@@ -6779,7 +6861,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
     if (url.pathname.startsWith("/purchase-orders/") && req.method === "DELETE") {
       const id = url.pathname.split("/")[2];
       try {
-        const deleted = api.deletePurchaseOrder(id, user, {
+        const deleted = await api.deletePurchaseOrder(id, user, {
           previewPlan,
           workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
         });
@@ -6831,7 +6913,7 @@ function setupRecurringScheduler(server) {
     const run = async () => {
       try {
         const api = server.eazinvoiceApi;
-        const result = api.runRecurringInvoiceSchedulerForAllUsers({
+        const result = await api.runRecurringInvoiceSchedulerForAllUsers({
           targetDate: new Date().toISOString().slice(0, 10),
           maxPerTemplate,
         });

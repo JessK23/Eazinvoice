@@ -76,6 +76,10 @@ function summarizeAiLogs(logs) {
 export function createApi(deps = {}) {
   const store = deps.store ?? createStore();
 
+  function settleMutation(result, onSuccess = (value) => value) {
+    return result && typeof result.then === "function" ? result.then(onSuccess) : onSuccess(result);
+  }
+
   return {
     healthCheck() {
       return {
@@ -384,35 +388,32 @@ export function createApi(deps = {}) {
         ...reevaluationUpdates,
       });
 
-      if (updated && reevaluation.shouldReevaluate && options.user) {
-        try {
-          store.recordBusinessAuditEvent(options.user, {
-            ownerUserId: workspace?.ownerUserId || updated.ownerUserId || null,
-            businessId: workspace?.businessId || updated.businessId || null,
-            companyId: updated.id,
-            category: "kyc",
-            action: "kyc.material_identity_change_reverification_required",
-            outcome: "info",
-            targetType: "company",
-            targetId: updated.id,
-            targetLabel: updated.name || updated.companyCode || updated.id,
-            message: "KYC moved back to pending because material identity details changed.",
-            metadata: {
-              fromKycStatus: company.kycStatus || "",
-              toKycStatus: updated.kycStatus || "",
-              fromReviewStatus: company.reviewStatus || "",
-              toReviewStatus: updated.reviewStatus || "",
-              changedMaterialFields: reevaluation.changedFields,
-              requirementContextChanged: reevaluation.requirementContextChanged,
-              previousRequirementContext: reevaluation.previousContext,
-              nextRequirementContext: reevaluation.nextContext,
-            },
-          });
-        } catch {
-        }
-      }
-
-      return updated;
+      return settleMutation(updated, (resolved) => {
+        if (!resolved || !reevaluation.shouldReevaluate || !options.user) return resolved;
+        const audit = store.recordBusinessAuditEvent(options.user, {
+          ownerUserId: workspace?.ownerUserId || resolved.ownerUserId || null,
+          businessId: workspace?.businessId || resolved.businessId || null,
+          companyId: resolved.id,
+          category: "kyc",
+          action: "kyc.material_identity_change_reverification_required",
+          outcome: "info",
+          targetType: "company",
+          targetId: resolved.id,
+          targetLabel: resolved.name || resolved.companyCode || resolved.id,
+          message: "KYC moved back to pending because material identity details changed.",
+          metadata: {
+            fromKycStatus: company.kycStatus || "",
+            toKycStatus: resolved.kycStatus || "",
+            fromReviewStatus: company.reviewStatus || "",
+            toReviewStatus: resolved.reviewStatus || "",
+            changedMaterialFields: reevaluation.changedFields,
+            requirementContextChanged: reevaluation.requirementContextChanged,
+            previousRequirementContext: reevaluation.previousContext,
+            nextRequirementContext: reevaluation.nextContext,
+          },
+        });
+        return settleMutation(audit, () => resolved);
+      });
     },
 
     createCustomer(input, options = {}) {
@@ -603,26 +604,27 @@ export function createApi(deps = {}) {
     runRecurringInvoiceSchedulerForAllUsers(options = {}) {
       const users = store.listUsers();
       const results = [];
-      users.forEach((user) => {
-        if (!this.userCanUseFeature(user, "recurringInvoices", options)) return;
-        const result = store.runRecurringInvoiceScheduler({
-          ownerUserId: user.id,
-          targetDate: options.targetDate,
-          maxPerTemplate: options.maxPerTemplate,
-        });
-        results.push({
-          userId: user.id,
-          email: user.email,
-          ...result,
-        });
-      });
-      return {
+      let pending = null;
+      const addResult = (user, result) => results.push({ userId: user.id, email: user.email, ...result });
+      const summarize = () => ({
         targetDate: options.targetDate || new Date().toISOString().slice(0, 10),
         usersChecked: users.length,
         usersProcessed: results.length,
         createdCount: results.reduce((sum, result) => sum + (result.created?.length || 0), 0),
         results,
-      };
+      });
+      users.forEach((user) => {
+        if (!this.userCanUseFeature(user, "recurringInvoices", options)) return;
+        const run = () => store.runRecurringInvoiceScheduler({ ownerUserId: user.id, targetDate: options.targetDate, maxPerTemplate: options.maxPerTemplate });
+        if (pending) {
+          pending = pending.then(run).then((result) => addResult(user, result));
+          return;
+        }
+        const result = run();
+        if (result && typeof result.then === "function") pending = result.then((resolved) => addResult(user, resolved));
+        else addResult(user, result);
+      });
+      return pending ? pending.then(summarize) : summarize();
     },
 
     createPurchaseOrder(input, options = {}) {
@@ -738,8 +740,10 @@ export function createApi(deps = {}) {
         ...updates,
         role: updates.role !== undefined ? String(updates.role || "").trim().toLowerCase() : updates.role,
       }, user);
-      if (!member) throw new Error("Team member not found");
-      return member;
+      return settleMutation(member, (resolved) => {
+        if (!resolved) throw new Error("Team member not found");
+        return resolved;
+      });
     },
 
     listBusinessWorkspaces(user) {
@@ -1275,8 +1279,10 @@ export function createApi(deps = {}) {
           ...input,
           approverUserId: user.id,
         }, user);
-        if (!request) throw new Error("Approval request not found");
-        return request;
+        return settleMutation(request, (resolved) => {
+          if (!resolved) throw new Error("Approval request not found");
+          return resolved;
+        });
       }
       const access = this.requireBusinessWorkspaceAccess(user, {
         ...options,
@@ -1286,8 +1292,10 @@ export function createApi(deps = {}) {
         ...input,
         approverUserId: user.id,
       }, access.owner);
-      if (!request) throw new Error("Approval request not found");
-      return request;
+      return settleMutation(request, (resolved) => {
+        if (!resolved) throw new Error("Approval request not found");
+        return resolved;
+      });
     },
 
     recordApprovalNotification(user, approvalId, input = {}, options = {}) {
@@ -1297,8 +1305,10 @@ export function createApi(deps = {}) {
         workspaceOwnerUserId: targetOwnerUserId,
       }, "read");
       const request = store.recordApprovalNotification(approvalId, input, access.owner);
-      if (!request) throw new Error("Approval request not found");
-      return request;
+      return settleMutation(request, (resolved) => {
+        if (!resolved) throw new Error("Approval request not found");
+        return resolved;
+      });
     },
 
     listApiKeys(user, options = {}) {
@@ -1340,17 +1350,19 @@ export function createApi(deps = {}) {
       const targetOwnerUserId = options.workspaceOwnerUserId || user.id;
       if (!options.businessId && targetOwnerUserId === user.id) {
         this.requireFeature(user, "apiAccess", options);
-        const key = store.revokeApiKey(apiKeyId, user);
-        if (!key) throw new Error("API key not found");
-        return key;
+        return settleMutation(store.revokeApiKey(apiKeyId, user), (key) => {
+          if (!key) throw new Error("API key not found");
+          return key;
+        });
       }
       const access = this.requireBusinessWorkspaceAccess(user, {
         ...options,
         workspaceOwnerUserId: targetOwnerUserId,
       }, "apiAccess");
-      const key = store.revokeApiKey(apiKeyId, access.owner);
-      if (!key) throw new Error("API key not found");
-      return key;
+      return settleMutation(store.revokeApiKey(apiKeyId, access.owner), (key) => {
+        if (!key) throw new Error("API key not found");
+        return key;
+      });
     },
 
     validateWordPressConnection(input = {}) {
@@ -1437,57 +1449,59 @@ export function createApi(deps = {}) {
           throw new Error("AI invoice assistant is available on Pro and Business plans.");
         }
         this.enforceAiQuota(featureUser, featureOptions, true);
+        const plan = this.getUserPlan(featureUser, featureOptions).plan;
         const invoice = this.createInvoice({
           ...payload,
           ownerUserId: workspace.ownerUserId,
           status: "draft",
           paymentStatus: "draft",
         }, { ...featureOptions, user });
-        store.createAiUsageLog({
+        const usage = store.createAiUsageLog({
           ownerUserId: workspace.ownerUserId,
           actorUserId: user.id,
-          plan: this.getUserPlan(featureUser, featureOptions).plan,
+          plan,
           provider: "approved",
           intent,
           status: "saved",
           command: input.command,
           billable: true,
         });
-        return {
+        return settleMutation(invoice, (resolvedInvoice) => settleMutation(usage, () => ({
           intent,
           confidence: approved.confidence || "approved",
           message: "Approved AI invoice draft saved. Review it before creating the final invoice.",
-          createdRecord: invoice,
+          createdRecord: resolvedInvoice,
           quota: this.getAiQuota(featureUser, featureOptions),
-        };
+        })));
       }
       if (intent === "purchase_order") {
         if (!this.userCanUseFeature(featureUser, "aiPoAssist", featureOptions)) {
           throw new Error("AI PO and Work Order assistant is available on Pro and Business plans.");
         }
         this.enforceAiQuota(featureUser, featureOptions, true);
+        const plan = this.getUserPlan(featureUser, featureOptions).plan;
         const purchaseOrder = this.createPurchaseOrder({
           ...payload,
           ownerUserId: workspace.ownerUserId,
           status: "draft",
         }, { ...featureOptions, user });
-        store.createAiUsageLog({
+        const usage = store.createAiUsageLog({
           ownerUserId: workspace.ownerUserId,
           actorUserId: user.id,
-          plan: this.getUserPlan(featureUser, featureOptions).plan,
+          plan,
           provider: "approved",
           intent,
           status: "saved",
           command: input.command,
           billable: true,
         });
-        return {
+        return settleMutation(purchaseOrder, (resolvedPurchaseOrder) => settleMutation(usage, () => ({
           intent,
           confidence: approved.confidence || "approved",
           message: "Approved AI PO/WO draft saved. Review it before creating the final document.",
-          createdRecord: purchaseOrder,
+          createdRecord: resolvedPurchaseOrder,
           quota: this.getAiQuota(featureUser, featureOptions),
-        };
+        })));
       }
       throw new Error("Approved AI draft is missing a valid invoice or PO payload.");
     },
@@ -1499,6 +1513,7 @@ export function createApi(deps = {}) {
       const plan = this.getUserPlan(featureUser, featureOptions);
       const shouldBill = input.approvedPreview !== true && input.approvedDraft === undefined;
       const withQuota = (payload) => ({ ...payload, quota: this.getAiQuota(featureUser, featureOptions) });
+      const recordUsage = (usageInput, onSuccess) => settleMutation(store.createAiUsageLog(usageInput), onSuccess);
 
       const shouldSaveDraft = input.saveDraft !== false && input.previewOnly !== true;
       if (result.intent === "clarification") {
@@ -1506,7 +1521,7 @@ export function createApi(deps = {}) {
           throw new Error("AI assistant is available on Pro and Business plans.");
         }
         this.enforceAiQuota(featureUser, featureOptions, shouldBill);
-        store.createAiUsageLog({
+        return recordUsage({
           ownerUserId: workspace.ownerUserId,
           actorUserId: user.id,
           plan: plan.plan,
@@ -1515,15 +1530,14 @@ export function createApi(deps = {}) {
           status: "clarification",
           command: input.command,
           billable: shouldBill,
-        });
-        return withQuota({ ...result, provider });
+        }, () => withQuota({ ...result, provider }));
       }
       if (result.intent === "invoice") {
         if (!this.userCanUseFeature(featureUser, "aiInvoiceAssist", featureOptions)) {
           throw new Error("AI invoice assistant is available on Pro and Business plans.");
         }
         this.enforceAiQuota(featureUser, featureOptions, shouldBill);
-        store.createAiUsageLog({
+        const usageInput = {
           ownerUserId: workspace.ownerUserId,
           actorUserId: user.id,
           plan: plan.plan,
@@ -1532,33 +1546,33 @@ export function createApi(deps = {}) {
           status: shouldSaveDraft ? "saved" : "preview",
           command: input.command,
           billable: shouldBill,
-        });
+        };
         if (!shouldSaveDraft) {
-          return withQuota({
+          return recordUsage(usageInput, () => withQuota({
             ...result,
             provider,
             proposedRecord: {
               ...result.payload,
               ...(result.preview || {}),
             },
-          });
+          }));
         }
         const invoice = this.createInvoice({
           ...result.payload,
           workspaceOwnerUserId: workspace.ownerUserId,
         }, { ...featureOptions, user });
-        return withQuota({
+        return recordUsage(usageInput, () => settleMutation(invoice, (resolvedInvoice) => withQuota({
           ...result,
           provider,
-          createdRecord: invoice,
-        });
+          createdRecord: resolvedInvoice,
+        })));
       }
       if (result.intent === "purchase_order") {
         if (!this.userCanUseFeature(featureUser, "aiPoAssist", featureOptions)) {
           throw new Error("AI PO and Work Order assistant is available on Pro and Business plans.");
         }
         this.enforceAiQuota(featureUser, featureOptions, shouldBill);
-        store.createAiUsageLog({
+        const usageInput = {
           ownerUserId: workspace.ownerUserId,
           actorUserId: user.id,
           plan: plan.plan,
@@ -1567,32 +1581,32 @@ export function createApi(deps = {}) {
           status: shouldSaveDraft ? "saved" : "preview",
           command: input.command,
           billable: shouldBill,
-        });
+        };
         if (!shouldSaveDraft) {
-          return withQuota({
+          return recordUsage(usageInput, () => withQuota({
             ...result,
             provider,
             proposedRecord: {
               ...result.payload,
               ...(result.preview || {}),
             },
-          });
+          }));
         }
         const purchaseOrder = this.createPurchaseOrder({
           ...result.payload,
           workspaceOwnerUserId: workspace.ownerUserId,
         }, { ...featureOptions, user });
-        return withQuota({
+        return recordUsage(usageInput, () => settleMutation(purchaseOrder, (resolvedPurchaseOrder) => withQuota({
           ...result,
           provider,
-          createdRecord: purchaseOrder,
-        });
+          createdRecord: resolvedPurchaseOrder,
+        })));
       }
       if (!this.userCanUseFeature(featureUser, "advancedReports", featureOptions)) {
         throw new Error("AI report assistant is available on Pro and Business plans.");
       }
       this.enforceAiQuota(featureUser, featureOptions, shouldBill);
-      store.createAiUsageLog({
+      return recordUsage({
         ownerUserId: workspace.ownerUserId,
         actorUserId: user.id,
         plan: plan.plan,
@@ -1601,8 +1615,7 @@ export function createApi(deps = {}) {
         status: "report",
         command: input.command,
         billable: shouldBill,
-      });
-      return withQuota({ ...result, provider });
+      }, () => withQuota({ ...result, provider }));
     },
 
     runAiCommand(user, input = {}, options = {}) {
@@ -1680,7 +1693,7 @@ export function createApi(deps = {}) {
         },
         options: featureOptions,
       });
-      store.createAiUsageLog({
+      await store.createAiUsageLog({
         ownerUserId: workspace.ownerUserId,
         businessId: workspace.businessId,
         actorUserId: user.id,
@@ -1980,6 +1993,42 @@ export function createApi(deps = {}) {
         return store.listPaymentsForUser(null).filter((payment) => payment.businessId === workspace.businessId || payment.ownerUserId === workspace.ownerUserId);
       }
       return store.listPaymentsForUser(workspace.owner);
+    },
+    listPaymentAllocations(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return store.listPaymentAllocations({
+        ...options,
+        businessId: workspace.businessId || options.businessId || null,
+        ownerUserId: workspace.ownerUserId || null,
+      });
+    },
+    createPaymentAllocation(input = {}, options = {}) {
+      const payment = store.listPaymentsForUser(null).find((entry) => entry.id === input.paymentId);
+      if (!payment) throw new Error("Payment is required for allocation.");
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || (payment.ownerUserId ? store.getUserById(payment.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || payment.ownerUserId,
+        businessId: input.businessId || options.businessId || payment.businessId || null,
+      }, "writeRecords");
+      return store.createPaymentAllocation({
+        ...input,
+        businessId: workspace.businessId || payment.businessId,
+        actorUserId: options.user?.id || input.actorUserId || "",
+      });
+    },
+    reversePaymentAllocation(id, input = {}, options = {}) {
+      const allocation = store.listPaymentAllocations({ includeReversed: true }).find((entry) => entry.id === id);
+      if (!allocation) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || (allocation.ownerUserId ? store.getUserById(allocation.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || allocation.ownerUserId,
+        businessId: input.businessId || options.businessId || allocation.businessId || null,
+      }, "writeRecords");
+      return store.reversePaymentAllocation(id, {
+        ...input,
+        businessId: workspace.businessId || allocation.businessId,
+        actorUserId: options.user?.id || input.actorUserId || "",
+      });
     },
     listInvoicePayments(invoiceId) {
       return store.listInvoicePayments(invoiceId);

@@ -34,6 +34,7 @@ export const STATE_COLLECTIONS = [
   "invoices",
   "purchaseOrders",
   "payments",
+  "paymentAllocations",
   "subscriptions",
   "billingOrders",
   "monetization",
@@ -122,6 +123,7 @@ const COUNTER_COLLECTIONS = {
   invoice: "invoices",
   purchaseOrder: "purchaseOrders",
   payment: "payments",
+  paymentAllocation: "paymentAllocations",
   subscription: "subscriptions",
   billingOrder: "billingOrders",
   monetization: "monetization",
@@ -170,6 +172,7 @@ const COUNTER_PREFIXES = {
   invoice: "inv",
   purchaseOrder: "po",
   payment: "pay",
+  paymentAllocation: "palloc",
   subscription: "sub",
   billingOrder: "bill",
   monetization: "mon",
@@ -268,7 +271,7 @@ async function pruneNormalizedFinancialTables(client) {
   }
 }
 
-export async function saveStateToPostgres(state, options = {}) {
+async function saveStateToPostgresWithinTransaction(client, state, options = {}) {
   const normalized = normalizeStateDocument(state);
   const metadata = {
     source: options.source || "unknown",
@@ -276,8 +279,22 @@ export async function saveStateToPostgres(state, options = {}) {
     counts: Object.fromEntries(STATE_COLLECTIONS.map((collection) => [collection, normalized[collection].length])),
   };
 
-  await withPostgresTransaction(async (client) => {
-      await client.query(
+  if (options.expectedVersion !== undefined) {
+        const current = await client.query(
+          "select version from eazinvoice_state_documents where state_key = $1 for update",
+          [STATE_KEY],
+        );
+        const currentVersion = current.rows[0]?.version;
+        if (currentVersion === undefined || Number(currentVersion) !== Number(options.expectedVersion)) {
+          throw new Error("Postgres authoritative state changed before this write could commit.");
+        }
+  } else {
+        await client.query(
+          "select version from eazinvoice_state_documents where state_key = $1 for update",
+          [STATE_KEY],
+        );
+  }
+  await client.query(
         `insert into eazinvoice_state_documents (state_key, state, source, source_path, updated_at)
          values ($1, $2::jsonb, $3, $4, now())
          on conflict (state_key) do update set
@@ -286,13 +303,13 @@ export async function saveStateToPostgres(state, options = {}) {
           source_path = excluded.source_path,
           version = eazinvoice_state_documents.version + 1,
           updated_at = now()`,
-        [STATE_KEY, JSON.stringify(normalized), metadata.source, metadata.sourcePath],
+         [STATE_KEY, JSON.stringify(normalized), metadata.source, metadata.sourcePath],
       );
-      await replaceIndexedRecords(client, normalized);
-      if (options.testFailurePoint === "after_state_document" && process.env.NODE_ENV !== "production") {
+  await replaceIndexedRecords(client, normalized);
+  if (options.testFailurePoint === "after_state_document" && process.env.NODE_ENV !== "production") {
         throw new Error("Injected Postgres state persistence failure after state document.");
       }
-      if (options.syncNormalized !== false) {
+  if (options.syncNormalized !== false) {
         await pruneNormalizedFinancialTables(client);
         await syncCoreTables(client, normalized, {
           audit: false,
@@ -316,25 +333,42 @@ export async function saveStateToPostgres(state, options = {}) {
           );
           throw new Error(`Postgres financial divergence detected in ${divergences[0].domain}.`);
         }
-      }
-      await client.query(
+  }
+  await client.query(
         `insert into eazinvoice_audit_events (event_type, entity_type, metadata)
          values ($1, $2, $3::jsonb)`,
         ["postgres_state_saved", "system", JSON.stringify(metadata)],
       );
-  }, { rlsBypass: true });
-
-  return metadata;
+  const version = await client.query(
+        "select version from eazinvoice_state_documents where state_key = $1",
+        [STATE_KEY],
+      );
+  return { ...metadata, version: Number(version.rows[0]?.version || 1) };
 }
 
-export async function loadStateFromPostgres() {
-  return withPostgresTransaction(async (client) => {
+export async function saveStateToPostgres(state, options = {}) {
+  return withPostgresTransaction(
+    async (client) => {
+      await client.query(
+        "select pg_advisory_xact_lock(hashtext($1))",
+        [String(options.advisoryLockKey || `eazinvoice:auth-state:${STATE_KEY}`)],
+      );
+      return saveStateToPostgresWithinTransaction(client, state, options);
+    },
+    { rlsBypass: true },
+  );
+}
+
+async function loadStateWithClient(client, { lock = false } = {}) {
     const document = await client.query(
-      "select state from eazinvoice_state_documents where state_key = $1",
+      `select state, version from eazinvoice_state_documents where state_key = $1${lock ? " for update" : ""}`,
       [STATE_KEY],
     );
     if (document.rows[0]?.state) {
-      return normalizeStateDocument(document.rows[0].state);
+      return {
+        state: normalizeStateDocument(document.rows[0].state),
+        version: Number(document.rows[0].version || 1),
+      };
     }
 
     const records = await client.query(
@@ -349,7 +383,36 @@ export async function loadStateFromPostgres() {
       state[row.record_type].push(row.record);
     });
     state.counters = deriveCounters(state);
-    return normalizeStateDocument(state);
+    return { state: normalizeStateDocument(state), version: null };
+}
+
+export async function loadAuthoritativeStateFromPostgres() {
+  return withPostgresTransaction(async (client) => loadStateWithClient(client), { rlsBypass: true });
+}
+
+export async function loadStateFromPostgres() {
+  const loaded = await loadAuthoritativeStateFromPostgres();
+  return loaded.state;
+}
+
+export async function withAuthoritativeStateMutation(mutation, options = {}) {
+  return withPostgresTransaction(async (client) => {
+    await client.query(
+      "select pg_advisory_xact_lock(hashtext($1))",
+      [String(options.advisoryLockKey || `eazinvoice:auth-state:${STATE_KEY}`)],
+    );
+    const loaded = await loadStateWithClient(client, { lock: true });
+    const outcome = await mutation(loaded.state, { version: loaded.version, client });
+    if (outcome?.persist === false) {
+      return { ...outcome, version: loaded.version };
+    }
+    const nextState = outcome?.state || loaded.state;
+    const metadata = await saveStateToPostgresWithinTransaction(client, nextState, {
+      source: options.source || "runtime-postgres-authoritative-mutation",
+      sourcePath: "postgres",
+      ...(loaded.version === null ? {} : { expectedVersion: loaded.version }),
+    });
+    return { ...outcome, state: nextState, version: metadata.version };
   }, { rlsBypass: true });
 }
 

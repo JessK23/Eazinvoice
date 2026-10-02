@@ -1,4 +1,8 @@
-import { loadStateFromPostgres, saveStateToPostgres } from "./postgres-state.js";
+import {
+  loadAuthoritativeStateFromPostgres,
+  saveStateToPostgres,
+  withAuthoritativeStateMutation,
+} from "./postgres-state.js";
 import { loadPersistedState, savePersistedState } from "./persistence.js";
 import { syncCoreTablesFromState } from "./postgres-core-sync.js";
 import { resolveStorageMode } from "./production-config.js";
@@ -66,16 +70,32 @@ export function createCoreTableSyncPersistenceAdapter(options = {}) {
 }
 
 export async function createPostgresPersistenceAdapter(options = {}) {
-  const initialState = await loadStateFromPostgres();
+  const loaded = await loadAuthoritativeStateFromPostgres();
+  let currentVersion = loaded.version;
   return {
     load() {
-      return initialState;
+      return loaded.state;
+    },
+    async reload() {
+      const refreshed = await loadAuthoritativeStateFromPostgres();
+      currentVersion = refreshed.version;
+      return refreshed.state;
     },
     async save(state) {
-      await saveStateToPostgres(state, {
+      const metadata = await saveStateToPostgres(state, {
         source: options.source || "runtime-postgres",
         sourcePath: "postgres",
+        ...(currentVersion === null ? {} : { expectedVersion: currentVersion }),
       });
+      currentVersion = metadata.version;
+      return metadata;
+    },
+    async mutateState(mutation) {
+      const result = await withAuthoritativeStateMutation(mutation, {
+        source: options.source || "runtime-postgres-authoritative-mutation",
+      });
+      currentVersion = result.version;
+      return result;
     },
   };
 }

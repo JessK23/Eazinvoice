@@ -269,6 +269,8 @@ export function createStore(seed = {}, options = {}) {
     save: savePersistedState,
   };
   const persisted = usePersistence ? persistenceAdapter.load() : {};
+  let pendingPersistence = null;
+  let persistenceHealthy = true;
   const state = {
     users: [],
     businesses: [],
@@ -301,6 +303,7 @@ export function createStore(seed = {}, options = {}) {
     invoices: [],
     purchaseOrders: [],
     payments: [],
+    paymentAllocations: [],
     subscriptions: [],
     billingOrders: [],
     monetization: [],
@@ -401,6 +404,7 @@ export function createStore(seed = {}, options = {}) {
     invoice: 0,
     purchaseOrder: 0,
     payment: 0,
+    paymentAllocation: 0,
     subscription: 0,
     billingOrder: 0,
     monetization: 0,
@@ -422,7 +426,16 @@ export function createStore(seed = {}, options = {}) {
 
   function persist() {
     if (!usePersistence) return;
-    persistenceAdapter.save({
+    if (!persistenceHealthy) {
+      const error = new Error("Authoritative persistence is unhealthy; reload is required before further writes.");
+      const rejected = Promise.reject(error);
+      pendingPersistence = rejected;
+      rejected.finally(() => {
+        if (pendingPersistence === rejected) pendingPersistence = null;
+      }).catch(() => {});
+      return rejected;
+    }
+    const snapshot = {
       users: state.users,
       businesses: state.businesses,
       companies: state.companies,
@@ -454,6 +467,7 @@ export function createStore(seed = {}, options = {}) {
       invoices: state.invoices,
       purchaseOrders: state.purchaseOrders,
       payments: state.payments,
+      paymentAllocations: state.paymentAllocations,
       subscriptions: state.subscriptions,
       billingOrders: state.billingOrders,
       monetization: state.monetization,
@@ -471,7 +485,42 @@ export function createStore(seed = {}, options = {}) {
       complianceTasks: state.complianceTasks,
       businessAuditEvents: state.businessAuditEvents,
       counters: state.counters,
+    };
+    const result = persistenceAdapter.save(snapshot);
+    if (!result || typeof result.then !== "function") return null;
+    const pending = Promise.resolve(result).then((value) => {
+      persistenceHealthy = true;
+      return value;
+    }).catch(async (error) => {
+        try {
+          if (typeof persistenceAdapter.reload !== "function") throw new Error("Authoritative persistence reload is unavailable.");
+          const authoritativeState = await persistenceAdapter.reload();
+          applyAuthoritativeState(authoritativeState);
+          persistenceHealthy = true;
+        } catch (reloadError) {
+          persistenceHealthy = false;
+          error.reloadError = reloadError;
+        }
+        throw error;
+      });
+    const tracked = pending.finally(() => {
+      if (pendingPersistence === tracked) pendingPersistence = null;
     });
+    pendingPersistence = tracked;
+    return tracked;
+  }
+
+  function persistAndReturn(value) {
+    const pending = persist();
+    return pending ? pending.then(() => value) : value;
+  }
+
+  function awaitPersistence() {
+    return pendingPersistence;
+  }
+
+  function getPersistenceHealth() {
+    return { healthy: persistenceHealthy };
   }
 
   function migratePlaintextApiKeysAtRest() {
@@ -3036,6 +3085,202 @@ export function createStore(seed = {}, options = {}) {
     return purchaseOrder;
   }
 
+  function activePaymentAllocationsForPayment(paymentId) {
+    return state.paymentAllocations.filter((allocation) => (
+      allocation.paymentId === paymentId
+      && normalizeRecordStatus(allocation.status, "active") === "active"
+    ));
+  }
+
+  function paymentDirection(payment) {
+    if (payment?.invoiceId && !payment?.vendorBillId) return "customer";
+    if (payment?.vendorBillId && !payment?.invoiceId) return "vendor";
+    return "unknown";
+  }
+
+  function allocationDocument(documentType, documentId) {
+    const normalizedType = String(documentType || "").trim().toUpperCase();
+    if (normalizedType === "INVOICE") {
+      return {
+        type: normalizedType,
+        record: state.invoices.find((entry) => entry.id === documentId) || null,
+        direction: "customer",
+      };
+    }
+    if (normalizedType === "VENDOR_BILL") {
+      return {
+        type: normalizedType,
+        record: state.vendorBills.find((entry) => entry.id === documentId) || null,
+        direction: "vendor",
+      };
+    }
+    throw new Error("Payment allocation document type must be INVOICE or VENDOR_BILL.");
+  }
+
+  function documentOutstandingMinor(documentType, document) {
+    const total = documentType === "VENDOR_BILL"
+      ? toNumber(document?.netVendorPayable ?? document?.total)
+      : toNumber(document?.balanceAmount ?? document?.total);
+    return Math.max(0, Math.round(total * 100));
+  }
+
+  function paymentAvailableMinor(payment) {
+    const amountMinor = Math.max(0, Math.round(toNumber(payment.amount) * 100));
+    const direction = paymentDirection(payment);
+    const reversedMinor = direction === "vendor"
+      ? reversedMinorForPayment(payment.id, "vendor")
+      : reversedMinorForPayment(payment.id, "customer");
+    const allocatedMinor = activePaymentAllocationsForPayment(payment.id)
+      .reduce((sum, allocation) => sum + Math.round(toNumber(allocation.allocatedAmount) * 100), 0);
+    return Math.max(0, amountMinor - Math.min(amountMinor, reversedMinor) - allocatedMinor);
+  }
+
+  function listPaymentAllocations(input = {}) {
+    const businessId = input.businessId || null;
+    const documentType = input.documentType ? String(input.documentType).trim().toUpperCase() : null;
+    const documentId = input.documentId || null;
+    return clone(state.paymentAllocations.filter((allocation) => (
+      (!businessId || allocation.businessId === businessId)
+      && (!input.ownerUserId || allocation.ownerUserId === input.ownerUserId)
+      && (!input.paymentId || allocation.paymentId === input.paymentId)
+      && (!documentType || allocation.documentType === documentType)
+      && (!documentId || allocation.documentId === documentId)
+      && (input.includeReversed || normalizeRecordStatus(allocation.status, "active") === "active")
+    )));
+  }
+
+  function createPaymentAllocationLocal(input = {}) {
+    const paymentId = String(input.paymentId || "").trim();
+    const documentType = String(input.documentType || input.targetType || "").trim().toUpperCase();
+    const documentId = String(input.documentId || input.targetId || "").trim();
+    const payment = state.payments.find((entry) => entry.id === paymentId);
+    if (!payment) throw new Error("Payment is required for allocation.");
+    const business = findBusinessByIdOrLegacyOwner(input.businessId || payment.businessId);
+    if (!business || payment.businessId !== business.id) throw new Error("Payment allocation business does not match the Payment.");
+
+    const target = allocationDocument(documentType, documentId);
+    if (!target.record) throw new Error("Payment allocation document was not found.");
+    if (target.record.businessId !== business.id) throw new Error("Payment allocation document does not belong to this business.");
+    if (paymentDirection(payment) !== target.direction) throw new Error("Payment allocation direction does not match the document.");
+    if (payment.invoiceId && (target.type !== "INVOICE" || target.record.id !== payment.invoiceId)) {
+      throw new Error("Invoice-bound Payment can only be allocated to its original Invoice.");
+    }
+    if (payment.vendorBillId && (target.type !== "VENDOR_BILL" || target.record.id !== payment.vendorBillId)) {
+      throw new Error("Vendor-Bill-bound Payment can only be allocated to its original Vendor Bill.");
+    }
+    if (!["INVOICE", "VENDOR_BILL"].includes(target.type)) throw new Error("Payment allocation document type is not supported.");
+    const targetStatus = normalizeRecordStatus(target.record.status, "draft");
+    if (["draft", "deleted", "cancelled", "void"].includes(targetStatus)) throw new Error("Payment allocation document is not eligible.");
+    const paymentStatus = normalizeRecordStatus(payment.status, "captured");
+    if (["failed", "cancelled", "void", "reversed", "refunded"].includes(paymentStatus)) throw new Error("Payment is not usable for allocation.");
+
+    const paymentCurrency = String(payment.currency || "INR").trim().toUpperCase();
+    const documentCurrency = String(target.record.currency || "INR").trim().toUpperCase();
+    const requestedCurrency = String(input.currency || paymentCurrency).trim().toUpperCase();
+    if (requestedCurrency !== paymentCurrency || requestedCurrency !== documentCurrency) throw new Error("Payment allocation currency must match the Payment and document.");
+
+    const amountMinor = Math.round(toNumber(input.allocatedAmount ?? input.amount) * 100);
+    if (amountMinor <= 0) throw new Error("Payment allocation amount must be greater than zero.");
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    if (idempotencyKey) {
+      const existing = state.paymentAllocations.find((allocation) => allocation.businessId === business.id && allocation.idempotencyKey === idempotencyKey);
+      if (existing) {
+        const sameRequest = existing.paymentId === payment.id
+          && existing.documentType === target.type
+          && existing.documentId === target.record.id
+          && Math.round(toNumber(existing.allocatedAmount) * 100) === amountMinor
+          && String(existing.currency || "INR").trim().toUpperCase() === requestedCurrency;
+        if (!sameRequest) throw new Error("Payment allocation idempotency key was already used for a different request.");
+        return clone({ allocation: existing, idempotentReplay: true });
+      }
+    }
+    const availablePaymentMinor = paymentAvailableMinor(payment);
+    if (amountMinor > availablePaymentMinor) throw new Error("Payment allocation cannot exceed the Payment's available amount.");
+    const outstandingMinor = documentOutstandingMinor(target.type, target.record);
+    const existingTargetAllocations = state.paymentAllocations
+      .filter((allocation) => allocation.documentType === target.type && allocation.documentId === target.record.id && normalizeRecordStatus(allocation.status, "active") === "active")
+      .reduce((sum, allocation) => sum + Math.round(toNumber(allocation.allocatedAmount) * 100), 0);
+    if (amountMinor + existingTargetAllocations > outstandingMinor) throw new Error("Payment allocation cannot exceed the document's outstanding balance.");
+
+    const now = new Date().toISOString();
+    const allocation = {
+      id: nextId("palloc", ++state.counters.paymentAllocation),
+      ownerUserId: payment.ownerUserId,
+      businessId: business.id,
+      paymentId: payment.id,
+      documentType: target.type,
+      documentId: target.record.id,
+      allocatedAmount: fromMinor(amountMinor),
+      currency: requestedCurrency,
+      status: "active",
+      idempotencyKey,
+      createdByUserId: input.createdByUserId || input.actorUserId || "",
+      createdAt: now,
+      updatedAt: now,
+    };
+    state.paymentAllocations.push(allocation);
+    persist();
+    return clone({ allocation });
+  }
+
+  function applyAuthoritativeState(nextState) {
+    Object.keys(state).forEach((key) => {
+      if (!(key in nextState)) delete state[key];
+    });
+    Object.entries(nextState).forEach(([key, value]) => {
+      state[key] = clone(value);
+    });
+  }
+
+  function createPaymentAllocation(input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") {
+      return createPaymentAllocationLocal(input);
+    }
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.createPaymentAllocationLocal(input);
+      return {
+        result,
+        state: transactionStore.exportState(),
+        persist: !result?.idempotentReplay,
+      };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
+  function reversePaymentAllocationLocal(allocationId, input = {}) {
+    const allocation = state.paymentAllocations.find((entry) => entry.id === allocationId);
+    if (!allocation) return null;
+    if (input.businessId && allocation.businessId !== input.businessId) throw new Error("Payment allocation was not found in this business.");
+    if (normalizeRecordStatus(allocation.status, "active") === "reversed") return clone({ allocation, idempotentReplay: true });
+    allocation.status = "reversed";
+    allocation.reversedByUserId = input.actorUserId || input.createdByUserId || "";
+    allocation.reversedAt = new Date().toISOString();
+    allocation.updatedAt = allocation.reversedAt;
+    persist();
+    return clone({ allocation });
+  }
+
+  function reversePaymentAllocation(allocationId, input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") {
+      return reversePaymentAllocationLocal(allocationId, input);
+    }
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.reversePaymentAllocationLocal(allocationId, input);
+      return {
+        result,
+        state: transactionStore.exportState(),
+        persist: Boolean(result && !result.idempotentReplay),
+      };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
   function recordInvoicePayment(invoiceId, input = {}) {
     const invoice = state.invoices.find((entry) => entry.id === invoiceId);
     if (!invoice) return null;
@@ -3084,8 +3329,7 @@ export function createStore(seed = {}, options = {}) {
     state.payments.push(payment);
     refreshInvoicePaymentStatus(invoice);
     if (postingBusiness) postPaymentCaptured(state, payment, invoice, postingBusiness);
-    persist();
-    return clone({ invoice, payment });
+    return persistAndReturn(clone({ invoice, payment }));
   }
 
   function recordPurchaseOrderPayment(purchaseOrderId, input = {}) {
@@ -3146,8 +3390,7 @@ export function createStore(seed = {}, options = {}) {
     state.payments.push(payment);
     refreshVendorBillPaymentStatus(vendorBill);
     if (business) postVendorPaymentCaptured(state, payment, vendorBill, business);
-    persist();
-    return clone({ vendorBill, payment });
+    return persistAndReturn(clone({ vendorBill, payment }));
   }
 
   function createInvoicePaymentLink(invoiceId, input = {}) {
@@ -3329,8 +3572,7 @@ export function createStore(seed = {}, options = {}) {
     }
     refreshPaymentReversalState(payment, "customer");
     refreshInvoicePaymentStatus(invoice);
-    persist();
-    return clone(reversal);
+    return persistAndReturn(clone(reversal));
   }
 
   function createVendorPaymentReversal(input = {}) {
@@ -3383,8 +3625,7 @@ export function createStore(seed = {}, options = {}) {
     }
     refreshPaymentReversalState(payment, "vendor");
     refreshVendorBillPaymentStatus(bill);
-    persist();
-    return clone(reversal);
+    return persistAndReturn(clone(reversal));
   }
 
   function createCustomerRefund(input = {}) {
@@ -5607,7 +5848,7 @@ export function createStore(seed = {}, options = {}) {
     persist();
     return clone(purchaseOrder);
   }
-  return {
+  const storeApi = {
     createUser,
     listUsers,
     getUserById,
@@ -5773,6 +6014,9 @@ export function createStore(seed = {}, options = {}) {
     recordInvoicePayment,
     recordPurchaseOrderPayment,
     recordVendorBillPayment,
+    listPaymentAllocations,
+    createPaymentAllocation,
+    reversePaymentAllocation,
     createInvoicePaymentLink,
     recordGatewayPayment,
     listPaymentsForUser,
@@ -5783,6 +6027,21 @@ export function createStore(seed = {}, options = {}) {
     countUsage,
     countUsageForUser,
     summarizeRecords,
+    awaitPersistence,
+    getPersistenceHealth,
     exportState,
   };
+
+  return new Proxy(storeApi, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== "function" || property === "awaitPersistence" || property === "getPersistenceHealth") return value;
+      return (...args) => {
+        const result = value.apply(target, args);
+        const pending = pendingPersistence;
+        if (!pending) return result;
+        return Promise.resolve(result).then((resolved) => pending.then(() => resolved));
+      };
+    },
+  });
 }

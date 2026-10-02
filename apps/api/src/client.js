@@ -174,6 +174,15 @@ export const apiClient = {
   listPayments(token, options = {}) {
     return request(`/payments${queryString(options)}`, { token });
   },
+  listPaymentAllocations(token, options = {}) {
+    return request(`/payment-allocations${queryString(options)}`, { token });
+  },
+  createPaymentAllocation(token, body) {
+    return request("/payment-allocations", { method: "POST", token, body });
+  },
+  reversePaymentAllocation(token, allocationId, body = {}) {
+    return request(`/payment-allocations/${encodeURIComponent(allocationId)}/reverse`, { method: "POST", token, body });
+  },
   listCreditNotes(token, options = {}) {
     return request(`/credit-notes${queryString(options)}`, { token });
   },
