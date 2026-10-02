@@ -2030,6 +2030,81 @@ export function createApi(deps = {}) {
         actorUserId: options.user?.id || input.actorUserId || "",
       });
     },
+    listPaymentRequests(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return store.listPaymentRequests({
+        ...options,
+        businessId: workspace.businessId || options.businessId || null,
+        workspaceOwnerUserId: workspace.ownerUserId || null,
+        invoiceId: options.invoiceId || null,
+      });
+    },
+    getPaymentRequest(id, user, options = {}) {
+      const current = store.getPaymentRequest(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: options.workspaceOwnerUserId || current.workspaceOwnerUserId,
+        businessId: options.businessId || current.businessId || null,
+      }, "read");
+      return store.getPaymentRequest(id, {
+        businessId: workspace.businessId || current.businessId,
+        workspaceOwnerUserId: workspace.ownerUserId || current.workspaceOwnerUserId,
+      });
+    },
+    createPaymentRequest(input = {}, options = {}) {
+      const invoice = store.getInvoice(input.invoiceId);
+      if (!invoice) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || (invoice.ownerUserId ? store.getUserById(invoice.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || invoice.ownerUserId,
+        businessId: input.businessId || options.businessId || invoice.businessId || null,
+      }, "writeRecords");
+      const visible = this.getInvoice(invoice.id, workspace.owner, {
+        workspaceOwnerUserId: workspace.ownerUserId,
+        businessId: workspace.businessId,
+      });
+      if (!visible) return null;
+      return store.createPaymentRequest({
+        ...input,
+        invoiceId: invoice.id,
+        businessId: workspace.businessId || invoice.businessId,
+        workspaceOwnerUserId: workspace.ownerUserId || invoice.ownerUserId,
+      });
+    },
+    cancelPaymentRequest(id, input = {}, options = {}) {
+      const current = store.getPaymentRequest(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || (current.workspaceOwnerUserId ? store.getUserById(current.workspaceOwnerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || current.workspaceOwnerUserId,
+        businessId: input.businessId || options.businessId || current.businessId || null,
+      }, "writeRecords");
+      const visible = store.getPaymentRequest(id, {
+        businessId: workspace.businessId || current.businessId,
+        workspaceOwnerUserId: workspace.ownerUserId || current.workspaceOwnerUserId,
+      });
+      if (!visible) return null;
+      return store.cancelPaymentRequest(id, {
+        ...input,
+        businessId: workspace.businessId || current.businessId,
+        workspaceOwnerUserId: workspace.ownerUserId || current.workspaceOwnerUserId,
+      });
+    },
+    completePaymentRequest(id, input = {}, options = {}) {
+      const current = store.getPaymentRequest(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || (current.workspaceOwnerUserId ? store.getUserById(current.workspaceOwnerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || current.workspaceOwnerUserId,
+        businessId: input.businessId || options.businessId || current.businessId || null,
+      }, "writeRecords");
+      return store.completePaymentRequest(id, {
+        ...input,
+        businessId: workspace.businessId || current.businessId,
+        workspaceOwnerUserId: workspace.ownerUserId || current.workspaceOwnerUserId,
+      });
+    },
     listInvoicePayments(invoiceId) {
       return store.listInvoicePayments(invoiceId);
     },

@@ -304,6 +304,7 @@ export function createStore(seed = {}, options = {}) {
     purchaseOrders: [],
     payments: [],
     paymentAllocations: [],
+    paymentRequests: [],
     subscriptions: [],
     billingOrders: [],
     monetization: [],
@@ -352,6 +353,8 @@ export function createStore(seed = {}, options = {}) {
       invoice: 0,
       purchaseOrder: 0,
       payment: 0,
+      paymentAllocation: 0,
+      paymentRequest: 0,
       subscription: 0,
       billingOrder: 0,
       monetization: 0,
@@ -405,6 +408,7 @@ export function createStore(seed = {}, options = {}) {
     purchaseOrder: 0,
     payment: 0,
     paymentAllocation: 0,
+    paymentRequest: 0,
     subscription: 0,
     billingOrder: 0,
     monetization: 0,
@@ -468,6 +472,7 @@ export function createStore(seed = {}, options = {}) {
       purchaseOrders: state.purchaseOrders,
       payments: state.payments,
       paymentAllocations: state.paymentAllocations,
+      paymentRequests: state.paymentRequests,
       subscriptions: state.subscriptions,
       billingOrders: state.billingOrders,
       monetization: state.monetization,
@@ -3281,6 +3286,182 @@ export function createStore(seed = {}, options = {}) {
     });
   }
 
+  function paymentRequestEffectiveStatus(request, now = Date.now()) {
+    if (normalizeRecordStatus(request?.status, "active") === "active" && request?.expiresAt) {
+      const expiresAt = Date.parse(request.expiresAt);
+      if (Number.isFinite(expiresAt) && expiresAt <= now) return "expired";
+    }
+    return normalizeRecordStatus(request?.status, "active");
+  }
+
+  function paymentRequestView(request, now = Date.now()) {
+    if (!request) return null;
+    return clone({ ...request, status: paymentRequestEffectiveStatus(request, now) });
+  }
+
+  function activePaymentRequestReservationMinor(invoiceId, now = Date.now()) {
+    return state.paymentRequests
+      .filter((request) => request.invoiceId === invoiceId && paymentRequestEffectiveStatus(request, now) === "active")
+      .reduce((sum, request) => sum + Math.round(toNumber(request.requestedAmount) * 100), 0);
+  }
+
+  function paymentRequestMaterialMatches(request, input) {
+    return request.invoiceId === String(input.invoiceId || "").trim()
+      && Math.round(toNumber(request.requestedAmount) * 100) === Math.round(toNumber(input.requestedAmount ?? input.amount) * 100)
+      && String(request.currency || "").toUpperCase() === String(input.currency || "").trim().toUpperCase()
+      && String(request.expiresAt || "") === String(input.expiresAt || "");
+  }
+
+  function createPaymentRequestLocal(input = {}) {
+    const invoiceId = String(input.invoiceId || "").trim();
+    const invoice = state.invoices.find((entry) => entry.id === invoiceId);
+    if (!invoice) throw new Error("Invoice not found.");
+    assertInvoiceCanReceivePayment(invoice);
+    const businessId = String(input.businessId || invoice.businessId || "").trim();
+    if (!businessId || invoice.businessId !== businessId) throw new Error("Payment request business does not match invoice business.");
+    const workspaceOwnerUserId = String(input.workspaceOwnerUserId || invoice.ownerUserId || "").trim();
+    if (workspaceOwnerUserId && invoice.ownerUserId && workspaceOwnerUserId !== invoice.ownerUserId) {
+      throw new Error("Payment request owner does not match invoice owner.");
+    }
+    const requestedAmount = toNumber(input.requestedAmount ?? input.amount);
+    const amountMinor = Math.round(requestedAmount * 100);
+    if (amountMinor <= 0) throw new Error("Payment request amount must be greater than zero.");
+    const currency = String(input.currency || invoice.currency || "INR").trim().toUpperCase();
+    const invoiceCurrency = String(invoice.currency || "INR").trim().toUpperCase();
+    if (currency !== invoiceCurrency) throw new Error("Payment request currency must match the invoice currency.");
+    const expiresAt = String(input.expiresAt || "").trim();
+    if (expiresAt) {
+      const expiryTime = Date.parse(expiresAt);
+      if (!Number.isFinite(expiryTime) || expiryTime <= Date.now()) throw new Error("Payment request expiry must be a valid future timestamp.");
+    }
+    const requestKey = String(input.requestKey || input.idempotencyKey || "").trim();
+    if (requestKey) {
+      const existing = state.paymentRequests.find((request) => request.businessId === businessId && request.requestKey === requestKey);
+      if (existing) {
+        if (!paymentRequestMaterialMatches(existing, { ...input, invoiceId, requestedAmount, currency, expiresAt })) {
+          throw new Error("Payment request idempotency key was already used with a different collection intent.");
+        }
+        return { paymentRequest: paymentRequestView(existing), idempotentReplay: true };
+      }
+    }
+    const outstandingMinor = documentOutstandingMinor("INVOICE", invoice);
+    if (amountMinor > outstandingMinor) throw new Error("Payment request amount cannot exceed the invoice's collectible outstanding balance.");
+    const reservedMinor = activePaymentRequestReservationMinor(invoiceId);
+    if (amountMinor + reservedMinor > outstandingMinor) throw new Error("Active payment requests cannot exceed the invoice's collectible outstanding balance.");
+    const now = new Date().toISOString();
+    const paymentRequest = {
+      id: nextId("preq", ++state.counters.paymentRequest),
+      workspaceOwnerUserId: invoice.ownerUserId || workspaceOwnerUserId || null,
+      businessId,
+      invoiceId,
+      documentType: "INVOICE",
+      currency,
+      requestedAmount,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      expiresAt,
+      cancelledAt: "",
+      completedAt: "",
+      requestKey,
+      provider: String(input.provider || "").trim().toLowerCase(),
+      providerReference: String(input.providerReference || "").trim(),
+      metadata: input.metadata && typeof input.metadata === "object" ? clone(input.metadata) : {},
+    };
+    state.paymentRequests.push(paymentRequest);
+    return persistAndReturn({ paymentRequest: paymentRequestView(paymentRequest) });
+  }
+
+  function createPaymentRequest(input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return createPaymentRequestLocal(input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.createPaymentRequestLocal(input);
+      return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
+  function listPaymentRequests(input = {}) {
+    const now = Date.now();
+    return clone(state.paymentRequests
+      .filter((request) => (
+        (!input.businessId || request.businessId === input.businessId)
+        && (!input.workspaceOwnerUserId || request.workspaceOwnerUserId === input.workspaceOwnerUserId)
+        && (!input.invoiceId || request.invoiceId === input.invoiceId)
+        && (!input.status || paymentRequestEffectiveStatus(request, now) === String(input.status).toLowerCase())
+      ))
+      .map((request) => ({ ...request, status: paymentRequestEffectiveStatus(request, now) })));
+  }
+
+  function getPaymentRequest(id, input = {}) {
+    const request = state.paymentRequests.find((entry) => entry.id === id);
+    if (!request) return null;
+    if (input.businessId && request.businessId !== input.businessId) return null;
+    if (input.workspaceOwnerUserId && request.workspaceOwnerUserId !== input.workspaceOwnerUserId) return null;
+    return paymentRequestView(request);
+  }
+
+  function cancelPaymentRequestLocal(id, input = {}) {
+    const request = state.paymentRequests.find((entry) => entry.id === id);
+    if (!request) return null;
+    if (input.businessId && request.businessId !== input.businessId) throw new Error("Payment request was not found in this business.");
+    if (input.workspaceOwnerUserId && request.workspaceOwnerUserId !== input.workspaceOwnerUserId) throw new Error("Payment request was not found in this workspace.");
+    const status = paymentRequestEffectiveStatus(request);
+    if (status === "completed") throw new Error("Completed payment requests are terminal and cannot be cancelled.");
+    if (status === "cancelled" || status === "expired") return { paymentRequest: paymentRequestView(request), idempotentReplay: true };
+    const now = new Date().toISOString();
+    request.status = "cancelled";
+    request.cancelledAt = now;
+    request.updatedAt = now;
+    return persistAndReturn({ paymentRequest: paymentRequestView(request) });
+  }
+
+  function cancelPaymentRequest(id, input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return cancelPaymentRequestLocal(id, input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.cancelPaymentRequestLocal(id, input);
+      return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
+  function completePaymentRequestLocal(id, input = {}) {
+    const request = state.paymentRequests.find((entry) => entry.id === id);
+    if (!request) return null;
+    if (input.businessId && request.businessId !== input.businessId) throw new Error("Payment request was not found in this business.");
+    if (input.workspaceOwnerUserId && request.workspaceOwnerUserId !== input.workspaceOwnerUserId) throw new Error("Payment request was not found in this workspace.");
+    if (normalizeRecordStatus(request.status, "active") === "completed") return { paymentRequest: paymentRequestView(request), idempotentReplay: true };
+    if (input.verifiedPaymentEvidence !== true || !String(input.providerReference || request.providerReference || "").trim()) {
+      throw new Error("Payment request completion requires verified provider evidence.");
+    }
+    if (["cancelled", "completed"].includes(paymentRequestEffectiveStatus(request))) throw new Error("Payment request is terminal.");
+    const now = new Date().toISOString();
+    request.status = "completed";
+    request.provider = String(input.provider || request.provider || "").trim().toLowerCase();
+    request.providerReference = String(input.providerReference || request.providerReference || "").trim();
+    request.completedAt = now;
+    request.updatedAt = now;
+    return persistAndReturn({ paymentRequest: paymentRequestView(request) });
+  }
+
+  function completePaymentRequest(id, input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return completePaymentRequestLocal(id, input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.completePaymentRequestLocal(id, input);
+      return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
   function recordInvoicePayment(invoiceId, input = {}) {
     const invoice = state.invoices.find((entry) => entry.id === invoiceId);
     if (!invoice) return null;
@@ -4974,6 +5155,8 @@ export function createStore(seed = {}, options = {}) {
       invoices: state.invoices.length,
       purchaseOrders: state.purchaseOrders.length,
       payments: state.payments.length,
+      paymentAllocations: state.paymentAllocations.length,
+      paymentRequests: state.paymentRequests.length,
       subscriptions: state.subscriptions.length,
       billingOrders: state.billingOrders.length,
       monetization: state.monetization.length,
@@ -6017,6 +6200,11 @@ export function createStore(seed = {}, options = {}) {
     listPaymentAllocations,
     createPaymentAllocation,
     reversePaymentAllocation,
+    createPaymentRequest,
+    listPaymentRequests,
+    getPaymentRequest,
+    cancelPaymentRequest,
+    completePaymentRequest,
     createInvoicePaymentLink,
     recordGatewayPayment,
     listPaymentsForUser,

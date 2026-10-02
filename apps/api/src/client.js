@@ -177,6 +177,18 @@ export const apiClient = {
   listPaymentAllocations(token, options = {}) {
     return request(`/payment-allocations${queryString(options)}`, { token });
   },
+  listPaymentRequests(token, options = {}) {
+    return request(`/payment-requests${queryString(options)}`, { token });
+  },
+  getPaymentRequest(token, requestId, options = {}) {
+    return request(`/payment-requests/${encodeURIComponent(requestId)}${queryString(options)}`, { token });
+  },
+  createPaymentRequest(token, body) {
+    return request("/payment-requests", { method: "POST", token, body });
+  },
+  cancelPaymentRequest(token, requestId, body = {}) {
+    return request(`/payment-requests/${encodeURIComponent(requestId)}/cancel`, { method: "POST", token, body });
+  },
   createPaymentAllocation(token, body) {
     return request("/payment-allocations", { method: "POST", token, body });
   },

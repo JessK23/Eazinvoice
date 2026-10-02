@@ -6266,6 +6266,78 @@ if (url.pathname === "/customers" && req.method === "GET") {
       return;
     }
 
+    if (url.pathname === "/payment-requests" && req.method === "GET") {
+      sendJson(res, 200, api.listPaymentRequests(user, {
+        previewPlan,
+        workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+        businessId: url.searchParams.get("businessId") || null,
+        invoiceId: url.searchParams.get("invoiceId") || null,
+        status: url.searchParams.get("status") || null,
+      }));
+      return;
+    }
+
+    if (url.pathname === "/payment-requests" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        const result = await api.createPaymentRequest(body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        });
+        if (!result) {
+          sendJson(res, 404, { error: "Invoice not found" });
+          return;
+        }
+        sendJson(res, 201, result);
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/payment-requests/") && url.pathname.endsWith("/cancel") && req.method === "POST") {
+      try {
+        const parts = url.pathname.split("/");
+        const id = decodeURIComponent(parts[2] || "");
+        const body = await readBody(req).catch(() => ({}));
+        const result = await api.cancelPaymentRequest(id, body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        });
+        if (!result) {
+          sendJson(res, 404, { error: "Payment request not found" });
+          return;
+        }
+        sendJson(res, 200, result);
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/payment-requests/") && req.method === "GET") {
+      try {
+        const id = decodeURIComponent(url.pathname.split("/")[2] || "");
+        const result = api.getPaymentRequest(id, user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        });
+        if (!result) {
+          sendJson(res, 404, { error: "Payment request not found" });
+          return;
+        }
+        sendJson(res, 200, result);
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
     if (url.pathname === "/payment-allocations" && req.method === "GET") {
       sendJson(res, 200, api.listPaymentAllocations(user, {
         previewPlan,
