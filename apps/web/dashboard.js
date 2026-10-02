@@ -92,6 +92,23 @@ const generalLedgerMeta = document.getElementById("generalLedgerMeta");
 const generalLedgerStatus = document.getElementById("generalLedgerStatus");
 const refreshGeneralLedgerBtn = document.getElementById("refreshGeneralLedgerBtn");
 const generalLedgerClearBtn = document.getElementById("generalLedgerClearBtn");
+const bankingStatus = document.getElementById("bankingStatus");
+const bankingSummary = document.getElementById("bankingSummary");
+const bankingAccountsList = document.getElementById("bankingAccountsList");
+const bankingAccountForm = document.getElementById("bankingAccountForm");
+const bankingAccountStatus = document.getElementById("bankingAccountStatus");
+const bankingImportForm = document.getElementById("bankingImportForm");
+const bankingImportAccountId = document.getElementById("bankingImportAccountId");
+const bankingImportStatus = document.getElementById("bankingImportStatus");
+const bankingAccountFilter = document.getElementById("bankingAccountFilter");
+const bankingStatementLineId = document.getElementById("bankingStatementLineId");
+const bankingTransactionsList = document.getElementById("bankingTransactionsList");
+const bankingCandidates = document.getElementById("bankingCandidates");
+const bankingMatchForm = document.getElementById("bankingMatchForm");
+const bankingMatchStatus = document.getElementById("bankingMatchStatus");
+const bankingUnmatchForm = document.getElementById("bankingUnmatchForm");
+const bankingUnmatchStatus = document.getElementById("bankingUnmatchStatus");
+const refreshBankingBtn = document.getElementById("refreshBankingBtn");
 const accountingGstCards = document.getElementById("accountingGstCards");
 const accountingGstEntries = document.getElementById("accountingGstEntries");
 const balanceSheetSummary = document.getElementById("balanceSheetSummary");
@@ -322,6 +339,8 @@ let advancedData = {
 };
 let selectedBusinessWorkspaceOwnerId = window.localStorage?.getItem("eazinvoice_business_workspace_owner") || "";
 let currentReportExport = { title: "Detailed Report", headers: [], rows: [] };
+let bankingData = { accounts: [], statementLines: [], summary: null, suggestions: null };
+let bankingLoadedForWorkspace = "";
 let razorpayCheckoutPromise = null;
 let pendingAiDraftCommand = null;
 let pendingAiDraftResult = null;
@@ -392,6 +411,7 @@ function showDashboardPage(page = currentDashboardPage()) {
   }
   if (page === "reports") renderMainReportCharts();
   if (page === "advanced-workflows") loadAdvancedWorkflows();
+  if (page === "banking") loadBanking();
   if (page === "admin-operations") loadAdminOperations();
   if (visiblePage === "general-ledger") loadGeneralLedger();
 }
@@ -2145,6 +2165,116 @@ function optionRows(records, labelFn, emptyLabel = "No records available") {
     : `<option value="">${escapeHtml(emptyLabel)}</option>`;
 }
 
+function bankingAccountLabel(account) {
+  return `${account.displayName || account.id} · ${account.accountType || "bank"}`;
+}
+
+function bankingStatementLabel(line) {
+  return `${line.statementDate || line.transactionDate || line.date || "-"} · ${line.narration || line.reference || line.id} · ${moneyLabel(Number(line.credit || line.debit || 0), line.currency)}`;
+}
+
+function renderBankingAccounts() {
+  const accounts = bankingData.accounts || [];
+  const options = optionRows(accounts, bankingAccountLabel, "No bank accounts available");
+  if (bankingImportAccountId) bankingImportAccountId.innerHTML = options;
+  if (bankingAccountFilter) {
+    const previous = bankingAccountFilter.value;
+    bankingAccountFilter.innerHTML = `<option value="">All accounts</option>${options}`;
+    bankingAccountFilter.value = accounts.some((account) => account.id === previous) ? previous : "";
+  }
+  bankingAccountsList.innerHTML = accounts.length
+    ? `<table class="report-table"><thead><tr><th>Account</th><th>Type</th><th>Reference</th><th>Ledger</th><th>Status</th></tr></thead><tbody>${accounts.map((account) => `<tr><td>${escapeHtml(account.displayName || account.id)}</td><td>${escapeHtml(account.accountType || "bank")}</td><td>${escapeHtml(account.maskedAccountReference || "masked")}</td><td>${escapeHtml(account.ledgerAccountCode || account.ledgerAccountId || "-")}</td><td>${escapeHtml(account.status || "active")}</td></tr>`).join("")}</tbody></table>`
+    : `<div class="empty-state">No bank or cash accounts are available in this workspace.</div>`;
+}
+
+function renderBankingStatementLines() {
+  const selectedAccountId = bankingAccountFilter?.value || "";
+  const lines = (bankingData.statementLines || []).filter((line) => !selectedAccountId || line.bankAccountId === selectedAccountId);
+  const options = optionRows(lines, bankingStatementLabel, "No statement lines available");
+  const previous = bankingStatementLineId?.value || "";
+  if (bankingStatementLineId) {
+    bankingStatementLineId.innerHTML = options;
+    bankingStatementLineId.value = lines.some((line) => line.id === previous) ? previous : (lines[0]?.id || "");
+  }
+  bankingTransactionsList.innerHTML = lines.length
+    ? `<table class="report-table"><thead><tr><th>Date</th><th>Narration</th><th>Money in</th><th>Money out</th><th>Status</th><th>Matched</th></tr></thead><tbody>${lines.map((line) => `<tr><td>${escapeHtml(line.statementDate || line.transactionDate || line.date || "-")}</td><td>${escapeHtml(line.narration || line.reference || "-")}</td><td>${escapeHtml(moneyLabel(line.credit || 0, line.currency))}</td><td>${escapeHtml(moneyLabel(line.debit || 0, line.currency))}</td><td>${escapeHtml(String(line.reconciliationStatus || "unmatched").replace(/_/g, " "))}</td><td>${escapeHtml(moneyLabel(line.matchedAmount || 0, line.currency))}</td></tr>`).join("")}</tbody></table>`
+    : `<div class="empty-state">No statement evidence is available for this workspace or account.</div>`;
+}
+
+function renderBankingSummary() {
+  const summary = bankingData.summary || {};
+  bankingSummary.innerHTML = [
+    advancedMetric("Accounts", String((bankingData.accounts || []).length)),
+    advancedMetric("Statement lines", String((bankingData.statementLines || []).length)),
+    advancedMetric("Status", String(summary.status || "not_started").replace(/_/g, " ")),
+    advancedMetric("Difference", moneyLabel(summary.reconciliationDifference || 0)),
+  ].join("");
+}
+
+function renderBankingCandidates(payload = bankingData.suggestions) {
+  const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
+  if (!payload) {
+    bankingCandidates.innerHTML = `<div class="notice compact">Select a statement line to request backend reconciliation candidates.</div>`;
+    return;
+  }
+  bankingCandidates.innerHTML = candidates.length
+    ? `<table class="report-table"><thead><tr><th>Source</th><th>Reference</th><th>Amount</th><th>Confidence</th><th>Action</th></tr></thead><tbody>${candidates.map((candidate) => `<tr><td>${escapeHtml(candidate.sourceType || "-")}</td><td>${escapeHtml(candidate.sourceId || candidate.journalId || "-")}</td><td>${escapeHtml(moneyLabel(candidate.amount || candidate.amountMinor / 100 || 0, candidate.currency))}</td><td>${escapeHtml(candidate.confidence || "-")}</td><td><button class="ghost small" type="button" data-banking-candidate="${escapeHtml(candidate.sourceType || "")}|${escapeHtml(candidate.sourceId || "")}" data-source-type="${escapeHtml(candidate.sourceType || "")}" data-source-id="${escapeHtml(candidate.sourceId || "")}">Use candidate</button></td></tr>`).join("")}</tbody></table>`
+    : `<div class="empty-state">The backend returned no compatible reconciliation candidates.</div>`;
+}
+
+async function loadBanking(force = false) {
+  if (!bankingStatus) return;
+  const workspaceKey = `${selectedWorkspaceOptions().workspaceOwnerUserId}:${selectedWorkspaceOptions().businessId}`;
+  if (!force && bankingLoadedForWorkspace === workspaceKey && bankingData.accounts.length) {
+    renderBankingAccounts();
+    renderBankingStatementLines();
+    renderBankingSummary();
+    return;
+  }
+  bankingLoadedForWorkspace = workspaceKey;
+  setInlineStatus(bankingStatus, "Loading Banking data...", "");
+  try {
+    const workspaceOptions = selectedWorkspaceOptions();
+    const [accounts, statementLines] = await Promise.all([
+      apiClient.listBankAccounts(token, workspaceOptions),
+      apiClient.listBankStatementLines(token, workspaceOptions),
+    ]);
+    const accountId = accounts[0]?.id || "";
+    const summary = accountId
+      ? await apiClient.getBankReconciliationSummary(token, { ...workspaceOptions, bankAccountId: accountId })
+      : null;
+    bankingData = { accounts, statementLines, summary, suggestions: null };
+    renderBankingAccounts();
+    renderBankingStatementLines();
+    renderBankingSummary();
+    await loadBankingSuggestions(bankingStatementLineId?.value || "");
+    setInlineStatus(bankingStatus, "Banking data loaded from the backend.", "success");
+  } catch (error) {
+    bankingData = { accounts: [], statementLines: [], summary: null, suggestions: null };
+    renderBankingAccounts();
+    renderBankingStatementLines();
+    renderBankingSummary();
+    renderBankingCandidates(null);
+    setInlineStatus(bankingStatus, backendErrorMessage(error), "error");
+  }
+}
+
+async function loadBankingSuggestions(statementLineId) {
+  if (!statementLineId) {
+    bankingData.suggestions = null;
+    renderBankingCandidates(null);
+    return;
+  }
+  renderBankingCandidates({ candidates: [] });
+  try {
+    bankingData.suggestions = await apiClient.getBankMatchSuggestions(token, statementLineId, selectedWorkspaceOptions());
+    renderBankingCandidates();
+  } catch (error) {
+    bankingData.suggestions = null;
+    bankingCandidates.innerHTML = `<div class="error-state">${escapeHtml(backendErrorMessage(error))}</div>`;
+  }
+}
+
 function postedInvoicesForCorrections() {
   return createdInvoicesOnly(dashboardInvoices).filter((invoice) => String(invoice.status || "created").toLowerCase() !== "deleted");
 }
@@ -2415,38 +2545,16 @@ function renderAdvancedSettlements() {
 
 function renderAdvancedBanking() {
   setAdvancedAction({
-    title: "Bank Account / Statement / Match",
-    hint: "Import statement evidence or match/unmatch against internal transactions. Statement import does not create accounting journals.",
-    button: "Submit Banking Action",
+    title: "Banking moved to its canonical workspace",
+    hint: "Bank accounts, statement evidence, and reconciliation are operationally owned by Banking.",
+    button: "Open Banking",
     fields: `
-      <label>Banking Action
-        <select name="actionType">
-          <option value="bank-account">Create Bank/Cash Account</option>
-          <option value="statement-import">Import Statement Line</option>
-          <option value="bank-match">Match Selected Line</option>
-          <option value="bank-unmatch">Unmatch Reconciliation</option>
-        </select>
-      </label>
-      <label>Account
-        <select name="bankAccountId">${optionRows(advancedData.bankAccounts, (account) => `${account.displayName || account.id} - ${account.accountType || "bank"}`, "Create account first")}</select>
-      </label>
-      <label>Account Name <input name="displayName" placeholder="HDFC Current Account" /></label>
-      <label>Account Type
-        <select name="accountType"><option value="bank">Bank</option><option value="cash">Cash</option><option value="clearing">Clearing</option></select>
-      </label>
-      <label>Reference / Narration <input name="reference" placeholder="masked account, statement ref, match reason" /></label>
-      <label>Statement Date <input name="actionDate" type="date" value="${new Date().toISOString().slice(0, 10)}" /></label>
-      <label>Money In <input name="credit" type="number" min="0" step="0.01" /></label>
-      <label>Money Out <input name="debit" type="number" min="0" step="0.01" /></label>
-      <label>Statement Line
-        <select name="statementLineId">${optionRows(advancedData.bankStatementLines, (line) => `${line.statementDate || line.date} - ${line.narration || line.reference || line.id} - ${moneyLabel(Number(line.credit || line.debit || 0), line.currency)}`, "No statement lines")}</select>
-      </label>
-      <label>Internal Source Type <input name="sourceType" placeholder="payment, vendor_payment, customer_refund" /></label>
-      <label>Internal Source ID <input name="sourceId" placeholder="Backend transaction id" /></label>
-      <label>Match ID <input name="matchId" placeholder="Existing match id for unmatch" /></label>
+      <div class="notice compact">Operational Banking actions are now available on the canonical Banking page.</div>
+      <a class="primary" href="/apps/web/dashboard.html#banking" data-page-link="banking">Open Banking workspace</a>
     `,
-    preview: "Matching links bank evidence to accounting. Unmatching removes only the reconciliation link, not the accounting transaction.",
+    preview: "The Banking workspace calls the existing backend endpoints. It does not perform reconciliation or accounting locally.",
   });
+  if (advancedActionSubmit) advancedActionSubmit.disabled = true;
   if (advancedRegisterTitle) advancedRegisterTitle.textContent = "Bank Reconciliation Workspace";
   if (advancedRegisterHint) advancedRegisterHint.textContent = "Accounts, statement evidence, unresolved items and reconciliation status.";
   const summary = advancedData.bankSummary || {};
@@ -6075,6 +6183,141 @@ advancedTabs.forEach((button) => {
 
 advancedRefreshBtn?.addEventListener("click", () => loadAdvancedWorkflows(true));
 advancedActionForm?.addEventListener("submit", submitAdvancedAction);
+
+refreshBankingBtn?.addEventListener("click", () => loadBanking(true));
+
+bankingAccountFilter?.addEventListener("change", () => {
+  renderBankingStatementLines();
+  loadBankingSuggestions(bankingStatementLineId?.value || "");
+});
+
+bankingStatementLineId?.addEventListener("change", () => {
+  const selected = bankingStatementLineId.value || "";
+  const statementInput = bankingMatchForm?.querySelector('[name="statementLineId"]');
+  if (statementInput) statementInput.value = selected;
+  loadBankingSuggestions(selected);
+});
+
+bankingCandidates?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-banking-candidate]");
+  if (!button) return;
+  const sourceTypeInput = bankingMatchForm?.querySelector('[name="sourceType"]');
+  const sourceIdInput = bankingMatchForm?.querySelector('[name="sourceId"]');
+  const statementInput = bankingMatchForm?.querySelector('[name="statementLineId"]');
+  if (sourceTypeInput) sourceTypeInput.value = button.dataset.sourceType || "";
+  if (sourceIdInput) sourceIdInput.value = button.dataset.sourceId || "";
+  if (statementInput) statementInput.value = bankingStatementLineId?.value || "";
+  setInlineStatus(bankingMatchStatus, "Candidate selected. Match remains an explicit user action.", "");
+});
+
+bankingAccountForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!workspaceCanWriteRecords()) {
+    setInlineStatus(bankingAccountStatus, workspaceWriteLockMessage("create bank accounts"), "error");
+    return;
+  }
+  const formData = new FormData(bankingAccountForm);
+  setInlineStatus(bankingAccountStatus, "Creating account...", "");
+  try {
+    const result = await apiClient.createBankAccount(token, {
+      ...selectedWorkspaceOptions(),
+      displayName: String(formData.get("displayName") || "").trim(),
+      accountType: String(formData.get("accountType") || "bank"),
+      accountReference: String(formData.get("accountReference") || "").trim(),
+      openingBalance: Number(formData.get("openingBalance") || 0),
+    });
+    bankingAccountForm.reset();
+    setInlineStatus(bankingAccountStatus, `Banking account created: ${result.displayName || result.id}`, "success");
+    await loadBanking(true);
+  } catch (error) {
+    setInlineStatus(bankingAccountStatus, backendErrorMessage(error), "error");
+  }
+});
+
+bankingImportForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!workspaceCanWriteRecords()) {
+    setInlineStatus(bankingImportStatus, workspaceWriteLockMessage("import statement evidence"), "error");
+    return;
+  }
+  const formData = new FormData(bankingImportForm);
+  const credit = Number(formData.get("credit") || 0);
+  const debit = Number(formData.get("debit") || 0);
+  if (credit > 0 && debit > 0) {
+    setInlineStatus(bankingImportStatus, "Enter money in or money out, not both.", "error");
+    return;
+  }
+  setInlineStatus(bankingImportStatus, "Importing statement line...", "");
+  try {
+    const result = await apiClient.importBankStatement(token, {
+      ...selectedWorkspaceOptions(),
+      bankAccountId: String(formData.get("bankAccountId") || ""),
+      sourceType: "manual_web",
+      lines: [{
+        statementDate: String(formData.get("statementDate") || ""),
+        narration: String(formData.get("narration") || "").trim(),
+        reference: String(formData.get("reference") || "").trim(),
+        debit,
+        credit,
+      }],
+    });
+    setInlineStatus(bankingImportStatus, `Statement import completed: ${result.imported?.length || 0} imported, ${result.duplicates?.length || 0} duplicate, ${result.errors?.length || 0} error.`, result.errors?.length ? "error" : "success");
+    await loadBanking(true);
+  } catch (error) {
+    setInlineStatus(bankingImportStatus, backendErrorMessage(error), "error");
+  }
+});
+
+bankingMatchForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!workspaceCanWriteRecords()) {
+    setInlineStatus(bankingMatchStatus, workspaceWriteLockMessage("match bank transactions"), "error");
+    return;
+  }
+  const formData = new FormData(bankingMatchForm);
+  const statementId = String(formData.get("statementLineId") || bankingStatementLineId?.value || "");
+  const line = bankingData.statementLines.find((item) => item.id === statementId);
+  if (!line) {
+    setInlineStatus(bankingMatchStatus, "Select a statement line before matching.", "error");
+    return;
+  }
+  setInlineStatus(bankingMatchStatus, "Submitting one reconciliation match to the backend...", "");
+  try {
+    const result = await apiClient.confirmBankMatch(token, {
+      ...selectedWorkspaceOptions(),
+      bankAccountId: line.bankAccountId,
+      statementLineId: statementId,
+      sourceType: String(formData.get("sourceType") || "").trim(),
+      sourceId: String(formData.get("sourceId") || "").trim(),
+      reason: String(formData.get("reason") || "").trim() || "manual_match",
+    });
+    setInlineStatus(bankingMatchStatus, `Bank transaction matched: ${result.id}. No browser accounting action was performed.`, "success");
+    await loadBanking(true);
+  } catch (error) {
+    setInlineStatus(bankingMatchStatus, backendErrorMessage(error), "error");
+  }
+});
+
+bankingUnmatchForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!workspaceCanWriteRecords()) {
+    setInlineStatus(bankingUnmatchStatus, workspaceWriteLockMessage("unmatch reconciliation"), "error");
+    return;
+  }
+  const matchId = String(new FormData(bankingUnmatchForm).get("matchId") || "").trim();
+  if (!matchId) {
+    setInlineStatus(bankingUnmatchStatus, "Enter the existing backend reconciliation match ID.", "error");
+    return;
+  }
+  setInlineStatus(bankingUnmatchStatus, "Submitting one reconciliation unmatch to the backend...", "");
+  try {
+    const result = await apiClient.unmatchBankReconciliation(token, matchId, selectedWorkspaceOptions());
+    setInlineStatus(bankingUnmatchStatus, `Reconciliation unmatched: ${result.id}. The accounting transaction was not reversed.`, "success");
+    await loadBanking(true);
+  } catch (error) {
+    setInlineStatus(bankingUnmatchStatus, backendErrorMessage(error), "error");
+  }
+});
 
 workspaceTargetLinks.forEach((link) => {
   link.addEventListener("click", (event) => {

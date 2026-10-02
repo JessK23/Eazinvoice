@@ -97,9 +97,10 @@
         <details class="nav-group">
           <summary class="nav-item nav-item-toggle">Bank and Cash</summary>
           <div class="nav-subitems">
+            <a class="nav-subitem" href="/apps/web/dashboard.html#banking" data-page-link="banking">Banking Overview</a>
             <a class="nav-subitem" href="/apps/web/dashboard.html#accounting" data-page-link="accounting">Bank Book</a>
             <a class="nav-subitem" href="/apps/web/dashboard.html#accounting" data-page-link="accounting">Cash Book</a>
-            <a class="nav-subitem" href="/apps/web/dashboard.html#reports" data-page-link="reports">Reconciliation Exceptions</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#banking" data-page-link="banking">Reconciliation</a>
           </div>
         </details>
 
@@ -636,6 +637,86 @@
           </div>
           <div id="generalLedgerMeta" class="hint"></div>
           <div id="generalLedgerList" class="mini-table"></div>
+        </article>
+      </section>
+
+      <section id="banking" class="panel dashboard-page" data-dashboard-page="banking" data-surface-owner="banking" data-surface-purpose="banking-operations">
+        <div class="dashboard-head">
+          <div>
+            <span class="pill green">Banking</span>
+            <h1>Banking</h1>
+            <p class="hint">Bank accounts, statement evidence, and reconciliation are handled by the existing Banking authority.</p>
+          </div>
+          <button id="refreshBankingBtn" class="ghost" type="button">Refresh Banking</button>
+        </div>
+        <p id="bankingStatus" class="form-status" aria-live="polite"></p>
+        <div class="stats-grid compact" id="bankingSummary"></div>
+        <div class="two-column accounting-grid">
+          <article class="quick-card">
+            <div class="panel-head compact-head">
+              <div><strong>Bank and Cash Accounts</strong><p class="hint">Account records come from the backend. Accounting owns the ledger interpretation.</p></div>
+              <span class="pill blue">Banking owner</span>
+            </div>
+            <form id="bankingAccountForm" class="stacked-form" data-surface-action="bank-account.create">
+              <div class="form-grid two">
+                <label>Name<input name="displayName" required placeholder="HDFC Current Account" /></label>
+                <label>Type<select name="accountType"><option value="bank">Bank</option><option value="cash">Cash</option><option value="clearing">Clearing</option></select></label>
+                <label>Reference<input name="accountReference" placeholder="Optional account reference" /></label>
+                <label>Opening balance<input name="openingBalance" type="number" min="0" step="0.01" value="0" /></label>
+              </div>
+              <button class="primary" type="submit">Create Account</button>
+              <p id="bankingAccountStatus" class="inline-status" aria-live="polite"></p>
+            </form>
+            <div id="bankingAccountsList" class="mini-table"></div>
+          </article>
+          <article class="quick-card">
+            <div class="panel-head compact-head">
+              <div><strong>Statement Import</strong><p class="hint">This package exposes the existing supported manual statement-line import. The backend normalizes and persists it.</p></div>
+              <span class="pill gold">Explicit action</span>
+            </div>
+            <form id="bankingImportForm" class="stacked-form" data-surface-action="statement-import.create">
+              <div class="form-grid two">
+                <label>Account<select id="bankingImportAccountId" name="bankAccountId" required></select></label>
+                <label>Date<input name="statementDate" type="date" required /></label>
+                <label>Reference<input name="reference" placeholder="Statement reference" /></label>
+                <label>Narration<input name="narration" placeholder="Statement narration" /></label>
+                <label>Money in<input name="credit" type="number" min="0" step="0.01" value="0" /></label>
+                <label>Money out<input name="debit" type="number" min="0" step="0.01" value="0" /></label>
+              </div>
+              <button class="primary" type="submit">Import Statement Line</button>
+              <p id="bankingImportStatus" class="inline-status" aria-live="polite"></p>
+            </form>
+          </article>
+        </div>
+        <article class="quick-card">
+          <div class="panel-head compact-head">
+            <div><strong>Transactions and Reconciliation</strong><p class="hint">Select a statement line, review backend suggestions, then explicitly Match. Unmatch only removes the reconciliation link through the backend.</p></div>
+            <span class="pill blue">No browser accounting</span>
+          </div>
+          <div class="form-grid two">
+            <label>Account<select id="bankingAccountFilter"></select></label>
+            <label>Statement line<select id="bankingStatementLineId"></select></label>
+          </div>
+          <div id="bankingTransactionsList" class="mini-table"></div>
+          <div id="bankingCandidates" class="mini-table"></div>
+          <form id="bankingMatchForm" class="stacked-form" data-surface-action="reconciliation.match">
+            <input type="hidden" name="statementLineId" />
+            <div class="form-grid three">
+              <label>Source type<input name="sourceType" required placeholder="payment" /></label>
+              <label>Source ID<input name="sourceId" required placeholder="Backend transaction ID" /></label>
+              <label>Reason<input name="reason" placeholder="Explicit manual match" /></label>
+            </div>
+            <button class="primary" type="submit">Match Selected Line</button>
+            <p id="bankingMatchStatus" class="inline-status" aria-live="polite"></p>
+          </form>
+          <form id="bankingUnmatchForm" class="stacked-form" data-surface-action="reconciliation.unmatch">
+            <div class="form-grid two">
+              <label>Existing match ID<input name="matchId" required placeholder="Backend reconciliation match ID" /></label>
+              <div class="notice compact">Unmatch is available only with an existing backend match ID. It does not reverse accounting.</div>
+            </div>
+            <button class="ghost" type="submit">Unmatch Reconciliation</button>
+            <p id="bankingUnmatchStatus" class="inline-status" aria-live="polite"></p>
+          </form>
         </article>
       </section>
 
