@@ -1747,10 +1747,9 @@ function verifyRazorpayWebhook(rawBody, signature, webhookSecret) {
   return expectedBuffer.length === actualBuffer.length && crypto.timingSafeEqual(expectedBuffer, actualBuffer);
 }
 
-async function razorpayRequest(pathname, body) {
-  const config = getRazorpayConfig();
-  if (!config.enabled) {
-    throw new Error("Razorpay is not configured. Add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.");
+async function razorpayRequest(pathname, body, config = getRazorpayConfig()) {
+  if (!config?.keyId || !config?.keySecret) {
+    throw new Error("Razorpay credentials are not configured for this collection domain.");
   }
   const credentials = Buffer.from(`${config.keyId}:${config.keySecret}`).toString("base64");
   const response = await fetch(`https://api.razorpay.com/v1${pathname}`, {
@@ -2629,11 +2628,6 @@ export function createServer(options = {}) {
     if (url.pathname === "/webhooks/razorpay" && req.method === "POST") {
       try {
         const rawBody = await readRawBody(req);
-        const config = getRazorpayConfig();
-        if (!verifyRazorpayWebhook(rawBody, req.headers["x-razorpay-signature"], config.webhookSecret)) {
-          sendJson(res, 401, { error: "Invalid Razorpay webhook signature" });
-          return;
-        }
         const body = parseJsonBody(rawBody);
         const event = String(body.event || body.type || "payment.captured");
         if (!event.includes("payment") && !event.includes("payment_link")) {
@@ -2644,6 +2638,18 @@ export function createServer(options = {}) {
         const orderId = payload.order_id || payload.razorpay_order_id || payload.notes?.gatewayOrderId || "";
         const paymentId = payload.razorpay_payment_id || payload.payment_id || payload.id || "";
         const orderMeta = orderId ? api.getBillingOrderByGatewayOrderId(orderId) : null;
+        let config = getRazorpayConfig();
+        if (orderMeta?.kind === "invoice") {
+          config = api.getBusinessRazorpayCredentialsForSystem(orderMeta.businessId, orderMeta.companyId || null);
+        } else if (!orderMeta) {
+          const invoiceId = payload.invoiceId || payload.notes?.invoiceId || "";
+          const invoice = invoiceId ? api.getInvoice(invoiceId) : null;
+          if (invoice) config = api.getBusinessRazorpayCredentialsForSystem(invoice.businessId, invoice.companyId || null);
+        }
+        if (!verifyRazorpayWebhook(rawBody, req.headers["x-razorpay-signature"], config.webhookSecret)) {
+          sendJson(res, 401, { error: "Invalid Razorpay webhook signature" });
+          return;
+        }
         if (orderMeta) {
           const activated = await activateVerifiedRazorpayOrder(orderMeta, paymentId, orderId);
           if (!activated) {
@@ -3970,15 +3976,15 @@ if (url.pathname === "/customers" && req.method === "GET") {
     if (url.pathname === "/billing/razorpay/order" && req.method === "POST") {
       try {
         const body = await readBody(req);
-        const config = getRazorpayConfig();
-        if (!config.enabled) {
-          sendJson(res, 503, { error: "Razorpay is not configured yet. Add live Razorpay keys in Render environment variables." });
-          return;
-        }
+        let config = getRazorpayConfig();
         const kind = String(body.kind || "subscription").toLowerCase();
         let orderContext;
 
         if (kind === "subscription") {
+          if (!config.enabled) {
+            sendJson(res, 503, { error: "Razorpay platform billing is not configured yet." });
+            return;
+          }
           const planId = String(body.plan || "").toLowerCase();
           const selectedPlan = PAID_PLAN_CATALOG[planId];
           if (!selectedPlan) {
@@ -4020,6 +4026,15 @@ if (url.pathname === "/customers" && req.method === "GET") {
             sendJson(res, 404, { error: "Invoice not found" });
             return;
           }
+          config = api.resolveBusinessRazorpayCredentials(user, {
+            businessId: invoice.businessId,
+            companyId: invoice.companyId || null,
+            permission: "writeRecords",
+          });
+          if (!["READY_TEST", "READY_LIVE"].includes(config.status)) {
+            sendJson(res, 503, { error: "Business Razorpay merchant credentials are not ready for Invoice collection." });
+            return;
+          }
           const amount = Number(invoice.balanceAmount ?? invoice.total ?? 0);
           if (!Number.isFinite(amount) || amount <= 0) {
             sendJson(res, 400, { error: "This invoice has no pending balance." });
@@ -4029,6 +4044,8 @@ if (url.pathname === "/customers" && req.method === "GET") {
             kind,
             userId: user.id,
             invoiceId: invoice.id,
+            businessId: invoice.businessId || null,
+            companyId: invoice.companyId || null,
             amount,
             currency: invoice.currency || "INR",
             description: `Invoice ${invoice.invoiceNumber || invoice.id}`,
@@ -4051,7 +4068,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
             plan: orderContext.plan || "",
             billingCycle: orderContext.billingCycle || "",
           },
-        });
+        }, config);
         await api.createBillingOrder({
           ...orderContext,
           gateway: "razorpay",
@@ -4079,7 +4096,6 @@ if (url.pathname === "/customers" && req.method === "GET") {
     if (url.pathname === "/billing/razorpay/verify" && req.method === "POST") {
       try {
         const body = await readBody(req);
-        const config = getRazorpayConfig();
         const orderId = String(body.razorpay_order_id || "");
         const paymentId = String(body.razorpay_payment_id || "");
         const signature = String(body.razorpay_signature || "");
@@ -4087,11 +4103,28 @@ if (url.pathname === "/customers" && req.method === "GET") {
           sendJson(res, 400, { error: "Missing Razorpay payment verification details." });
           return;
         }
+        const orderMeta = api.getBillingOrderByGatewayOrderId(orderId);
+        let config = getRazorpayConfig();
+        if (orderMeta?.kind === "invoice") {
+          const invoice = api.getInvoice(orderMeta.invoiceId, user);
+          if (!invoice || invoice.businessId !== orderMeta.businessId) {
+            sendJson(res, 404, { error: "Razorpay Invoice order was not found in this business." });
+            return;
+          }
+          config = api.resolveBusinessRazorpayCredentials(user, {
+            businessId: invoice.businessId,
+            companyId: invoice.companyId || null,
+            permission: "writeRecords",
+          });
+          if (!["READY_TEST", "READY_LIVE"].includes(config.status)) {
+            sendJson(res, 503, { error: "Business Razorpay merchant credentials are not ready for Invoice collection." });
+            return;
+          }
+        }
         if (!verifyRazorpaySignature({ orderId, paymentId, signature, keySecret: config.keySecret })) {
           sendJson(res, 401, { error: "Razorpay payment signature verification failed." });
           return;
         }
-        const orderMeta = api.getBillingOrderByGatewayOrderId(orderId);
         if (!orderMeta || orderMeta.userId !== user.id) {
           sendJson(res, 404, { error: "Razorpay order was not found for this user session." });
           return;
@@ -6661,6 +6694,15 @@ if (url.pathname === "/customers" && req.method === "GET") {
         return;
       }
       try {
+        const credentials = api.resolveBusinessRazorpayCredentials(user, {
+          businessId: existing.businessId,
+          companyId: existing.companyId || null,
+          permission: "writeRecords",
+        });
+        if (!["READY_TEST", "READY_LIVE"].includes(credentials.status)) {
+          sendJson(res, 503, { error: "Business Razorpay merchant credentials are not ready for Invoice collection." });
+          return;
+        }
         const invoice = await api.createInvoicePaymentLink(id, {
           gateway: body.gateway || "razorpay",
           url: body.url,

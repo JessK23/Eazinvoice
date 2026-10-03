@@ -1471,6 +1471,7 @@ export function createStore(seed = {}, options = {}) {
       kind: input.kind?.trim() || "subscription",
       userId: input.userId ?? null,
       invoiceId: input.invoiceId ?? null,
+      businessId: input.businessId ?? null,
       companyId: input.companyId ?? null,
       plan: input.plan ?? "",
       amount: toNumber(input.amount),
@@ -1814,10 +1815,17 @@ export function createStore(seed = {}, options = {}) {
       },
       paymentSettings: {
         provider: "razorpay",
-        keyId: String(paymentSettings.keyId || "").trim(),
-        keySecret: paymentSettings.keySecret !== undefined ? String(paymentSettings.keySecret || "") : undefined,
-        webhookSecret: paymentSettings.webhookSecret !== undefined ? String(paymentSettings.webhookSecret || "") : undefined,
-        paymentLinkEnabled: Boolean(paymentSettings.paymentLinkEnabled),
+        ...(Object.prototype.hasOwnProperty.call(paymentSettings, "keyId") ? { keyId: String(paymentSettings.keyId || "").trim() } : {}),
+        ...(Object.prototype.hasOwnProperty.call(paymentSettings, "keySecret") ? { keySecret: String(paymentSettings.keySecret || "") } : {}),
+        ...(Object.prototype.hasOwnProperty.call(paymentSettings, "webhookSecret") ? { webhookSecret: String(paymentSettings.webhookSecret || "") } : {}),
+        ...(Object.prototype.hasOwnProperty.call(paymentSettings, "merchantAccountId") || Object.prototype.hasOwnProperty.call(paymentSettings, "accountId")
+          ? { merchantAccountId: String(paymentSettings.merchantAccountId || paymentSettings.accountId || "").trim() }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(paymentSettings, "mode") ? { mode: String(paymentSettings.mode || "").trim().toLowerCase() } : {}),
+        ...(Object.prototype.hasOwnProperty.call(paymentSettings, "enabled") ? { enabled: Boolean(paymentSettings.enabled) } : {}),
+        ...(Object.prototype.hasOwnProperty.call(paymentSettings, "paymentLinkEnabled") ? { paymentLinkEnabled: Boolean(paymentSettings.paymentLinkEnabled) } : {}),
+        ...(paymentSettings.revokeKeySecret === true ? { revokeKeySecret: true } : {}),
+        ...(paymentSettings.revokeWebhookSecret === true ? { revokeWebhookSecret: true } : {}),
       },
       complianceProfile,
     };
@@ -1848,41 +1856,96 @@ export function createStore(seed = {}, options = {}) {
         ...settings.paymentSettings,
         keySecret: "",
         webhookSecret: "",
+        merchantAccountId: String(settings.paymentSettings?.merchantAccountId || "").trim(),
+        mode: resolveRazorpayCredentialMode(settings.paymentSettings || {}).mode,
+        enabled: resolveRazorpayCredentialMode(settings.paymentSettings || {}).enabled,
         keySecretConfigured: Boolean(settings.paymentSettings?.keySecret),
         webhookSecretConfigured: Boolean(settings.paymentSettings?.webhookSecret),
-        status: settings.paymentSettings?.keyId
-          ? (String(settings.paymentSettings.keyId).startsWith("rzp_live_") ? "live_ready" : "test_mode")
-          : "not_configured",
+        status: (() => {
+          const readiness = resolveRazorpayCredentialMode(settings.paymentSettings || {}).status;
+          return readiness === "READY_LIVE" ? "live_ready" : readiness === "READY_TEST" ? "test_mode" : readiness.toLowerCase();
+        })(),
+        readiness: resolveRazorpayCredentialMode(settings.paymentSettings || {}).status,
       },
       complianceStatus: complianceReview.status,
       complianceReview,
     });
   }
 
-  function getBusinessSettingsForUser(user, companyId = null) {
+  function getBusinessSettingsForUser(user, companyId = null, requestedBusinessId = null) {
     const ownerUserId = user?.role === "admin" && user?.id ? user.id : user?.id;
     if (!ownerUserId) return null;
-    const businessId = ensureBusinessForOwner(ownerUserId)?.id || null;
+    const businessId = requestedBusinessId || ensureBusinessForOwner(ownerUserId)?.id || null;
     const settings = state.businessSettings.find((entry) => (
       (entry.businessId === businessId || entry.ownerUserId === ownerUserId) && (entry.companyId || null) === (companyId || null)
     ));
     return sanitizeBusinessSettings(settings);
   }
 
-  function getRawBusinessSettingsForUser(user, companyId = null) {
+  function getRawBusinessSettingsForUser(user, companyId = null, requestedBusinessId = null) {
     const ownerUserId = user?.role === "admin" && user?.id ? user.id : user?.id;
     if (!ownerUserId) return null;
-    const businessId = ensureBusinessForOwner(ownerUserId)?.id || null;
+    const businessId = requestedBusinessId || ensureBusinessForOwner(ownerUserId)?.id || null;
     const settings = state.businessSettings.find((entry) => (
       (entry.businessId === businessId || entry.ownerUserId === ownerUserId) && (entry.companyId || null) === (companyId || null)
     ));
     return clone(settings);
   }
 
+  function resolveRazorpayCredentialMode(paymentSettings = {}) {
+    const keyId = String(paymentSettings.keyId || "").trim();
+    const requestedMode = String(paymentSettings.mode || "").trim().toLowerCase();
+    const inferredMode = keyId.startsWith("rzp_live_") ? "live" : keyId.startsWith("rzp_test_") ? "test" : "unknown";
+    const mode = requestedMode || inferredMode;
+    const modeMismatch = requestedMode && inferredMode !== "unknown" && requestedMode !== inferredMode;
+    const enabled = paymentSettings.enabled !== undefined
+      ? Boolean(paymentSettings.enabled)
+      : Boolean(paymentSettings.paymentLinkEnabled);
+    const hasAnyCredential = Boolean(keyId || paymentSettings.keySecret || paymentSettings.webhookSecret);
+    const hasCoreCredentials = Boolean(keyId && paymentSettings.keySecret);
+    let status = "NOT_CONFIGURED";
+    if (hasAnyCredential && !enabled) status = "DISABLED";
+    else if (hasAnyCredential && (!hasCoreCredentials || modeMismatch || !["test", "live"].includes(mode))) status = "INCOMPLETE";
+    else if (hasCoreCredentials) status = mode === "live" ? "READY_LIVE" : "READY_TEST";
+    return { mode, inferredMode, modeMismatch, enabled, status, hasAnyCredential, hasCoreCredentials };
+  }
+
+  function resolveBusinessRazorpayCredentials(businessId, companyId = null) {
+    const normalizedBusinessId = String(businessId || "").trim();
+    if (!normalizedBusinessId) {
+      return {
+        provider: "razorpay",
+        businessId: "",
+        companyId: companyId || null,
+        keyId: "",
+        keySecret: "",
+        webhookSecret: "",
+        merchantAccountId: "",
+        ...resolveRazorpayCredentialMode({}),
+      };
+    }
+    const settings = state.businessSettings.find((entry) => (
+      entry.businessId === normalizedBusinessId
+      && (entry.companyId || null) === (companyId || null)
+    ));
+    const paymentSettings = settings?.paymentSettings || {};
+    return {
+      provider: "razorpay",
+      businessId: normalizedBusinessId,
+      companyId: companyId || null,
+      keyId: String(paymentSettings.keyId || "").trim(),
+      keySecret: String(paymentSettings.keySecret || ""),
+      webhookSecret: String(paymentSettings.webhookSecret || ""),
+      merchantAccountId: String(paymentSettings.merchantAccountId || paymentSettings.accountId || "").trim(),
+      ...resolveRazorpayCredentialMode(paymentSettings),
+    };
+  }
+
   function upsertBusinessSettings(user, input = {}) {
     if (!user?.id) throw new Error("Authentication required");
     const companyId = input.companyId || null;
-    const businessId = ensureBusinessForOwner(user.id)?.id || null;
+    const requestedBusiness = input.businessId ? findBusinessByIdOrLegacyOwner(input.businessId) : null;
+    const businessId = requestedBusiness?.id || ensureBusinessForOwner(user.id)?.id || null;
     const now = new Date().toISOString();
     const normalized = normalizeBusinessSettings(input);
     let settings = state.businessSettings.find((entry) => (
@@ -1912,15 +1975,22 @@ export function createStore(seed = {}, options = {}) {
       };
     }
     if (input.paymentSettings) {
+      const existingPaymentSettings = settings.paymentSettings || {};
+      const paymentPatch = normalized.paymentSettings || {};
+      const nextPaymentSettings = { ...existingPaymentSettings, provider: "razorpay" };
+      ["keyId", "mode", "merchantAccountId", "paymentLinkEnabled"].forEach((field) => {
+        if (Object.prototype.hasOwnProperty.call(paymentPatch, field)) nextPaymentSettings[field] = paymentPatch[field];
+      });
+      if (Object.prototype.hasOwnProperty.call(paymentPatch, "enabled")) nextPaymentSettings.enabled = paymentPatch.enabled;
+      else if (!settings.id && Object.prototype.hasOwnProperty.call(paymentPatch, "paymentLinkEnabled")) nextPaymentSettings.enabled = paymentPatch.paymentLinkEnabled;
+      if (paymentPatch.revokeKeySecret) nextPaymentSettings.keySecret = "";
+      else if (Object.prototype.hasOwnProperty.call(paymentPatch, "keySecret") && paymentPatch.keySecret !== "") nextPaymentSettings.keySecret = paymentPatch.keySecret;
+      if (paymentPatch.revokeWebhookSecret) nextPaymentSettings.webhookSecret = "";
+      else if (Object.prototype.hasOwnProperty.call(paymentPatch, "webhookSecret") && paymentPatch.webhookSecret !== "") nextPaymentSettings.webhookSecret = paymentPatch.webhookSecret;
+      delete nextPaymentSettings.revokeKeySecret;
+      delete nextPaymentSettings.revokeWebhookSecret;
       settings.paymentSettings = {
-        ...settings.paymentSettings,
-        ...normalized.paymentSettings,
-        keySecret: normalized.paymentSettings.keySecret === undefined || normalized.paymentSettings.keySecret === ""
-          ? settings.paymentSettings.keySecret || ""
-          : normalized.paymentSettings.keySecret,
-        webhookSecret: normalized.paymentSettings.webhookSecret === undefined || normalized.paymentSettings.webhookSecret === ""
-          ? settings.paymentSettings.webhookSecret || ""
-          : normalized.paymentSettings.webhookSecret,
+        ...nextPaymentSettings,
       };
     }
     if (input.complianceProfile) {
@@ -6149,6 +6219,7 @@ export function createStore(seed = {}, options = {}) {
     updateTeamMember,
     getBusinessSettingsForUser,
     getRawBusinessSettingsForUser,
+    resolveBusinessRazorpayCredentials,
     upsertBusinessSettings,
     validateBusinessEmailSettings,
     recordBusinessEmailDelivery,

@@ -763,7 +763,7 @@ export function createApi(deps = {}) {
 
     getBusinessSettings(user, options = {}) {
       const access = this.requireBusinessWorkspaceAccess(user, options, "read");
-      return store.getBusinessSettingsForUser(access.owner, options.companyId || access.companyId || null) || {
+      return store.getBusinessSettingsForUser(access.owner, options.companyId || access.companyId || null, access.businessId || null) || {
         id: "",
         ownerUserId: access.ownerUserId,
         companyId: options.companyId || access.companyId || null,
@@ -774,15 +774,28 @@ export function createApi(deps = {}) {
       };
     },
 
+    resolveBusinessRazorpayCredentials(user, options = {}) {
+      const access = this.requireBusinessWorkspaceAccess(user, options, options.permission || "read");
+      return store.resolveBusinessRazorpayCredentials(
+        access.businessId,
+        options.companyId || access.companyId || null,
+      );
+    },
+
+    getBusinessRazorpayCredentialsForSystem(businessId, companyId = null) {
+      return store.resolveBusinessRazorpayCredentials(businessId, companyId);
+    },
+
     getBusinessEmailDeliverySettings(user, options = {}) {
       const access = this.requireBusinessWorkspaceAccess(user, options, "read");
-      return store.getRawBusinessSettingsForUser(access.owner, options.companyId || access.companyId || null)?.emailSettings || {};
+      return store.getRawBusinessSettingsForUser(access.owner, options.companyId || access.companyId || null, access.businessId || null)?.emailSettings || {};
     },
 
     updateBusinessSettings(user, input = {}, options = {}) {
       const access = this.requireBusinessWorkspaceAccess(user, {
         ...options,
         workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+        businessId: input.businessId || options.businessId || null,
       }, "manageSettings");
       return store.upsertBusinessSettings(access.owner, input);
     },
