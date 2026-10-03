@@ -10,9 +10,11 @@ function scenario({ email = `provider-intent-${crypto.randomBytes(4).toString("h
   const api = createApi({ store });
   const user = api.createUser({ name: "Provider Intent Owner", email });
   const business = api.createBusiness(user, { name: "Provider Intent Business" });
+  const customer = api.createCustomer({ ownerUserId: user.id, businessId: business.id, name: "Provider Intent Customer" }, { user, businessId: business.id });
   const invoice = api.createInvoice({
     ownerUserId: user.id,
     businessId: business.id,
+    customerId: customer.id,
     status: "created",
     currency: "INR",
     invoiceDate: "2026-10-03",
@@ -36,7 +38,7 @@ function scenario({ email = `provider-intent-${crypto.randomBytes(4).toString("h
     currency: "INR",
     requestKey: `intent-${crypto.randomBytes(4).toString("hex")}`,
   }, { user, businessId: business.id });
-  return { api, store, user, business, invoice, paymentRequest: paymentRequest.paymentRequest };
+  return { api, store, user, business, customer, invoice, paymentRequest: paymentRequest.paymentRequest };
 }
 
 test("provider intent binding is immutable, amount-safe, and financially non-effecting", () => {
@@ -139,7 +141,15 @@ test("provider intent eligibility rejects cancelled, completed, and expired requ
   assert.throws(() => cancelled.api.beginPaymentRequestProviderIntent(cancelled.paymentRequest.id, cancelled.user, { businessId: cancelled.business.id }), /terminal/i);
 
   const completed = scenario();
-  completed.api.completePaymentRequest(completed.paymentRequest.id, { verifiedPaymentEvidence: true, provider: "manual", providerReference: "verified" }, { user: completed.user, businessId: completed.business.id });
+  const completedPayment = completed.api.recordCustomerReceipt({
+    customerId: completed.customer.id,
+    businessId: completed.business.id,
+    amount: 4000,
+    currency: "INR",
+    provider: "razorpay",
+    providerPaymentId: "pay_provider_completed",
+  }, { user: completed.user, businessId: completed.business.id });
+  completed.api.completePaymentRequest(completed.paymentRequest.id, { verifiedPaymentEvidence: true, paymentId: completedPayment.payment.id }, { user: completed.user, businessId: completed.business.id });
   assert.throws(() => completed.api.beginPaymentRequestProviderIntent(completed.paymentRequest.id, completed.user, { businessId: completed.business.id }), /terminal/i);
 
   const expired = scenario();

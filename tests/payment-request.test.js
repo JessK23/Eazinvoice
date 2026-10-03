@@ -13,15 +13,17 @@ function scenario({ persistenceAdapter, ownerName = "Payment Request Owner", ema
   const api = createApi({ store });
   const user = api.createUser({ name: ownerName, email });
   const businessId = api.listBusinessWorkspaces(user)[0].businessId;
+  const customer = api.createCustomer({ ownerUserId: user.id, businessId, name: "Payment Request Customer" });
   const invoice = api.createInvoice({
     ownerUserId: user.id,
     businessId,
+    customerId: customer.id,
     status: "created",
     currency: "INR",
     invoiceDate: "2026-10-02",
     items: [{ description: "Payment Request service", quantity: 1, rate: 10000, gstRate: 0 }],
   }, { user, businessId });
-  return { api, store, user, businessId, invoice };
+  return { api, store, user, businessId, customer, invoice };
 }
 
 function requestInput(s, overrides = {}) {
@@ -107,20 +109,137 @@ test("cancelled and expired PaymentRequests release reservation without creating
 test("PaymentRequest terminal completion requires verified evidence and cannot be reused", () => {
   const s = scenario();
   const created = s.api.createPaymentRequest(requestInput(s), { user: s.user, businessId: s.businessId });
-  assert.throws(() => s.api.completePaymentRequest(created.paymentRequest.id, {}, { user: s.user, businessId: s.businessId }), /verified provider evidence/i);
+  assert.throws(() => s.api.completePaymentRequest(created.paymentRequest.id, {}, { user: s.user, businessId: s.businessId }), /verified provider evidence|canonical Payment/i);
+  const receipt = s.api.recordCustomerReceipt({
+    customerId: s.customer.id,
+    businessId: s.businessId,
+    amount: 4000,
+    currency: "INR",
+    provider: "razorpay",
+    providerPaymentId: "pay_verified_1",
+  }, { user: s.user, businessId: s.businessId });
   const completed = s.api.completePaymentRequest(created.paymentRequest.id, {
     verifiedPaymentEvidence: true,
-    provider: "razorpay",
-    providerReference: "pay_verified_1",
+    paymentId: receipt.payment.id,
   }, { user: s.user, businessId: s.businessId });
   assert.equal(completed.paymentRequest.status, "completed");
+  assert.equal(completed.paymentRequest.completedPaymentId, receipt.payment.id);
   assert.throws(() => s.api.cancelPaymentRequest(created.paymentRequest.id, {}, { user: s.user, businessId: s.businessId }), /terminal/i);
   const replay = s.api.completePaymentRequest(created.paymentRequest.id, {
     verifiedPaymentEvidence: true,
-    providerReference: "pay_verified_1",
+    paymentId: receipt.payment.id,
   }, { user: s.user, businessId: s.businessId });
   assert.equal(replay.idempotentReplay, true);
-  assert.equal(s.api.listPayments(s.user, { businessId: s.businessId }).length, 0);
+  assert.equal(s.api.listPayments(s.user, { businessId: s.businessId }).length, 1);
+});
+
+test("PaymentRequest completion requires explicit persisted captured status", () => {
+  const invalidStatuses = [
+    { label: "absent", mutate: (payment) => delete payment.status },
+    { label: "blank", value: "" },
+    { label: "whitespace", value: "   " },
+    { label: "null", value: null },
+    { label: "authorized", value: "authorized" },
+    { label: "failed", value: "failed" },
+    { label: "refunded", value: "refunded" },
+    { label: "unknown", value: "provider_unknown" },
+  ];
+
+  for (const invalid of invalidStatuses) {
+    const s = scenario({ ownerName: `Status Guard ${invalid.label}`, email: `status-guard-${invalid.label}@example.com` });
+    const created = s.api.createPaymentRequest(requestInput(s, { requestKey: `status-${invalid.label}` }), { user: s.user, businessId: s.businessId });
+    const receipt = s.api.recordCustomerReceipt({
+      customerId: s.customer.id,
+      businessId: s.businessId,
+      amount: 4000,
+      currency: "INR",
+      provider: "razorpay",
+      providerPaymentId: `pay_status_${invalid.label}`,
+    }, { user: s.user, businessId: s.businessId }).payment;
+    const snapshot = s.store.exportState();
+    const persistedPayment = snapshot.payments.find((payment) => payment.id === receipt.id);
+    if (Object.prototype.hasOwnProperty.call(invalid, "value")) persistedPayment.status = invalid.value;
+    else invalid.mutate(persistedPayment);
+    const alteredStore = createStore(snapshot, { persist: false, useSupabaseEmailOtp: false });
+    const alteredApi = createApi({ store: alteredStore });
+
+    assert.throws(() => alteredApi.completePaymentRequest(created.paymentRequest.id, {
+      verifiedPaymentEvidence: true,
+      paymentId: receipt.id,
+      status: "captured",
+    }, { user: s.user, businessId: s.businessId }), /explicitly captured/i, invalid.label);
+    const unchanged = alteredApi.getPaymentRequest(created.paymentRequest.id, s.user, { businessId: s.businessId });
+    assert.equal(unchanged.status, "active", invalid.label);
+    assert.ok(!unchanged.completedAt, invalid.label);
+  }
+});
+
+test("PaymentRequest completion accepts an explicitly persisted captured status", () => {
+  const s = scenario({ ownerName: "Explicit Captured Status", email: "explicit-captured-status@example.com" });
+  const created = s.api.createPaymentRequest(requestInput(s, { requestKey: "explicit-captured" }), { user: s.user, businessId: s.businessId });
+  const receipt = s.api.recordCustomerReceipt({
+    customerId: s.customer.id,
+    businessId: s.businessId,
+    amount: 4000,
+    currency: "INR",
+    provider: "razorpay",
+    providerPaymentId: "pay_explicit_captured",
+  }, { user: s.user, businessId: s.businessId }).payment;
+  const snapshot = s.store.exportState();
+  const persistedPayment = snapshot.payments.find((payment) => payment.id === receipt.id);
+  persistedPayment.status = " captured ";
+  const alteredStore = createStore(snapshot, { persist: false, useSupabaseEmailOtp: false });
+  const alteredApi = createApi({ store: alteredStore });
+  const completed = alteredApi.completePaymentRequest(created.paymentRequest.id, {
+    verifiedPaymentEvidence: true,
+    paymentId: receipt.id,
+    status: "failed",
+  }, { user: s.user, businessId: s.businessId });
+  assert.equal(completed.paymentRequest.status, "completed");
+  assert.equal(completed.paymentRequest.completedPaymentId, receipt.id);
+});
+
+test("PaymentRequest completion requires persisted receipt authority and cannot rebind", () => {
+  const s = scenario({ ownerName: "Completion Guard", email: "completion-guard@example.com" });
+  const created = s.api.createPaymentRequest(requestInput(s, { requestKey: "completion-guard" }), { user: s.user, businessId: s.businessId });
+  assert.throws(() => s.api.completePaymentRequest(created.paymentRequest.id, {
+    verifiedPaymentEvidence: true,
+    providerReference: "client-only-reference",
+  }, { user: s.user, businessId: s.businessId }), /canonical Payment/i);
+  const payment = s.api.recordCustomerReceipt({
+    customerId: s.customer.id,
+    businessId: s.businessId,
+    amount: 4000,
+    currency: "INR",
+    provider: "razorpay",
+    providerPaymentId: "pay_guard_a",
+  }, { user: s.user, businessId: s.businessId }).payment;
+  const completed = s.api.completePaymentRequest(created.paymentRequest.id, { verifiedPaymentEvidence: true, paymentId: payment.id }, { user: s.user, businessId: s.businessId });
+  assert.equal(completed.paymentRequest.completedPaymentId, payment.id);
+  const otherPayment = s.api.recordCustomerReceipt({
+    customerId: s.customer.id,
+    businessId: s.businessId,
+    amount: 1000,
+    currency: "INR",
+    provider: "razorpay",
+    providerPaymentId: "pay_guard_b",
+  }, { user: s.user, businessId: s.businessId }).payment;
+  assert.throws(() => s.api.completePaymentRequest(created.paymentRequest.id, { verifiedPaymentEvidence: true, paymentId: otherPayment.id }, { user: s.user, businessId: s.businessId }), /rebound|completed/i);
+});
+
+test("PaymentRequest completion rejects legacy direct-to-A/R Payments", () => {
+  const s = scenario({ ownerName: "Legacy Completion Guard", email: "legacy-completion-guard@example.com" });
+  const created = s.api.createPaymentRequest(requestInput(s, { requestKey: "legacy-completion-guard" }), { user: s.user, businessId: s.businessId });
+  const legacyPayment = s.api.recordInvoicePayment(s.invoice.id, {
+    businessId: s.businessId,
+    amount: 4000,
+    provider: "razorpay",
+    providerPaymentId: "pay_legacy_direct",
+  }, { user: s.user, businessId: s.businessId }).payment;
+  assert.throws(() => s.api.completePaymentRequest(created.paymentRequest.id, {
+    verifiedPaymentEvidence: true,
+    paymentId: legacyPayment.id,
+  }, { user: s.user, businessId: s.businessId }), /customer receipt|receipt-first|accounting/i);
 });
 
 test("PaymentRequest tenant scope prevents cross-business create, read, and cancel", () => {

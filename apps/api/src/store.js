@@ -3856,6 +3856,31 @@ export function createStore(seed = {}, options = {}) {
     });
   }
 
+  function receiptAccountingAuthorityForPayment(payment, business) {
+    const event = state.financialEvents.find((entry) => (
+      entry.businessId === business.id
+      && entry.eventType === "customer_receipt_unapplied"
+      && entry.sourceType === "payment"
+      && entry.sourceId === payment.id
+      && entry.postingStatus === "posted"
+    ));
+    if (!event) return null;
+    const journal = state.accountingJournals.find((entry) => entry.id === event.journalId && entry.status === "posted");
+    if (!journal || journal.businessId !== business.id) return null;
+    const lines = state.accountingJournalLines.filter((line) => line.journalId === journal.id);
+    const paymentMinor = Math.round(toNumber(payment.amount) * 100);
+    const clearingDebit = lines
+      .filter((line) => line.accountCode === "1110")
+      .reduce((sum, line) => sum + Math.round(toNumber(line.debit) * 100), 0);
+    const advanceCredit = lines
+      .filter((line) => line.accountCode === "2110")
+      .reduce((sum, line) => sum + Math.round(toNumber(line.credit) * 100), 0);
+    if (clearingDebit !== paymentMinor || advanceCredit !== paymentMinor) return null;
+    if (event.metadata?.customerId !== payment.customerId) return null;
+    if (String(journal.currency || "INR").trim().toUpperCase() !== String(payment.currency || "INR").trim().toUpperCase()) return null;
+    return { event, journal };
+  }
+
   function bindPaymentRequestProviderIntent(id, input = {}) {
     if (typeof persistenceAdapter.mutateState !== "function") return bindPaymentRequestProviderIntentLocal(id, input);
     return persistenceAdapter.mutateState((authoritativeState) => {
@@ -3925,15 +3950,84 @@ export function createStore(seed = {}, options = {}) {
     if (!request) return null;
     if (input.businessId && request.businessId !== input.businessId) throw new Error("Payment request was not found in this business.");
     if (input.workspaceOwnerUserId && request.workspaceOwnerUserId !== input.workspaceOwnerUserId) throw new Error("Payment request was not found in this workspace.");
-    if (normalizeRecordStatus(request.status, "active") === "completed") return { paymentRequest: paymentRequestView(request), idempotentReplay: true };
-    if (input.verifiedPaymentEvidence !== true || !String(input.providerReference || request.providerReference || "").trim()) {
+    const requestedPaymentId = String(input.paymentId || input.canonicalPaymentId || "").trim();
+    const completedPaymentId = String(request.completedPaymentId || "").trim();
+    if (normalizeRecordStatus(request.status, "active") === "completed") {
+      if (requestedPaymentId && completedPaymentId && requestedPaymentId !== completedPaymentId) {
+        throw new Error("Completed PaymentRequest cannot be rebound to another Payment.");
+      }
+      if (input.providerPaymentId && request.completedProviderPaymentId
+        && String(input.providerPaymentId).trim() !== String(request.completedProviderPaymentId).trim()) {
+        throw new Error("Completed PaymentRequest cannot be rebound to another provider Payment.");
+      }
+      if (input.providerOrderId && request.completedProviderOrderId
+        && String(input.providerOrderId).trim() !== String(request.completedProviderOrderId).trim()) {
+        throw new Error("Completed PaymentRequest cannot be rebound to another provider Order.");
+      }
+      return { paymentRequest: paymentRequestView(request), idempotentReplay: true };
+    }
+    if (!requestedPaymentId) {
+      throw new Error("Payment request completion requires a canonical Payment.");
+    }
+    if (input.verifiedPaymentEvidence !== true) {
       throw new Error("Payment request completion requires verified provider evidence.");
     }
-    if (["cancelled", "completed"].includes(paymentRequestEffectiveStatus(request))) throw new Error("Payment request is terminal.");
+    if (["cancelled"].includes(paymentRequestEffectiveStatus(request))) throw new Error("Payment request is terminal.");
+
+    const payment = state.payments.find((entry) => entry.id === requestedPaymentId);
+    if (!payment) throw new Error("Payment request completion requires a persisted canonical Payment.");
+    const identity = paymentExternalProviderIdentity(payment);
+    if (!identity) throw new Error("Payment request completion requires a complete external provider Payment identity.");
+    if (identity.provider !== String(request.providerIntent?.provider || request.provider || identity.provider).trim().toLowerCase()) {
+      throw new Error("Payment provider does not match the PaymentRequest provider lineage.");
+    }
+    // Completion must be authorized by the persisted canonical Payment status.
+    // Do not use the status normalizer's fallback here: an absent/blank status
+    // is not evidence that money was captured.
+    const persistedPaymentStatus = String(payment.status ?? "").trim().toLowerCase();
+    if (persistedPaymentStatus !== "captured") {
+      throw new Error("Payment request completion requires an explicitly captured Payment.");
+    }
+    if (payment.invoiceId || payment.vendorBillId || !payment.customerId) {
+      throw new Error("Payment request completion requires a customer receipt Payment.");
+    }
+    const invoice = state.invoices.find((entry) => entry.id === request.invoiceId);
+    const business = findBusinessByIdOrLegacyOwner(request.businessId);
+    if (!invoice || !business || invoice.businessId !== request.businessId || payment.businessId !== request.businessId) {
+      throw new Error("Payment request completion Payment lineage does not match the business or Invoice.");
+    }
+    if (request.workspaceOwnerUserId && payment.ownerUserId !== request.workspaceOwnerUserId) {
+      throw new Error("Payment request completion Payment lineage does not match the workspace.");
+    }
+    if (invoice.customerId && payment.customerId !== invoice.customerId) {
+      throw new Error("Payment request completion Payment customer does not match the Invoice customer.");
+    }
+    const requestCurrency = String(request.currency || invoice.currency || "INR").trim().toUpperCase();
+    if (String(payment.currency || "INR").trim().toUpperCase() !== requestCurrency
+      || (invoice.currency && String(invoice.currency).trim().toUpperCase() !== requestCurrency)) {
+      throw new Error("Payment request completion Payment currency does not match the authoritative currency.");
+    }
+    const requestOrderId = String(request.providerIntent?.providerOrderId || "").trim();
+    if (requestOrderId && identity.providerOrderId !== requestOrderId) {
+      throw new Error("Payment request completion Payment Order does not match the PaymentRequest provider Order.");
+    }
+    if (input.providerPaymentId && String(input.providerPaymentId).trim() !== identity.providerPaymentId) {
+      throw new Error("Payment request completion provider Payment identity does not match the persisted Payment.");
+    }
+    if (input.providerOrderId && String(input.providerOrderId).trim() !== identity.providerOrderId) {
+      throw new Error("Payment request completion provider Order identity does not match the persisted Payment.");
+    }
+    if (!receiptAccountingAuthorityForPayment(payment, business)) {
+      throw new Error("Payment request completion requires successful receipt-first Customer Advance accounting.");
+    }
     const now = new Date().toISOString();
     request.status = "completed";
-    request.provider = String(input.provider || request.provider || "").trim().toLowerCase();
-    request.providerReference = String(input.providerReference || request.providerReference || "").trim();
+    request.provider = identity.provider;
+    request.providerReference = identity.providerPaymentId;
+    request.completedPaymentId = payment.id;
+    request.completedProviderPaymentId = identity.providerPaymentId;
+    request.completedProviderOrderId = identity.providerOrderId || "";
+    request.completionSource = "provider_payment";
     request.completedAt = now;
     request.updatedAt = now;
     return persistAndReturn({ paymentRequest: paymentRequestView(request) });
