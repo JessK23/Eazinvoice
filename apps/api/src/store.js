@@ -3052,7 +3052,12 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function listInvoicePayments(invoiceId) {
-    return clone(state.payments.filter((payment) => payment.invoiceId === invoiceId));
+    const allocatedPaymentIds = new Set(state.paymentAllocations
+      .filter((allocation) => allocation.documentType === "INVOICE"
+        && allocation.documentId === invoiceId
+        && normalizeRecordStatus(allocation.status, "active") === "active")
+      .map((allocation) => allocation.paymentId));
+    return clone(state.payments.filter((payment) => payment.invoiceId === invoiceId || allocatedPaymentIds.has(payment.id)));
   }
 
   function runRecurringInvoiceScheduler(input = {}) {
@@ -3348,11 +3353,21 @@ export function createStore(seed = {}, options = {}) {
     }
     const availablePaymentMinor = paymentAvailableMinor(payment);
     if (amountMinor > availablePaymentMinor) throw new Error("Payment allocation cannot exceed the Payment's available amount.");
-    const outstandingMinor = documentOutstandingMinor(target.type, target.record);
+    const outstandingMinor = target.type === "INVOICE"
+      ? Math.max(0, Math.round(toNumber(calculatePaymentState(
+        target.record,
+        effectiveInvoicePayments(target.record.id),
+      ).balanceAmount) * 100))
+      : documentOutstandingMinor(target.type, target.record);
     const existingTargetAllocations = state.paymentAllocations
       .filter((allocation) => allocation.documentType === target.type && allocation.documentId === target.record.id && normalizeRecordStatus(allocation.status, "active") === "active")
       .reduce((sum, allocation) => sum + Math.round(toNumber(allocation.allocatedAmount) * 100), 0);
-    if (amountMinor + existingTargetAllocations > outstandingMinor) throw new Error("Payment allocation cannot exceed the document's outstanding balance.");
+    if (target.type === "VENDOR_BILL" && amountMinor + existingTargetAllocations > outstandingMinor) {
+      throw new Error("Payment allocation cannot exceed the document's outstanding balance.");
+    }
+    if (target.type === "INVOICE" && amountMinor > outstandingMinor) {
+      throw new Error("Payment allocation cannot exceed the document's outstanding balance.");
+    }
 
     const now = new Date().toISOString();
     const allocation = {
@@ -3370,9 +3385,21 @@ export function createStore(seed = {}, options = {}) {
       createdAt: now,
       updatedAt: now,
     };
+    const allocationStateBeforeAccounting = clone(state);
     state.paymentAllocations.push(allocation);
+    let accounting = null;
+    if (payment.accountingTreatment === "receipt_first") {
+      try {
+        accounting = postCustomerPaymentAllocation(state, allocation, payment, target.record, business, input);
+        if (!accounting?.posted) throw new Error(accounting?.error || "Customer payment allocation accounting failed.");
+      } catch (error) {
+        applyAuthoritativeState(allocationStateBeforeAccounting);
+        throw error;
+      }
+    }
+    if (target.type === "INVOICE") refreshInvoicePaymentStatus(target.record);
     persist();
-    return clone({ allocation });
+    return clone({ allocation, ...(accounting ? { accounting } : {}) });
   }
 
   function applyAuthoritativeState(nextState) {
@@ -3424,12 +3451,14 @@ export function createStore(seed = {}, options = {}) {
       if (!result.posted) throw new Error(result.error || "Allocation reversal accounting failed.");
       allocation.reversalFinancialEventId = result.event?.id || "";
       allocation.reversalJournalId = result.journal?.id || result.event?.journalId || "";
+      refreshInvoicePaymentStatus(invoice);
       return persistAndReturn(clone({ allocation }));
     }
     allocation.status = "reversed";
     allocation.reversedByUserId = input.actorUserId || input.createdByUserId || "";
     allocation.reversedAt = new Date().toISOString();
     allocation.updatedAt = allocation.reversedAt;
+    if (invoice) refreshInvoicePaymentStatus(invoice);
     persist();
     return clone({ allocation });
   }
@@ -4109,6 +4138,107 @@ export function createStore(seed = {}, options = {}) {
     });
   }
 
+  function recordCustomerReceiptLocal(input = {}) {
+    const customerId = String(input.customerId || "").trim();
+    if (!customerId) throw new Error("Customer is required for an unapplied customer receipt.");
+    const customer = state.customers.find((entry) => entry.id === customerId);
+    if (!customer) throw new Error("Customer was not found.");
+    const business = findBusinessByIdOrLegacyOwner(input.businessId || customer.businessId);
+    if (!business || customer.businessId !== business.id) {
+      throw new Error("Customer receipt business does not match the customer business.");
+    }
+    const amountMinor = Math.round(toNumber(input.amount) * 100);
+    if (amountMinor <= 0) throw new Error("Customer receipt amount must be greater than zero.");
+    const currency = String(input.currency || "INR").trim().toUpperCase();
+    const externalIdentity = externalProviderPaymentIdentity(input);
+    const idempotencyKey = paymentIdempotencyKey(input);
+    const matchesInput = (payment) => payment
+      && !payment.invoiceId
+      && !payment.vendorBillId
+      && payment.businessId === business.id
+      && payment.customerId === customer.id
+      && Math.round(toNumber(payment.amount) * 100) === amountMinor
+      && String(payment.currency || "INR").trim().toUpperCase() === currency;
+
+    const existingExternalPayment = externalIdentity
+      ? findPaymentByExternalProviderIdentity(externalIdentity, business.id)
+      : null;
+    if (existingExternalPayment) {
+      if (!matchesInput(existingExternalPayment)) {
+        throw new Error("External provider Payment identity is already bound to a different Payment lineage.");
+      }
+      assertExternalProviderPaymentCompatible(existingExternalPayment, input, externalIdentity, "");
+      return clone({ payment: existingExternalPayment, idempotentReplay: true });
+    }
+
+    const existingPayment = idempotencyKey ? state.payments.find((payment) => (
+      payment.businessId === business.id && payment.idempotencyKey === idempotencyKey
+    )) : null;
+    if (existingPayment) {
+      if (!matchesInput(existingPayment)) {
+        throw new Error("Payment idempotency key was already used for a different receipt.");
+      }
+      if (externalIdentity) assertExternalProviderPaymentCompatible(existingPayment, input, externalIdentity, "");
+      return clone({ payment: existingPayment, idempotentReplay: true });
+    }
+
+    const now = new Date().toISOString();
+    const payment = {
+      id: nextId("pay", ++state.counters.payment),
+      ownerUserId: input.workspaceOwnerUserId || input.ownerUserId || customer.ownerUserId || business.ownerUserId,
+      businessId: business.id,
+      invoiceId: "",
+      vendorBillId: "",
+      customerId: customer.id,
+      idempotencyKey,
+      amount: amountMinor / 100,
+      currency,
+      direction: "customer",
+      paymentType: "customer_receipt",
+      accountingTreatment: "receipt_first",
+      mode: String(input.mode || "manual").trim(),
+      reference: String(input.reference || "").trim(),
+      notes: String(input.notes || "").trim(),
+      status: String(input.status || "captured").trim(),
+      gateway: String(input.gateway || input.provider || "").trim(),
+      gatewayPaymentId: String(input.gatewayPaymentId || input.providerPaymentId || "").trim(),
+      gatewayOrderId: String(input.gatewayOrderId || input.providerOrderId || "").trim(),
+      ...(externalIdentity ? {
+        provider: externalIdentity.provider,
+        providerPaymentId: externalIdentity.providerPaymentId,
+        providerOrderId: externalIdentity.providerOrderId,
+      } : {}),
+      paymentDate: String(input.paymentDate || new Date().toISOString().slice(0, 10)).trim(),
+      createdAt: now,
+    };
+    validateAccountingPosting(business, payment.paymentDate, { ...input, sourceType: "payment", sourceId: payment.id });
+    const receiptStateBeforeAccounting = clone(state);
+    state.payments.push(payment);
+    let receiptAccounting;
+    try {
+      receiptAccounting = postCustomerReceiptUnapplied(state, payment, business, input);
+      if (!receiptAccounting?.posted) {
+        throw new Error(receiptAccounting?.error || "Customer receipt accounting failed.");
+      }
+    } catch (error) {
+      applyAuthoritativeState(receiptStateBeforeAccounting);
+      throw error;
+    }
+    return persistAndReturn(clone({ payment, receiptAccounting }));
+  }
+
+  function recordCustomerReceipt(input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return recordCustomerReceiptLocal(input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.recordCustomerReceiptLocal(input);
+      return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
   function recordPurchaseOrderPayment(purchaseOrderId, input = {}) {
     const purchaseOrder = state.purchaseOrders.find((entry) => entry.id === purchaseOrderId);
     if (!purchaseOrder) return null;
@@ -4226,12 +4356,30 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function effectiveInvoicePayments(invoiceId) {
-    return state.payments
+    const directPayments = state.payments
       .filter((payment) => payment.invoiceId === invoiceId)
       .map((payment) => ({
         ...payment,
         amount: fromMinor(Math.max(0, Math.round(toNumber(payment.amount) * 100) - reversedMinorForPayment(payment.id, "customer"))),
       }));
+    const allocatedPayments = state.paymentAllocations
+      .filter((allocation) => allocation.documentType === "INVOICE"
+        && allocation.documentId === invoiceId
+        && normalizeRecordStatus(allocation.status, "active") === "active")
+      .map((allocation) => {
+        const payment = state.payments.find((entry) => entry.id === allocation.paymentId);
+        if (!payment || payment.invoiceId || payment.vendorBillId) return null;
+        return {
+          ...payment,
+          id: `${payment.id}:allocation:${allocation.id}`,
+          amount: fromMinor(Math.min(
+            Math.round(toNumber(allocation.allocatedAmount) * 100),
+            paymentAvailableMinor(payment) + Math.round(toNumber(allocation.allocatedAmount) * 100),
+          )),
+        };
+      })
+      .filter(Boolean);
+    return [...directPayments, ...allocatedPayments];
   }
 
   function effectiveVendorBillPayments(vendorBillId) {
@@ -5634,7 +5782,16 @@ export function createStore(seed = {}, options = {}) {
     const invoiceIds = new Set(listInvoicesForUser(user).map((invoice) => invoice.id));
     const purchaseOrderIds = new Set(listPurchaseOrdersForUser(user).map((purchaseOrder) => purchaseOrder.id));
     const vendorBillIds = new Set(listVendorBillsForUser(user).map((bill) => bill.id));
-    return clone(state.payments.filter((payment) => invoiceIds.has(payment.invoiceId) || purchaseOrderIds.has(payment.purchaseOrderId) || vendorBillIds.has(payment.vendorBillId)));
+    const customerIds = new Set(state.customers
+      .filter((customer) => customer.ownerUserId === user.id)
+      .map((customer) => customer.id));
+    return clone(state.payments.filter((payment) => (
+      payment.ownerUserId === user.id
+      || invoiceIds.has(payment.invoiceId)
+      || purchaseOrderIds.has(payment.purchaseOrderId)
+      || vendorBillIds.has(payment.vendorBillId)
+      || customerIds.has(payment.customerId)
+    )));
   }
 
   function listPurchaseOrdersForUser(user) {
@@ -6828,6 +6985,7 @@ export function createStore(seed = {}, options = {}) {
     listPaymentAllocations,
     createPaymentAllocation,
     reversePaymentAllocation,
+    recordCustomerReceipt,
     getPaymentUnappliedAmount,
     postCustomerReceiptAccounting,
     postCustomerPaymentAllocationAccounting,

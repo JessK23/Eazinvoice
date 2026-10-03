@@ -1988,6 +1988,24 @@ export function createApi(deps = {}) {
       if (!visible) return null;
       return store.recordInvoicePayment(id, input);
     },
+    recordCustomerReceipt(input = {}, options = {}) {
+      const customer = store.getCustomer(input.customerId);
+      if (!customer) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(
+        options.user || (customer.ownerUserId ? store.getUserById(customer.ownerUserId) : null),
+        {
+          ...options,
+          workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || customer.ownerUserId,
+          businessId: input.businessId || options.businessId || customer.businessId || null,
+        },
+        "writeRecords",
+      );
+      return store.recordCustomerReceipt({
+        ...input,
+        businessId: workspace.businessId || customer.businessId,
+        workspaceOwnerUserId: workspace.ownerUserId || customer.ownerUserId,
+      });
+    },
     createInvoicePaymentLink(id, input = {}, options = {}) {
       const invoice = store.getInvoice(id);
       if (invoice && !["draft", "deleted", "cancelled", "void"].includes(String(invoice.status || "").toLowerCase())) {
@@ -2046,6 +2064,16 @@ export function createApi(deps = {}) {
         businessId: workspace.businessId || allocation.businessId,
         actorUserId: options.user?.id || input.actorUserId || "",
       });
+    },
+    getPaymentUnappliedAmount(id, options = {}) {
+      const payment = store.listPaymentsForUser(null).find((entry) => entry.id === id);
+      if (!payment) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || (payment.ownerUserId ? store.getUserById(payment.ownerUserId) : null), {
+        ...options,
+        businessId: options.businessId || payment.businessId || null,
+        workspaceOwnerUserId: options.workspaceOwnerUserId || payment.ownerUserId || null,
+      }, "read");
+      return store.getPaymentUnappliedAmount(id, { businessId: workspace.businessId || payment.businessId });
     },
     listPaymentRequests(user, options = {}) {
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");

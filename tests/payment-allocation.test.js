@@ -70,6 +70,205 @@ test("Payment Allocation supports partial allocation, derived unallocated amount
   assert.equal(payment.amount - active.reduce((sum, entry) => sum + entry.allocatedAmount, 0), 6000);
 });
 
+test("canonical customer receipts support partial allocation and update invoice balance", () => {
+  const { api, user, businessId } = setup();
+  const customer = api.createCustomer({ ownerUserId: user.id, businessId, name: "Receipt Customer" });
+  const source = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    customerId: customer.id,
+    status: "created",
+    invoiceNumber: "RECEIPT-PARTIAL",
+    currency: "INR",
+    taxRate: 0,
+    items: [{ description: "Partial receipt", quantity: 1, rate: 10000 }],
+  });
+  const receipt = api.recordCustomerReceipt({
+    customerId: customer.id,
+    businessId,
+    amount: 4000,
+    currency: "INR",
+    mode: "bank_transfer",
+    reference: "UTR-PARTIAL",
+    idempotencyKey: "receipt-partial-1",
+  }, { user, businessId });
+
+  assert.equal(receipt.payment.invoiceId, "");
+  assert.equal(receipt.payment.accountingTreatment, "receipt_first");
+  assert.equal(receipt.receiptAccounting.posted, true);
+  const allocation = api.createPaymentAllocation({
+    paymentId: receipt.payment.id,
+    documentType: "INVOICE",
+    documentId: source.id,
+    allocatedAmount: 4000,
+    idempotencyKey: "receipt-partial-allocation",
+  }, { user, businessId });
+  const refreshed = api.getInvoice(source.id);
+
+  assert.equal(allocation.accounting.posted, true);
+  assert.equal(refreshed.paidAmount, 4000);
+  assert.equal(refreshed.balanceAmount, 6000);
+  assert.equal(refreshed.paymentStatus, "part_paid");
+  assert.equal(api.getPaymentUnappliedAmount(receipt.payment.id, { businessId }), 0);
+  assert.equal(api.listInvoicePayments(source.id).some((payment) => payment.id === receipt.payment.id), true);
+});
+
+test("canonical customer receipts preserve overpayments and distinct genuine provider payments", () => {
+  const { api, user, businessId } = setup();
+  const customer = api.createCustomer({ ownerUserId: user.id, businessId, name: "Overpay Customer" });
+  const source = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    customerId: customer.id,
+    status: "created",
+    invoiceNumber: "RECEIPT-OVERPAY",
+    currency: "INR",
+    taxRate: 0,
+    items: [{ description: "Overpayment", quantity: 1, rate: 10000 }],
+  });
+  const first = api.recordCustomerReceipt({
+    customerId: customer.id,
+    businessId,
+    amount: 12000,
+    currency: "INR",
+    provider: "razorpay",
+    providerPaymentId: "pay_real_1",
+    providerOrderId: "order_real_1",
+  }, { user, businessId });
+  const replay = api.recordCustomerReceipt({
+    customerId: customer.id,
+    businessId,
+    amount: 12000,
+    currency: "INR",
+    provider: "razorpay",
+    providerPaymentId: "pay_real_1",
+    providerOrderId: "order_real_1",
+  }, { user, businessId });
+  const second = api.recordCustomerReceipt({
+    customerId: customer.id,
+    businessId,
+    amount: 3000,
+    currency: "INR",
+    provider: "razorpay",
+    providerPaymentId: "pay_real_2",
+    providerOrderId: "order_real_2",
+  }, { user, businessId });
+
+  assert.equal(replay.idempotentReplay, true);
+  assert.notEqual(second.payment.id, first.payment.id);
+  api.createPaymentAllocation({
+    paymentId: first.payment.id,
+    documentType: "INVOICE",
+    documentId: source.id,
+    allocatedAmount: 10000,
+    idempotencyKey: "receipt-overpay-allocation",
+  }, { user, businessId });
+  assert.equal(api.getPaymentUnappliedAmount(first.payment.id, { businessId }), 2000);
+  assert.equal(api.getPaymentUnappliedAmount(second.payment.id, { businessId }), 3000);
+  assert.equal(api.getInvoice(source.id).balanceAmount, 0);
+  assert.throws(() => api.createPaymentAllocation({
+    paymentId: second.payment.id,
+    documentType: "INVOICE",
+    documentId: source.id,
+    allocatedAmount: 1,
+    idempotencyKey: "receipt-overpay-after-paid",
+  }, { user, businessId }), /outstanding balance/i);
+});
+
+test("receipt accounting failure rolls back Payment and permits provider retry", () => {
+  const { api, user, businessId } = setup();
+  const customer = api.createCustomer({ ownerUserId: user.id, businessId, name: "Atomic Receipt Customer" });
+  const badAccounts = {
+    bank_clearing: { id: "wrong-business-bank" },
+    customer_advances: { id: "wrong-business-advance" },
+  };
+  const receiptInput = {
+    customerId: customer.id,
+    businessId,
+    amount: 12000,
+    currency: "INR",
+    provider: "razorpay",
+    providerPaymentId: "atomic-provider-payment",
+    providerOrderId: "atomic-provider-order",
+    idempotencyKey: "atomic-receipt-key",
+  };
+
+  assert.throws(() => api.recordCustomerReceipt({ ...receiptInput, accounts: badAccounts }, { user, businessId }), /Ledger account does not belong/i);
+  assert.equal(api.listPayments(user, { businessId }).some((payment) => payment.providerPaymentId === receiptInput.providerPaymentId), false);
+  assert.equal(storeFinancialEvents(api, user, businessId).some((event) => event.sourceId === receiptInput.providerPaymentId && event.postingStatus === "posted"), false);
+
+  const retry = api.recordCustomerReceipt(receiptInput, { user, businessId });
+  assert.equal(retry.receiptAccounting.posted, true);
+  assert.equal(api.listPayments(user, { businessId }).filter((payment) => payment.providerPaymentId === receiptInput.providerPaymentId).length, 1);
+  assert.equal(api.getPaymentUnappliedAmount(retry.payment.id, { businessId }), 12000);
+});
+
+test("receipt accounting failure is atomic for manual and fully unapplied receipts", () => {
+  const { api, user, businessId } = setup();
+  const customer = api.createCustomer({ ownerUserId: user.id, businessId, name: "Manual Atomic Customer" });
+  const badAccounts = {
+    bank_clearing: { id: "wrong-business-bank" },
+    customer_advances: { id: "wrong-business-advance" },
+  };
+  assert.throws(() => api.recordCustomerReceipt({
+    customerId: customer.id,
+    businessId,
+    amount: 10000,
+    currency: "INR",
+    mode: "bank_transfer",
+    reference: "UTR-ATOMIC-MANUAL",
+    accounts: badAccounts,
+  }, { user, businessId }), /Ledger account does not belong/i);
+  assert.equal(api.listPayments(user, { businessId }).filter((payment) => payment.customerId === customer.id).length, 0);
+  assert.equal(storeFinancialEvents(api, user, businessId).filter((event) => event.eventType === "customer_receipt_unapplied").length, 0);
+});
+
+test("receipt-first allocation accounting failure rolls back allocation and invoice effect", () => {
+  const { api, user, businessId } = setup();
+  const customer = api.createCustomer({ ownerUserId: user.id, businessId, name: "Atomic Allocation Customer" });
+  const source = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    customerId: customer.id,
+    status: "created",
+    invoiceNumber: "ATOMIC-ALLOCATION",
+    currency: "INR",
+    taxRate: 0,
+    items: [{ description: "Atomic allocation", quantity: 1, rate: 10000 }],
+  });
+  const receipt = api.recordCustomerReceipt({ customerId: customer.id, businessId, amount: 10000, currency: "INR" }, { user, businessId });
+  const badAccounts = {
+    customer_advances: { id: "wrong-business-advance" },
+    accounts_receivable: { id: "wrong-business-ar" },
+  };
+  assert.throws(() => api.createPaymentAllocation({
+    paymentId: receipt.payment.id,
+    documentType: "INVOICE",
+    documentId: source.id,
+    allocatedAmount: 10000,
+    accounts: badAccounts,
+  }, { user, businessId }), /Ledger account does not belong/i);
+  assert.equal(api.listPaymentAllocations(user, { businessId, paymentId: receipt.payment.id, includeReversed: true }).length, 0);
+  assert.equal(api.getInvoice(source.id).balanceAmount, 10000);
+  assert.equal(api.getPaymentUnappliedAmount(receipt.payment.id, { businessId }), 10000);
+  assert.equal(storeFinancialEvents(api, user, businessId).filter((event) => event.eventType === "customer_payment_allocated").length, 0);
+
+  const retry = api.createPaymentAllocation({
+    paymentId: receipt.payment.id,
+    documentType: "INVOICE",
+    documentId: source.id,
+    allocatedAmount: 10000,
+    idempotencyKey: "atomic-allocation-retry",
+  }, { user, businessId });
+  assert.equal(retry.accounting.posted, true);
+  assert.equal(api.getInvoice(source.id).balanceAmount, 0);
+  assert.equal(api.getPaymentUnappliedAmount(receipt.payment.id, { businessId }), 0);
+});
+
+function storeFinancialEvents(api, user, businessId) {
+  return api.listAccountingEventLedger(user, { businessId }).financialEvents;
+}
+
 test("directly Invoice-bound Payment stays bound to the original Invoice", () => {
   const { api, user, businessId } = setup();
   const source = invoice(api, user, businessId, "BOUND-SOURCE", 10000);
