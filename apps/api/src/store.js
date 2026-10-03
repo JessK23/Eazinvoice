@@ -3369,6 +3369,26 @@ export function createStore(seed = {}, options = {}) {
     return clone({ ...request, status: paymentRequestEffectiveStatus(request, now) });
   }
 
+  function paymentRequestProviderIntentView(request) {
+    if (!request?.providerIntent) return null;
+    return clone({
+      provider: request.providerIntent.provider || "",
+      status: request.providerIntent.status || "",
+      providerOrderId: request.providerIntent.providerOrderId || "",
+      paymentRequestId: request.id,
+      invoiceId: request.invoiceId,
+      businessId: request.businessId,
+      workspaceOwnerUserId: request.workspaceOwnerUserId,
+      amount: request.providerIntent.amount,
+      currency: request.providerIntent.currency || request.currency,
+      mode: request.providerIntent.mode || "",
+      merchantAccountId: request.providerIntent.merchantAccountId || "",
+      providerStatus: request.providerIntent.providerStatus || "",
+      receipt: request.providerIntent.receipt || "",
+      createdAt: request.providerIntent.createdAt || "",
+    });
+  }
+
   function activePaymentRequestReservationMinor(invoiceId, now = Date.now()) {
     return state.paymentRequests
       .filter((request) => request.invoiceId === invoiceId && paymentRequestEffectiveStatus(request, now) === "active")
@@ -3436,6 +3456,7 @@ export function createStore(seed = {}, options = {}) {
       requestKey,
       provider: String(input.provider || "").trim().toLowerCase(),
       providerReference: String(input.providerReference || "").trim(),
+      providerIntent: null,
       metadata: input.metadata && typeof input.metadata === "object" ? clone(input.metadata) : {},
     };
     state.paymentRequests.push(paymentRequest);
@@ -3474,6 +3495,276 @@ export function createStore(seed = {}, options = {}) {
     return paymentRequestView(request);
   }
 
+  function resolvePaymentRequestProviderEvidence(input = {}) {
+    const provider = String(input.provider || "razorpay").trim().toLowerCase();
+    if (provider !== "razorpay") return null;
+    const providerOrderId = String(input.providerOrderId || input.orderId || "").trim();
+    const receipt = String(input.receipt || "").trim();
+    const notes = input.notes && typeof input.notes === "object" ? input.notes : {};
+    const notePaymentRequestId = String(notes.paymentRequestId || "").trim();
+    const suppliedPaymentRequestId = String(input.paymentRequestId || "").trim();
+    const candidateIds = new Set([notePaymentRequestId, suppliedPaymentRequestId].filter(Boolean));
+    let matches = state.paymentRequests.filter((request) => request.providerIntent?.provider === "razorpay");
+    if (providerOrderId) matches = matches.filter((request) => (
+      request.providerIntent?.providerOrderId === providerOrderId
+      || (candidateIds.size && !request.providerIntent?.providerOrderId)
+    ));
+    if (receipt) matches = matches.filter((request) => request.providerIntent?.receipt === receipt);
+    if (candidateIds.size) matches = matches.filter((request) => candidateIds.has(request.id));
+    if (!providerOrderId && !receipt && !candidateIds.size) return null;
+    if (matches.length !== 1) {
+      if (matches.length > 1 || candidateIds.size || receipt.startsWith("eaz_preq_")) {
+        throw new Error("PaymentRequest provider evidence is ambiguous or does not match persisted lineage.");
+      }
+      return null;
+    }
+    const request = matches[0];
+    const invoice = state.invoices.find((entry) => entry.id === request.invoiceId);
+    const business = state.businesses.find((entry) => entry.id === request.businessId);
+    if (!invoice || !business || invoice.businessId !== request.businessId) {
+      throw new Error("PaymentRequest provider evidence has invalid Invoice or business lineage.");
+    }
+    const assertMatch = (actual, expected, label) => {
+      if (actual !== undefined && actual !== null && String(actual) !== "" && String(actual) !== String(expected)) {
+        throw new Error(`PaymentRequest provider evidence ${label} does not match persisted lineage.`);
+      }
+    };
+    assertMatch(input.invoiceId || notes.invoiceId, request.invoiceId, "Invoice");
+    assertMatch(input.businessId || notes.businessId, request.businessId, "business");
+    assertMatch(input.workspaceOwnerUserId || notes.workspaceOwnerUserId, request.workspaceOwnerUserId, "workspace");
+    if (request.providerIntent.providerOrderId) {
+      assertMatch(input.providerOrderId || input.orderId, request.providerIntent.providerOrderId, "provider Order");
+    }
+    assertMatch(input.receipt, request.providerIntent.receipt, "receipt");
+    if (input.amount !== undefined && input.amount !== null && Number(input.amount) !== Math.round(toNumber(request.requestedAmount) * 100)) {
+      throw new Error("PaymentRequest provider evidence amount does not match persisted lineage.");
+    }
+    if (input.currency && String(input.currency).trim().toUpperCase() !== String(request.currency || "INR").trim().toUpperCase()) {
+      throw new Error("PaymentRequest provider evidence currency does not match persisted lineage.");
+    }
+    return clone({
+      provider: "razorpay",
+      providerOrderId: request.providerIntent.providerOrderId || providerOrderId,
+      receipt: request.providerIntent.receipt || receipt,
+      paymentRequest: paymentRequestView(request),
+      providerIntent: paymentRequestProviderIntentView(request),
+      invoice,
+      business,
+      workspace: {
+        businessId: request.businessId,
+        ownerUserId: request.workspaceOwnerUserId || business.ownerUserId || null,
+        companyId: invoice.companyId || null,
+      },
+    });
+  }
+
+  function beginPaymentRequestProviderIntentLocal(id, input = {}) {
+    const request = state.paymentRequests.find((entry) => entry.id === id);
+    if (!request) return null;
+    if (input.businessId && request.businessId !== input.businessId) throw new Error("Payment request was not found in this business.");
+    if (input.workspaceOwnerUserId && request.workspaceOwnerUserId !== input.workspaceOwnerUserId) throw new Error("Payment request was not found in this workspace.");
+    const status = paymentRequestEffectiveStatus(request);
+    if (["cancelled", "completed"].includes(status)) throw new Error("Payment request is terminal and cannot initiate a provider intent.");
+    const providerIntentStatus = request.providerIntent?.status || "";
+    if (status === "expired" && !["creating", "created", "recovery_required"].includes(providerIntentStatus)) {
+      throw new Error("Expired payment requests cannot initiate a new provider intent.");
+    }
+    const invoice = state.invoices.find((entry) => entry.id === request.invoiceId);
+    if (!invoice || invoice.businessId !== request.businessId) throw new Error("Payment request Invoice lineage is no longer valid.");
+    if (String(invoice.currency || "INR").toUpperCase() !== String(request.currency || "INR").toUpperCase()) {
+      throw new Error("Payment request Invoice currency is no longer compatible.");
+    }
+    if (request.providerIntent?.status === "created" && request.providerIntent.providerOrderId) {
+      return {
+        paymentRequest: paymentRequestView(request),
+        providerIntent: paymentRequestProviderIntentView(request),
+        idempotentReplay: true,
+      };
+    }
+    if (["creating", "recovery_required"].includes(request.providerIntent?.status)) {
+      return {
+        paymentRequest: paymentRequestView(request),
+        providerIntent: paymentRequestProviderIntentView(request),
+        recoveryRequired: true,
+      };
+    }
+    const now = new Date().toISOString();
+    request.providerIntent = {
+      provider: "razorpay",
+      status: "creating",
+      providerOrderId: "",
+      amount: toNumber(request.requestedAmount),
+      currency: String(request.currency || "INR").toUpperCase(),
+      mode: "",
+      merchantAccountId: "",
+      providerStatus: "",
+      receipt: `eaz_preq_${request.id}`.slice(0, 40),
+      createdAt: now,
+    };
+    request.updatedAt = now;
+    return persistAndReturn({
+      paymentRequest: paymentRequestView(request),
+      providerIntent: paymentRequestProviderIntentView(request),
+    });
+  }
+
+  function beginPaymentRequestProviderIntent(id, input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return beginPaymentRequestProviderIntentLocal(id, input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.beginPaymentRequestProviderIntentLocal(id, input);
+      return {
+        result,
+        state: transactionStore.exportState(),
+        persist: !result?.idempotentReplay && !result?.inProgress,
+      };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
+  function bindPaymentRequestProviderIntentLocal(id, input = {}) {
+    const request = state.paymentRequests.find((entry) => entry.id === id);
+    if (!request) return null;
+    if (input.businessId && request.businessId !== input.businessId) throw new Error("Payment request was not found in this business.");
+    if (input.workspaceOwnerUserId && request.workspaceOwnerUserId !== input.workspaceOwnerUserId) throw new Error("Payment request was not found in this workspace.");
+    const providerOrderId = String(input.providerOrderId || "").trim();
+    if (!providerOrderId) throw new Error("Provider order identity is required.");
+    if (request.providerIntent?.status === "created" && request.providerIntent.providerOrderId === providerOrderId) {
+      return { paymentRequest: paymentRequestView(request), providerIntent: paymentRequestProviderIntentView(request), idempotentReplay: true };
+    }
+    if (!["creating", "recovery_required"].includes(request.providerIntent?.status)) throw new Error("Payment request provider intent is not available for binding.");
+    const providerOrder = input.providerOrder && typeof input.providerOrder === "object" ? input.providerOrder : null;
+    const expectedAmountMinor = Math.round(toNumber(request.requestedAmount) * 100);
+    const providerAmountMinor = providerOrder ? Number(providerOrder.amount) : expectedAmountMinor;
+    const providerCurrency = String(providerOrder?.currency || request.currency || "INR").trim().toUpperCase();
+    const providerReceipt = String(providerOrder?.receipt || request.providerIntent.receipt || "").trim();
+    const providerNotes = providerOrder?.notes && typeof providerOrder.notes === "object" ? providerOrder.notes : {};
+    if (providerOrder && (!Number.isFinite(providerAmountMinor) || providerAmountMinor !== expectedAmountMinor)) throw new Error("Recovered provider order amount does not match the PaymentRequest.");
+    if (providerOrder && providerCurrency !== String(request.currency || "INR").toUpperCase()) throw new Error("Recovered provider order currency does not match the PaymentRequest.");
+    if (providerOrder && providerReceipt !== request.providerIntent.receipt) throw new Error("Recovered provider order receipt does not match the PaymentRequest.");
+    if (providerOrder && providerNotes.paymentRequestId && String(providerNotes.paymentRequestId) !== request.id) throw new Error("Recovered provider order PaymentRequest lineage does not match.");
+    if (providerOrder && providerNotes.invoiceId && String(providerNotes.invoiceId) !== request.invoiceId) throw new Error("Recovered provider order Invoice lineage does not match.");
+    if (providerOrder && providerNotes.businessId && String(providerNotes.businessId) !== request.businessId) throw new Error("Recovered provider order business lineage does not match.");
+    const now = new Date().toISOString();
+    request.provider = "razorpay";
+    request.providerIntent = {
+      ...request.providerIntent,
+      provider: "razorpay",
+      status: "created",
+      providerOrderId,
+      mode: String(input.mode || "").trim().toLowerCase(),
+      merchantAccountId: String(input.merchantAccountId || "").trim(),
+      providerStatus: String(input.providerStatus || "created").trim().toLowerCase(),
+      createdAt: request.providerIntent.createdAt || now,
+    };
+    request.updatedAt = now;
+    return persistAndReturn({ paymentRequest: paymentRequestView(request), providerIntent: paymentRequestProviderIntentView(request) });
+  }
+
+  function markPaymentRequestProviderIntentRecoveryRequiredLocal(id, input = {}) {
+    const request = state.paymentRequests.find((entry) => entry.id === id);
+    if (!request) return null;
+    if (input.businessId && request.businessId !== input.businessId) throw new Error("Payment request was not found in this business.");
+    if (["created", "failed"].includes(request.providerIntent?.status)) return { paymentRequest: paymentRequestView(request), providerIntent: paymentRequestProviderIntentView(request), idempotentReplay: true };
+    request.providerIntent = {
+      ...(request.providerIntent || {}),
+      provider: "razorpay",
+      status: "recovery_required",
+      providerStatus: String(input.providerStatus || "unknown").trim().toLowerCase(),
+    };
+    request.updatedAt = new Date().toISOString();
+    return persistAndReturn({ paymentRequest: paymentRequestView(request), providerIntent: paymentRequestProviderIntentView(request) });
+  }
+
+  function markPaymentRequestProviderIntentRecoveryRequired(id, input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return markPaymentRequestProviderIntentRecoveryRequiredLocal(id, input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.markPaymentRequestProviderIntentRecoveryRequiredLocal(id, input);
+      return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
+  function recoverPaymentRequestProviderIntentLocal(id, input = {}) {
+    const request = state.paymentRequests.find((entry) => entry.id === id);
+    if (!request) return null;
+    if (input.businessId && request.businessId !== input.businessId) throw new Error("Payment request was not found in this business.");
+    if (!request.providerIntent || !["creating", "recovery_required"].includes(request.providerIntent.status)) {
+      if (request.providerIntent?.status === "created") return { paymentRequest: paymentRequestView(request), providerIntent: paymentRequestProviderIntentView(request), idempotentReplay: true };
+      throw new Error("Payment request is not awaiting provider recovery.");
+    }
+    try {
+      return bindPaymentRequestProviderIntentLocal(id, {
+        ...input,
+        providerOrderId: input.providerOrderId || input.providerOrder?.id || "",
+      });
+    } catch (error) {
+      request.providerIntent = {
+        ...request.providerIntent,
+        status: "recovery_required",
+        providerStatus: "recovery_mismatch",
+      };
+      request.updatedAt = new Date().toISOString();
+      return persistAndReturn({
+        paymentRequest: paymentRequestView(request),
+        providerIntent: paymentRequestProviderIntentView(request),
+        recoveryRequired: true,
+        recoveryError: error.message,
+      });
+    }
+  }
+
+  function recoverPaymentRequestProviderIntent(id, input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return recoverPaymentRequestProviderIntentLocal(id, input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.recoverPaymentRequestProviderIntentLocal(id, input);
+      return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
+  function bindPaymentRequestProviderIntent(id, input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return bindPaymentRequestProviderIntentLocal(id, input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.bindPaymentRequestProviderIntentLocal(id, input);
+      return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
+  function failPaymentRequestProviderIntentLocal(id, input = {}) {
+    const request = state.paymentRequests.find((entry) => entry.id === id);
+    if (!request) return null;
+    if (input.businessId && request.businessId !== input.businessId) throw new Error("Payment request was not found in this business.");
+    if (request.providerIntent?.status !== "creating") return { paymentRequest: paymentRequestView(request), providerIntent: paymentRequestProviderIntentView(request), idempotentReplay: true };
+    request.providerIntent = { ...request.providerIntent, status: "failed", providerStatus: String(input.providerStatus || "failed").trim().toLowerCase() };
+    request.updatedAt = new Date().toISOString();
+    return persistAndReturn({ paymentRequest: paymentRequestView(request), providerIntent: paymentRequestProviderIntentView(request) });
+  }
+
+  function failPaymentRequestProviderIntent(id, input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return failPaymentRequestProviderIntentLocal(id, input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.failPaymentRequestProviderIntentLocal(id, input);
+      return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
   function cancelPaymentRequestLocal(id, input = {}) {
     const request = state.paymentRequests.find((entry) => entry.id === id);
     if (!request) return null;
@@ -3482,6 +3773,9 @@ export function createStore(seed = {}, options = {}) {
     const status = paymentRequestEffectiveStatus(request);
     if (status === "completed") throw new Error("Completed payment requests are terminal and cannot be cancelled.");
     if (status === "cancelled" || status === "expired") return { paymentRequest: paymentRequestView(request), idempotentReplay: true };
+    if (["creating", "created", "recovery_required"].includes(request.providerIntent?.status)) {
+      throw new Error("Payment requests with a provider intent cannot be cancelled.");
+    }
     const now = new Date().toISOString();
     request.status = "cancelled";
     request.cancelledAt = now;
@@ -6274,6 +6568,12 @@ export function createStore(seed = {}, options = {}) {
     createPaymentRequest,
     listPaymentRequests,
     getPaymentRequest,
+    resolvePaymentRequestProviderEvidence,
+    beginPaymentRequestProviderIntent,
+    bindPaymentRequestProviderIntent,
+    failPaymentRequestProviderIntent,
+    markPaymentRequestProviderIntentRecoveryRequired,
+    recoverPaymentRequestProviderIntent,
     cancelPaymentRequest,
     completePaymentRequest,
     createInvoicePaymentLink,

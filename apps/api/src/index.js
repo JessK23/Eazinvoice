@@ -786,6 +786,10 @@ export function createApi(deps = {}) {
       return store.resolveBusinessRazorpayCredentials(businessId, companyId);
     },
 
+    resolvePaymentRequestProviderEvidence(input = {}) {
+      return store.resolvePaymentRequestProviderEvidence(input);
+    },
+
     getBusinessEmailDeliverySettings(user, options = {}) {
       const access = this.requireBusinessWorkspaceAccess(user, options, "read");
       return store.getRawBusinessSettingsForUser(access.owner, options.companyId || access.companyId || null, access.businessId || null)?.emailSettings || {};
@@ -2061,6 +2065,75 @@ export function createApi(deps = {}) {
         businessId: options.businessId || current.businessId || null,
       }, "read");
       return store.getPaymentRequest(id, {
+        businessId: workspace.businessId || current.businessId,
+        workspaceOwnerUserId: workspace.ownerUserId || current.workspaceOwnerUserId,
+      });
+    },
+    beginPaymentRequestProviderIntent(id, user, options = {}) {
+      const current = store.getPaymentRequest(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: options.workspaceOwnerUserId || current.workspaceOwnerUserId,
+        businessId: options.businessId || current.businessId || null,
+      }, "writeRecords");
+      return store.beginPaymentRequestProviderIntent(id, {
+        businessId: workspace.businessId || current.businessId,
+        workspaceOwnerUserId: workspace.ownerUserId || current.workspaceOwnerUserId,
+      });
+    },
+    bindPaymentRequestProviderIntent(id, user, input = {}, options = {}) {
+      const current = store.getPaymentRequest(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: options.workspaceOwnerUserId || current.workspaceOwnerUserId,
+        businessId: options.businessId || current.businessId || null,
+      }, "writeRecords");
+      return store.bindPaymentRequestProviderIntent(id, {
+        ...input,
+        businessId: workspace.businessId || current.businessId,
+        workspaceOwnerUserId: workspace.ownerUserId || current.workspaceOwnerUserId,
+      });
+    },
+    failPaymentRequestProviderIntent(id, user, input = {}, options = {}) {
+      const current = store.getPaymentRequest(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: options.workspaceOwnerUserId || current.workspaceOwnerUserId,
+        businessId: options.businessId || current.businessId || null,
+      }, "writeRecords");
+      return store.failPaymentRequestProviderIntent(id, {
+        ...input,
+        businessId: workspace.businessId || current.businessId,
+        workspaceOwnerUserId: workspace.ownerUserId || current.workspaceOwnerUserId,
+      });
+    },
+    markPaymentRequestProviderIntentRecoveryRequired(id, user, input = {}, options = {}) {
+      const current = store.getPaymentRequest(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: options.workspaceOwnerUserId || current.workspaceOwnerUserId,
+        businessId: options.businessId || current.businessId || null,
+      }, "writeRecords");
+      return store.markPaymentRequestProviderIntentRecoveryRequired(id, {
+        ...input,
+        businessId: workspace.businessId || current.businessId,
+        workspaceOwnerUserId: workspace.ownerUserId || current.workspaceOwnerUserId,
+      });
+    },
+    recoverPaymentRequestProviderIntent(id, user, input = {}, options = {}) {
+      const current = store.getPaymentRequest(id);
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: options.workspaceOwnerUserId || current.workspaceOwnerUserId,
+        businessId: options.businessId || current.businessId || null,
+      }, "writeRecords");
+      return store.recoverPaymentRequestProviderIntent(id, {
+        ...input,
         businessId: workspace.businessId || current.businessId,
         workspaceOwnerUserId: workspace.ownerUserId || current.workspaceOwnerUserId,
       });
