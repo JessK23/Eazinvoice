@@ -3,6 +3,7 @@ const DEFAULT_ACCOUNT_DEFINITIONS = [
   ["1110", "Bank / Payment Clearing", "asset", "debit", "bank_clearing", "current_assets"],
   ["1300", "TDS Receivable / Tax Credit", "asset", "debit", "tds_receivable", "current_assets"],
   ["2100", "Accounts Payable", "liability", "credit", "accounts_payable", "current_liabilities"],
+  ["2110", "Customer Advances / Unapplied Customer Receipts", "liability", "credit", "customer_advances", "current_liabilities"],
   ["2201", "Output CGST Payable", "liability", "credit", "output_cgst", "current_liabilities"],
   ["2202", "Output SGST Payable", "liability", "credit", "output_sgst", "current_liabilities"],
   ["2203", "Output IGST Payable", "liability", "credit", "output_igst", "current_liabilities"],
@@ -191,6 +192,27 @@ function failEvent(event, error) {
   event.failureReason = String(error?.message || error || "Posting failed").slice(0, 500);
 }
 
+function receiptAuthorityForPayment(state, payment = {}, business = {}) {
+  const event = (state.financialEvents || []).find((entry) => (
+    entry.businessId === business.id
+    && entry.eventType === "customer_receipt_unapplied"
+    && entry.sourceType === "payment"
+    && entry.sourceId === payment.id
+    && entry.postingStatus === "posted"
+  ));
+  if (!event) return null;
+  const journal = (state.accountingJournals || []).find((entry) => entry.id === event.journalId && entry.status === "posted");
+  if (!journal || journal.businessId !== business.id) return null;
+  const lines = (state.accountingJournalLines || []).filter((line) => line.journalId === journal.id);
+  const receiptMinor = toMinor(payment.amount);
+  const clearingDebit = lines.filter((line) => line.accountCode === "1110").reduce((sum, line) => sum + toMinor(line.debit), 0);
+  const advanceCredit = lines.filter((line) => line.accountCode === "2110").reduce((sum, line) => sum + toMinor(line.credit), 0);
+  if (clearingDebit !== receiptMinor || advanceCredit !== receiptMinor) return null;
+  if (event.metadata?.customerId !== payment.customerId) return null;
+  if (String(journal.currency || "INR").toUpperCase() !== String(payment.currency || "INR").toUpperCase()) return null;
+  return { event, journal };
+}
+
 export function postInvoiceIssued(state, invoice = {}, business = {}, options = {}) {
   if (!invoice?.id) throw new Error("Invoice is required for posting.");
   const status = normalizeStatus(invoice.status);
@@ -279,6 +301,201 @@ export function postPaymentCaptured(state, payment = {}, invoice = {}, business 
     failEvent(event, error);
     return { posted: false, event: clone(event), error: event.failureReason };
   }
+}
+
+// Receipt-first customer money is deliberately separate from the historical
+// invoice-payment posting above.  The latter credits A/R immediately and must
+// remain unchanged for legacy payments; these primitives are for a future
+// unapplied-capable Payment flow and are safe to compose inside PAY-ATOMIC.
+export function postCustomerReceiptUnapplied(state, payment = {}, business = {}, options = {}) {
+  if (!payment?.id) throw new Error("Payment is required for customer receipt posting.");
+  if (!business?.id || payment.businessId !== business.id) throw new Error("Payment business does not match customer receipt business.");
+  if (!payment.customerId) throw new Error("Customer ownership is required for an unapplied customer receipt.");
+  if (normalizeStatus(payment.status || "captured") !== "captured") return { posted: false, reason: "payment_not_captured" };
+  const { event, replay } = createFinancialEvent(state, {
+    businessId: business.id,
+    eventType: "customer_receipt_unapplied",
+    sourceType: "payment",
+    sourceId: payment.id,
+    sourceStatus: payment.status || "captured",
+    eventTimestamp: payment.createdAt,
+    idempotencyKey: eventKey(business.id, "customer_receipt_unapplied", payment.id),
+    metadata: {
+      customerId: payment.customerId,
+      reference: payment.reference || payment.gatewayPaymentId || "",
+    },
+  });
+  if (event.postingStatus === "posted") return { posted: true, event: clone(event), replay: true };
+
+  try {
+    const accounts = {
+      ...ensureDefaultAccountingAccounts(state, business, payment.ownerUserId),
+      ...(options.accounts || {}),
+    };
+    const journal = persistJournal(state, event, {
+      ownerUserId: payment.ownerUserId,
+      journalDate: payment.paymentDate || payment.createdAt?.slice(0, 10),
+      narration: `Customer receipt received for ${payment.customerId}`,
+      sourceType: "payment",
+      currency: payment.currency || "INR",
+      postingRule: "customer_receipt_unapplied",
+      lines: [
+        { account: accounts.bank_clearing, debit: payment.amount, description: "Bank / payment clearing" },
+        { account: accounts.customer_advances, credit: payment.amount, description: "Customer advance / unapplied receipt" },
+      ],
+    });
+    return { posted: true, event: clone(event), journal: clone(journal), replay };
+  } catch (error) {
+    failEvent(event, error);
+    return { posted: false, event: clone(event), error: event.failureReason };
+  }
+}
+
+export function postCustomerPaymentAllocation(state, allocation = {}, payment = {}, invoice = {}, business = {}, options = {}) {
+  if (!allocation?.id || !payment?.id || !invoice?.id) throw new Error("Allocation, payment and invoice are required for customer payment allocation posting.");
+  if (!business?.id || allocation.businessId !== business.id || payment.businessId !== business.id || invoice.businessId !== business.id) {
+    throw new Error("Customer payment allocation business does not match.");
+  }
+  if (allocation.paymentId !== payment.id || allocation.documentType !== "INVOICE" || allocation.documentId !== invoice.id) {
+    throw new Error("Customer payment allocation lineage does not match the invoice.");
+  }
+  if (!payment.customerId || !invoice.customerId || payment.customerId !== invoice.customerId) {
+    throw new Error("Customer payment allocation customer does not match the invoice customer.");
+  }
+  if (normalizeStatus(allocation.status || "active") !== "active") return { posted: false, reason: "allocation_not_active" };
+  if (!payment.customerId) throw new Error("Customer ownership is required for customer payment allocation posting.");
+  const receiptAuthority = receiptAuthorityForPayment(state, payment, business);
+  if (!receiptAuthority) throw new Error("Receipt-first Customer Advance authority is required before allocation posting.");
+  const { event, replay } = createFinancialEvent(state, {
+    businessId: business.id,
+    eventType: "customer_payment_allocated",
+    sourceType: "payment_allocation",
+    sourceId: allocation.id,
+    sourceStatus: allocation.status || "active",
+    eventTimestamp: allocation.createdAt,
+    idempotencyKey: eventKey(business.id, "customer_payment_allocated", allocation.id),
+    metadata: { paymentId: payment.id, invoiceId: invoice.id, customerId: payment.customerId },
+  });
+  if (event.postingStatus === "posted") return { posted: true, event: clone(event), replay: true };
+
+  try {
+    const accounts = {
+      ...ensureDefaultAccountingAccounts(state, business, allocation.ownerUserId || payment.ownerUserId),
+      ...(options.accounts || {}),
+    };
+    const journal = persistJournal(state, event, {
+      ownerUserId: allocation.ownerUserId || payment.ownerUserId,
+      journalDate: allocation.createdAt?.slice(0, 10),
+      narration: `Customer payment allocated to invoice ${invoice.invoiceNumber || invoice.id}`,
+      sourceType: "payment_allocation",
+      currency: allocation.currency || payment.currency || invoice.currency || "INR",
+      postingRule: "customer_payment_allocated",
+      lines: [
+        { account: accounts.customer_advances, debit: allocation.allocatedAmount, description: "Customer advance applied" },
+        { account: accounts.accounts_receivable, credit: allocation.allocatedAmount, description: "Accounts receivable settled" },
+      ],
+    });
+    return { posted: true, event: clone(event), journal: clone(journal), replay };
+  } catch (error) {
+    failEvent(event, error);
+    return { posted: false, event: clone(event), error: event.failureReason };
+  }
+}
+
+export function postCustomerPaymentAllocationReversed(state, allocation = {}, payment = {}, invoice = {}, business = {}, options = {}) {
+  if (!allocation?.id || !payment?.id || !invoice?.id) throw new Error("Allocation, payment and invoice are required for allocation reversal posting.");
+  if (!business?.id || allocation.businessId !== business.id || payment.businessId !== business.id || invoice.businessId !== business.id) {
+    throw new Error("Customer allocation reversal business does not match.");
+  }
+  if (allocation.paymentId !== payment.id || allocation.documentType !== "INVOICE" || allocation.documentId !== invoice.id) {
+    throw new Error("Customer allocation reversal lineage does not match the invoice.");
+  }
+  if (normalizeStatus(allocation.status || "active") !== "reversed") return { posted: false, reason: "allocation_not_reversed" };
+  const receiptAuthority = receiptAuthorityForPayment(state, payment, business);
+  if (!receiptAuthority) throw new Error("Receipt-first Customer Advance authority is required before allocation reversal posting.");
+  const originalEvent = (state.financialEvents || []).find((entry) => (
+    entry.businessId === business.id && entry.eventType === "customer_payment_allocated"
+    && entry.sourceType === "payment_allocation" && entry.sourceId === allocation.id && entry.postingStatus === "posted"
+  ));
+  const originalJournal = originalEvent ? (state.accountingJournals || []).find((entry) => entry.id === originalEvent.journalId && entry.status === "posted") : null;
+  if (!originalJournal) throw new Error("Receipt-first allocation journal is required before allocation reversal posting.");
+  const reversalId = String(options.reversalId || allocation.id);
+  const { event, replay } = createFinancialEvent(state, {
+    businessId: business.id,
+    eventType: "customer_payment_allocation_reversed",
+    sourceType: "payment_allocation_reversal",
+    sourceId: reversalId,
+    sourceStatus: "posted",
+    eventTimestamp: options.reversalDate || allocation.updatedAt || allocation.createdAt,
+    idempotencyKey: eventKey(business.id, "customer_payment_allocation_reversed", reversalId),
+    metadata: { allocationId: allocation.id, paymentId: payment.id, invoiceId: invoice.id, customerId: payment.customerId, reversesFinancialEventId: originalEvent.id },
+  });
+  if (event.postingStatus === "posted") return { posted: true, event: clone(event), replay: true };
+  try {
+    const accounts = { ...ensureDefaultAccountingAccounts(state, business, allocation.ownerUserId || payment.ownerUserId), ...(options.accounts || {}) };
+    const journal = persistJournal(state, event, {
+      ownerUserId: allocation.ownerUserId || payment.ownerUserId,
+      journalDate: options.reversalDate || allocation.updatedAt?.slice(0, 10),
+      narration: `Customer payment allocation reversal for ${allocation.id}`,
+      sourceType: "payment_allocation_reversal",
+      currency: allocation.currency || payment.currency || invoice.currency || "INR",
+      postingRule: "customer_payment_allocation_reversed",
+      lines: [
+        { account: accounts.accounts_receivable, debit: allocation.allocatedAmount, description: `A/R restored for allocation ${allocation.id}` },
+        { account: accounts.customer_advances, credit: allocation.allocatedAmount, description: "Customer advance restored" },
+      ],
+    });
+    journal.reversesJournalId = originalJournal.id;
+    event.reversesFinancialEventId = originalEvent.id;
+    event.reversesJournalId = originalJournal.id;
+    return { posted: true, event: clone(event), journal: clone(journal), replay };
+  } catch (error) {
+    failEvent(event, error);
+    return { posted: false, event: clone(event), error: event.failureReason };
+  }
+}
+
+function postCustomerReceiptReduction(state, eventType, sourceType, sourceId, amount, payment, business, options = {}, postingRule, narration) {
+  if (!payment?.id || !business?.id || payment.businessId !== business.id) throw new Error("Customer receipt reduction business does not match.");
+  if (!payment.customerId) throw new Error("Customer ownership is required for receipt reduction.");
+  if (!receiptAuthorityForPayment(state, payment, business)) throw new Error("Receipt-first Customer Advance authority is required before receipt reduction.");
+  const { event, replay } = createFinancialEvent(state, {
+    businessId: business.id, eventType, sourceType, sourceId, sourceStatus: "posted",
+    eventTimestamp: options.eventTimestamp, idempotencyKey: eventKey(business.id, eventType, sourceId),
+    metadata: { paymentId: payment.id, customerId: payment.customerId, amount: amount, currency: payment.currency || "INR" },
+  });
+  if (event.postingStatus === "posted") return { posted: true, event: clone(event), replay: true };
+  try {
+    const accounts = { ...ensureDefaultAccountingAccounts(state, business, payment.ownerUserId), ...(options.accounts || {}) };
+    const journal = persistJournal(state, event, {
+      ownerUserId: payment.ownerUserId,
+      journalDate: options.journalDate || options.eventTimestamp?.slice(0, 10),
+      narration,
+      sourceType,
+      currency: payment.currency || "INR",
+      postingRule,
+      lines: [
+        { account: accounts.customer_advances, debit: amount, description: "Customer advance reduced" },
+        { account: accounts.bank_clearing, credit: amount, description: "Payment clearing reduced" },
+      ],
+    });
+    return { posted: true, event: clone(event), journal: clone(journal), replay };
+  } catch (error) {
+    failEvent(event, error);
+    return { posted: false, event: clone(event), error: event.failureReason };
+  }
+}
+
+export function postCustomerReceiptReversed(state, reversal = {}, payment = {}, business = {}, options = {}) {
+  if (!reversal?.id || !payment?.id) throw new Error("Receipt reversal and payment are required for posting.");
+  if (normalizeStatus(reversal.status || "posted") !== "posted") return { posted: false, reason: "payment_reversal_not_posted" };
+  return postCustomerReceiptReduction(state, "customer_receipt_reversed", "customer_receipt_reversal", reversal.id, reversal.amount, payment, business, { ...options, eventTimestamp: reversal.reversalDate || reversal.createdAt }, "customer_receipt_reversed", `Customer receipt reversal for ${payment.id}`);
+}
+
+export function postCustomerReceiptRefunded(state, refund = {}, payment = {}, business = {}, options = {}) {
+  if (!refund?.id || !payment?.id) throw new Error("Customer refund and payment are required for posting.");
+  if (normalizeStatus(refund.status || "processed") !== "processed") return { posted: false, reason: "customer_refund_not_processed" };
+  return postCustomerReceiptReduction(state, "customer_receipt_refunded", "customer_receipt_refund", refund.id, refund.amount, payment, business, { ...options, eventTimestamp: refund.refundDate || refund.createdAt }, "customer_receipt_refunded", `Customer receipt refund for ${payment.id}`);
 }
 
 export function postVendorBillPosted(state, bill = {}, business = {}, options = {}) {

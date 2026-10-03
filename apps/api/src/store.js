@@ -11,6 +11,11 @@ import {
   ensureDefaultAccountingAccounts,
   postInvoiceIssued,
   postPaymentCaptured,
+  postCustomerReceiptUnapplied,
+  postCustomerPaymentAllocation,
+  postCustomerPaymentAllocationReversed,
+  postCustomerReceiptReversed,
+  postCustomerReceiptRefunded,
   postVendorBillPosted,
   postVendorPaymentCaptured,
   postCustomerPaymentReversed,
@@ -3169,6 +3174,7 @@ export function createStore(seed = {}, options = {}) {
 
   function paymentDirection(payment) {
     if (payment?.invoiceId && !payment?.vendorBillId) return "customer";
+    if (payment?.customerId && !payment?.vendorBillId) return "customer";
     if (payment?.vendorBillId && !payment?.invoiceId) return "vendor";
     return "unknown";
   }
@@ -3207,7 +3213,75 @@ export function createStore(seed = {}, options = {}) {
       : reversedMinorForPayment(payment.id, "customer");
     const allocatedMinor = activePaymentAllocationsForPayment(payment.id)
       .reduce((sum, allocation) => sum + Math.round(toNumber(allocation.allocatedAmount) * 100), 0);
-    return Math.max(0, amountMinor - Math.min(amountMinor, reversedMinor) - allocatedMinor);
+    const refundedMinor = state.customerRefunds
+      .filter((refund) => refund.sourcePaymentId === payment.id && normalizeRecordStatus(refund.status, "processed") === "processed")
+      .reduce((sum, refund) => sum + Math.round(toNumber(refund.amount) * 100), 0);
+    return Math.max(0, amountMinor - Math.min(amountMinor, reversedMinor) - allocatedMinor - refundedMinor);
+  }
+
+  // Derived from canonical Payment + active PaymentAllocation state. No
+  // second receipt balance is stored, so this remains compatible with the
+  // existing allocation authority and future atomic mutations.
+  function getPaymentUnappliedAmount(paymentId, input = {}) {
+    const payment = state.payments.find((entry) => entry.id === paymentId);
+    if (!payment) return null;
+    if (input.businessId && payment.businessId !== input.businessId) return null;
+    if (!payment.customerId) return 0;
+    return fromMinor(paymentAvailableMinor(payment));
+  }
+
+  function postCustomerReceiptAccountingLocal(paymentId, input = {}) {
+    const payment = state.payments.find((entry) => entry.id === paymentId);
+    if (!payment) throw new Error("Payment was not found.");
+    const business = findBusinessByIdOrLegacyOwner(input.businessId || payment.businessId);
+    if (!business || payment.businessId !== business.id) throw new Error("Payment business does not match customer receipt business.");
+    const customer = state.customers.find((entry) => entry.id === payment.customerId && entry.businessId === business.id);
+    if (!customer) throw new Error("Payment customer does not belong to the Payment business.");
+    return persistAndReturn(clone(postCustomerReceiptUnapplied(state, payment, business, input)));
+  }
+
+  function postCustomerReceiptAccounting(paymentId, input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return postCustomerReceiptAccountingLocal(paymentId, input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.postCustomerReceiptAccountingLocal(paymentId, input);
+      return { result, state: transactionStore.exportState(), persist: !result?.replay };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
+  function postCustomerPaymentAllocationAccountingLocal(allocationId, input = {}) {
+    const allocation = state.paymentAllocations.find((entry) => entry.id === allocationId);
+    if (!allocation) throw new Error("Payment allocation was not found.");
+    const payment = state.payments.find((entry) => entry.id === allocation.paymentId);
+    const invoice = allocation.documentType === "INVOICE"
+      ? state.invoices.find((entry) => entry.id === allocation.documentId)
+      : null;
+    if (!payment || !invoice) throw new Error("Customer payment allocation lineage is incomplete.");
+    if (!payment.customerId || !invoice.customerId || payment.customerId !== invoice.customerId) {
+      throw new Error("Customer payment allocation customer does not match the invoice customer.");
+    }
+    const business = findBusinessByIdOrLegacyOwner(input.businessId || allocation.businessId);
+    if (!business || allocation.businessId !== business.id) throw new Error("Payment allocation business does not match.");
+    const customer = state.customers.find((entry) => entry.id === payment.customerId && entry.businessId === business.id);
+    if (!customer) throw new Error("Payment customer does not belong to the Payment business.");
+    const availableBeforeAllocation = paymentAvailableMinor(payment) + Math.round(toNumber(allocation.allocatedAmount) * 100);
+    if (Math.round(toNumber(allocation.allocatedAmount) * 100) > availableBeforeAllocation) throw new Error("Customer Advance capacity is insufficient for this allocation.");
+    return persistAndReturn(clone(postCustomerPaymentAllocation(state, allocation, payment, invoice, business, input)));
+  }
+
+  function postCustomerPaymentAllocationAccounting(allocationId, input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return postCustomerPaymentAllocationAccountingLocal(allocationId, input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.postCustomerPaymentAllocationAccountingLocal(allocationId, input);
+      return { result, state: transactionStore.exportState(), persist: !result?.replay };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
   }
 
   function listPaymentAllocations(input = {}) {
@@ -3236,6 +3310,9 @@ export function createStore(seed = {}, options = {}) {
     const target = allocationDocument(documentType, documentId);
     if (!target.record) throw new Error("Payment allocation document was not found.");
     if (target.record.businessId !== business.id) throw new Error("Payment allocation document does not belong to this business.");
+    if (target.direction === "customer" && payment.customerId && target.record.customerId && payment.customerId !== target.record.customerId) {
+      throw new Error("Payment allocation customer does not match the invoice customer.");
+    }
     if (paymentDirection(payment) !== target.direction) throw new Error("Payment allocation direction does not match the document.");
     if (payment.invoiceId && (target.type !== "INVOICE" || target.record.id !== payment.invoiceId)) {
       throw new Error("Invoice-bound Payment can only be allocated to its original Invoice.");
@@ -3330,6 +3407,25 @@ export function createStore(seed = {}, options = {}) {
     if (!allocation) return null;
     if (input.businessId && allocation.businessId !== input.businessId) throw new Error("Payment allocation was not found in this business.");
     if (normalizeRecordStatus(allocation.status, "active") === "reversed") return clone({ allocation, idempotentReplay: true });
+    if (input.amount !== undefined && Math.round(toNumber(input.amount) * 100) !== Math.round(toNumber(allocation.allocatedAmount) * 100)) {
+      throw new Error("Partial payment allocation reversal is not supported.");
+    }
+    const payment = state.payments.find((entry) => entry.id === allocation.paymentId);
+    const invoice = allocation.documentType === "INVOICE" ? state.invoices.find((entry) => entry.id === allocation.documentId) : null;
+    const business = findBusinessByIdOrLegacyOwner(input.businessId || allocation.businessId);
+    const allocationEvent = state.financialEvents.find((entry) => entry.eventType === "customer_payment_allocated" && entry.sourceType === "payment_allocation" && entry.sourceId === allocation.id && entry.postingStatus === "posted");
+    if (allocationEvent) {
+      if (!payment || !invoice || !business) throw new Error("Receipt-first allocation lineage is incomplete.");
+      allocation.status = "reversed";
+      allocation.reversedByUserId = input.actorUserId || input.createdByUserId || "";
+      allocation.reversedAt = new Date().toISOString();
+      allocation.updatedAt = allocation.reversedAt;
+      const result = postCustomerPaymentAllocationReversed(state, allocation, payment, invoice, business, { reversalDate: allocation.reversedAt });
+      if (!result.posted) throw new Error(result.error || "Allocation reversal accounting failed.");
+      allocation.reversalFinancialEventId = result.event?.id || "";
+      allocation.reversalJournalId = result.journal?.id || result.event?.journalId || "";
+      return persistAndReturn(clone({ allocation }));
+    }
     allocation.status = "reversed";
     allocation.reversedByUserId = input.actorUserId || input.createdByUserId || "";
     allocation.reversedAt = new Date().toISOString();
@@ -3972,6 +4068,7 @@ export function createStore(seed = {}, options = {}) {
       ownerUserId: invoice.ownerUserId,
       businessId,
       invoiceId,
+      customerId: invoice.customerId || "",
       idempotencyKey,
       amount,
       currency: input.currency?.trim() || invoice.currency || "INR",
@@ -3993,7 +4090,7 @@ export function createStore(seed = {}, options = {}) {
     const postingBusiness = invoice.businessId ? findBusinessByIdOrLegacyOwner(invoice.businessId) : null;
     if (postingBusiness) validateAccountingPosting(postingBusiness, payment.paymentDate, { ...input, sourceType: "payment", sourceId: payment.id });
     state.payments.push(payment);
-    refreshInvoicePaymentStatus(invoice);
+    if (invoice) refreshInvoicePaymentStatus(invoice);
     if (postingBusiness) postPaymentCaptured(state, payment, invoice, postingBusiness);
     return persistAndReturn(clone({ invoice, payment }));
   }
@@ -4205,16 +4302,29 @@ export function createStore(seed = {}, options = {}) {
 
   function createCustomerPaymentReversal(input = {}) {
     const payment = state.payments.find((entry) => entry.id === input.originalPaymentId || entry.id === input.paymentId);
-    if (!payment || !payment.invoiceId) throw new Error("Original customer payment is required for reversal.");
-    const invoice = state.invoices.find((entry) => entry.id === payment.invoiceId);
+    if (!payment) throw new Error("Original customer payment is required for reversal.");
+    const receiptFirst = !payment.invoiceId && Boolean(payment.customerId);
+    if (!payment.invoiceId && !receiptFirst) throw new Error("Original customer payment is required for reversal.");
+    const invoice = payment.invoiceId ? state.invoices.find((entry) => entry.id === payment.invoiceId) : null;
     const business = findBusinessByIdOrLegacyOwner(input.businessId || payment.businessId);
-    if (!invoice || !business || payment.businessId !== business.id || invoice.businessId !== business.id) throw new Error("Payment reversal business does not match source payment.");
+    if (!business || payment.businessId !== business.id || (invoice && invoice.businessId !== business.id)) throw new Error("Payment reversal business does not match source payment.");
+    if (receiptFirst && !state.financialEvents.some((entry) => entry.eventType === "customer_receipt_unapplied" && entry.sourceType === "payment" && entry.sourceId === payment.id && entry.postingStatus === "posted")) {
+      throw new Error("Receipt-first Customer Advance authority is required before receipt reversal.");
+    }
     const idempotencyKey = String(input.idempotencyKey || "").trim();
     if (idempotencyKey) {
       const existing = state.paymentReversals.find((reversal) => reversal.businessId === business.id && reversal.idempotencyKey === idempotencyKey);
-      if (existing) return clone(existing);
+      if (existing) {
+        const sameRequest = existing.originalPaymentId === payment.id
+          && (input.amount === undefined || Math.round(toNumber(existing.amount) * 100) === Math.round(toNumber(input.amount) * 100))
+          && String(existing.currency || "INR").toUpperCase() === String(input.currency || payment.currency || invoice?.currency || "INR").toUpperCase();
+        if (!sameRequest) throw new Error("Payment reversal idempotency key was already used for a different request.");
+        return clone(existing);
+      }
     }
-    const remainingMinor = Math.round(toNumber(payment.amount) * 100) - reversedMinorForPayment(payment.id, "customer");
+    const remainingMinor = receiptFirst
+      ? paymentAvailableMinor(payment)
+      : Math.round(toNumber(payment.amount) * 100) - reversedMinorForPayment(payment.id, "customer");
     const amountMinor = input.amount === undefined ? remainingMinor : Math.round(toNumber(input.amount) * 100);
     if (amountMinor <= 0) throw new Error("Enter a valid payment reversal amount.");
     if (amountMinor > remainingMinor) throw new Error("Payment reversal amount cannot exceed unreversed payment amount.");
@@ -4224,10 +4334,10 @@ export function createStore(seed = {}, options = {}) {
       ownerUserId: payment.ownerUserId,
       businessId: business.id,
       originalPaymentId: payment.id,
-      invoiceId: invoice.id,
+      invoiceId: invoice?.id || "",
       paymentDirection: "customer_payment",
       amount: fromMinor(amountMinor),
-      currency: input.currency?.trim() || payment.currency || invoice.currency || "INR",
+      currency: input.currency?.trim() || payment.currency || invoice?.currency || "INR",
       method: input.method?.trim() || input.mode?.trim() || payment.mode || "manual",
       reference: input.reference?.trim() || "",
       providerReference: input.providerReference?.trim() || input.gatewayRefundId?.trim() || "",
@@ -4246,12 +4356,14 @@ export function createStore(seed = {}, options = {}) {
     if (reversal.status === "posted") validateAccountingPosting(business, reversal.reversalDate, { ...input, sourceType: "customer_payment_reversal", sourceId: reversal.id });
     state.paymentReversals.push(reversal);
     if (reversal.status === "posted") {
-      const result = postCustomerPaymentReversed(state, reversal, payment, invoice, business, { lineage: { journal, event } });
+      const result = receiptFirst
+        ? postCustomerReceiptReversed(state, reversal, payment, business, { lineage: { journal, event } })
+        : postCustomerPaymentReversed(state, reversal, payment, invoice, business, { lineage: { journal, event } });
       reversal.financialEventId = result.event?.id || "";
       reversal.journalId = result.journal?.id || result.event?.journalId || "";
     }
     refreshPaymentReversalState(payment, "customer");
-    refreshInvoicePaymentStatus(invoice);
+    if (invoice) refreshInvoicePaymentStatus(invoice);
     return persistAndReturn(clone(reversal));
   }
 
@@ -4312,18 +4424,32 @@ export function createStore(seed = {}, options = {}) {
     const creditNote = state.creditNotes.find((entry) => entry.id === input.sourceCreditNoteId || entry.id === input.creditNoteId);
     if (!creditNote || normalizeRecordStatus(creditNote.status, "draft") === "draft") throw new Error("Posted source credit note is required for customer refund.");
     const invoice = state.invoices.find((entry) => entry.id === creditNote.sourceInvoiceId);
+    const sourcePayment = input.sourcePaymentId ? state.payments.find((entry) => entry.id === input.sourcePaymentId) : null;
+    const receiptFirstRefund = Boolean(sourcePayment && !sourcePayment.invoiceId && sourcePayment.customerId);
     const customer = state.customers.find((entry) => entry.id === (input.customerId || creditNote.customerId));
     const business = findBusinessByIdOrLegacyOwner(input.businessId || creditNote.businessId);
     if (!invoice || !business || creditNote.businessId !== business.id || invoice.businessId !== business.id) throw new Error("Customer refund business does not match source credit note.");
     if (customer && customer.businessId && customer.businessId !== business.id) throw new Error("Customer does not belong to this business.");
+    if (receiptFirstRefund && (sourcePayment.businessId !== business.id || sourcePayment.customerId !== customer?.id)) throw new Error("Customer refund does not match the receipt customer or business.");
+    if (receiptFirstRefund && !state.financialEvents.some((entry) => entry.eventType === "customer_receipt_unapplied" && entry.sourceType === "payment" && entry.sourceId === sourcePayment.id && entry.postingStatus === "posted")) {
+      throw new Error("Receipt-first Customer Advance authority is required before receipt refund.");
+    }
     const idempotencyKey = String(input.idempotencyKey || "").trim();
     if (idempotencyKey) {
       const existing = state.customerRefunds.find((refund) => refund.businessId === business.id && refund.idempotencyKey === idempotencyKey);
-      if (existing) return clone(existing);
+      if (existing) {
+        const sameRequest = existing.sourceCreditNoteId === creditNote.id
+          && (!input.sourcePaymentId || existing.sourcePaymentId === input.sourcePaymentId)
+          && (input.amount === undefined || Math.round(toNumber(existing.amount) * 100) === Math.round(toNumber(input.amount) * 100))
+          && String(existing.currency || "INR").toUpperCase() === String(input.currency || creditNote.currency || invoice.currency || "INR").toUpperCase()
+          && (!input.customerId || existing.customerId === input.customerId);
+        if (!sameRequest) throw new Error("Customer refund idempotency key was already used for a different request.");
+        return clone(existing);
+      }
     }
     const amountMinor = Math.round(toNumber(input.amount) * 100);
     if (amountMinor <= 0) throw new Error("Enter a valid customer refund amount.");
-    const availableMinor = refundableCustomerCreditMinor(creditNote);
+    const availableMinor = receiptFirstRefund ? paymentAvailableMinor(sourcePayment) : refundableCustomerCreditMinor(creditNote);
     if (amountMinor > availableMinor) throw new Error("Customer refund amount cannot exceed available customer credit balance.");
     const { journal, event } = sourceJournalAndEvent("sales_credit_note", creditNote.id);
     const refund = {
@@ -4352,7 +4478,9 @@ export function createStore(seed = {}, options = {}) {
     if (refund.status === "processed") validateAccountingPosting(business, refund.refundDate, { ...input, sourceType: "customer_refund", sourceId: refund.id });
     state.customerRefunds.push(refund);
     if (refund.status === "processed") {
-      const result = postCustomerRefundProcessed(state, refund, creditNote, business, { lineage: { journal, event } });
+      const result = receiptFirstRefund
+        ? postCustomerReceiptRefunded(state, refund, sourcePayment, business, { lineage: { journal, event } })
+        : postCustomerRefundProcessed(state, refund, creditNote, business, { lineage: { journal, event } });
       refund.financialEventId = result.event?.id || "";
       refund.journalId = result.journal?.id || result.event?.journalId || "";
     }
@@ -6700,6 +6828,9 @@ export function createStore(seed = {}, options = {}) {
     listPaymentAllocations,
     createPaymentAllocation,
     reversePaymentAllocation,
+    getPaymentUnappliedAmount,
+    postCustomerReceiptAccounting,
+    postCustomerPaymentAllocationAccounting,
     createPaymentRequest,
     listPaymentRequests,
     getPaymentRequest,
