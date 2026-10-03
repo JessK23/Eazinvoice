@@ -3826,19 +3826,135 @@ export function createStore(seed = {}, options = {}) {
     });
   }
 
-  function recordInvoicePayment(invoiceId, input = {}) {
+  function normalizeExternalProvider(value) {
+    const provider = String(value || "").trim().toLowerCase();
+    return provider && !["manual", "cash", "bank_transfer", "bank-transfer", "upi_manual"].includes(provider)
+      ? provider
+      : "";
+  }
+
+  function externalProviderPaymentIdentity(input = {}) {
+    const canonicalProvider = String(input.provider ?? "").trim().toLowerCase();
+    const legacyProvider = String(input.gateway ?? "").trim().toLowerCase();
+    const provider = normalizeExternalProvider(canonicalProvider || legacyProvider);
+    const canonicalPaymentId = String(input.providerPaymentId ?? "").trim();
+    const legacyPaymentId = String(input.gatewayPaymentId ?? input.razorpay_payment_id ?? input.paymentId ?? "").trim();
+    const canonicalOrderId = String(input.providerOrderId ?? "").trim();
+    const legacyOrderId = String(input.gatewayOrderId ?? input.razorpay_order_id ?? input.orderId ?? "").trim();
+    const hasExternalSignal = Boolean(
+      provider
+      || canonicalPaymentId
+      || legacyPaymentId
+      || canonicalOrderId
+      || legacyOrderId
+      || (canonicalProvider && !["manual", "cash", "bank_transfer", "bank-transfer", "upi_manual"].includes(canonicalProvider))
+      || (legacyProvider && !["manual", "cash", "bank_transfer", "bank-transfer", "upi_manual"].includes(legacyProvider)),
+    );
+    if (!hasExternalSignal) return null;
+    if (canonicalProvider && legacyProvider && normalizeExternalProvider(canonicalProvider) !== normalizeExternalProvider(legacyProvider)) {
+      throw new Error("Canonical and legacy provider identities conflict.");
+    }
+    if (canonicalPaymentId && legacyPaymentId && canonicalPaymentId !== legacyPaymentId) {
+      throw new Error("Canonical and legacy provider Payment identities conflict.");
+    }
+    if (canonicalOrderId && legacyOrderId && canonicalOrderId !== legacyOrderId) {
+      throw new Error("Canonical and legacy provider Order identities conflict.");
+    }
+    if (!provider || !canonicalPaymentId && !legacyPaymentId) {
+      throw new Error("External provider Payment identity is incomplete.");
+    }
+    return {
+      provider,
+      providerPaymentId: canonicalPaymentId || legacyPaymentId,
+      providerOrderId: canonicalOrderId || legacyOrderId,
+    };
+  }
+
+  function paymentExternalProviderIdentity(payment = {}) {
+    return externalProviderPaymentIdentity({
+      provider: payment.provider,
+      gateway: payment.gateway,
+      providerPaymentId: payment.providerPaymentId,
+      gatewayPaymentId: payment.gatewayPaymentId,
+      providerOrderId: payment.providerOrderId,
+      gatewayOrderId: payment.gatewayOrderId,
+    });
+  }
+
+  function findPaymentByExternalProviderIdentity(identity, businessId) {
+    if (!identity || !businessId) return null;
+    const matches = state.payments.filter((payment) => {
+      if (payment.businessId !== businessId) return false;
+      const paymentIdentity = paymentExternalProviderIdentity(payment);
+      return paymentIdentity
+        && paymentIdentity.provider === identity.provider
+        && paymentIdentity.providerPaymentId === identity.providerPaymentId;
+    });
+    if (matches.length > 1) {
+      throw new Error("External provider Payment identity is duplicated in authoritative state.");
+    }
+    return matches[0] || null;
+  }
+
+  function assertExternalProviderPaymentCompatible(existingPayment, input, identity, invoiceId) {
+    const existingIdentity = paymentExternalProviderIdentity(existingPayment);
+    if (!existingIdentity
+      || existingIdentity.provider !== identity.provider
+      || existingIdentity.providerPaymentId !== identity.providerPaymentId) {
+      throw new Error("External provider Payment identity conflicts with existing Payment.");
+    }
+    const inputAmount = Math.round(toNumber(input.amount) * 100);
+    const existingAmount = Math.round(toNumber(existingPayment.amount) * 100);
+    if (Number.isFinite(inputAmount) && input.amount !== undefined && inputAmount !== existingAmount) {
+      throw new Error("External provider Payment identity conflicts with existing Payment amount.");
+    }
+    const inputCurrency = String(input.currency || "").trim().toUpperCase();
+    const existingCurrency = String(existingPayment.currency || "").trim().toUpperCase();
+    if (inputCurrency && existingCurrency && inputCurrency !== existingCurrency) {
+      throw new Error("External provider Payment identity conflicts with existing Payment currency.");
+    }
+    const inputOrderId = identity.providerOrderId;
+    if (inputOrderId && existingIdentity.providerOrderId && inputOrderId !== existingIdentity.providerOrderId) {
+      throw new Error("External provider Payment identity conflicts with existing provider order.");
+    }
+    if (existingPayment.invoiceId && existingPayment.invoiceId !== invoiceId) {
+      throw new Error("External provider Payment identity is already bound to another invoice.");
+    }
+    if (input.direction && String(input.direction).trim().toLowerCase() !== "customer") {
+      throw new Error("External provider Payment direction is incompatible with an invoice payment.");
+    }
+  }
+
+  function recordInvoicePaymentLocal(invoiceId, input = {}) {
     const invoice = state.invoices.find((entry) => entry.id === invoiceId);
     if (!invoice) return null;
-    assertInvoiceCanReceivePayment(invoice);
     if (input.businessId && invoice.businessId && input.businessId !== invoice.businessId) {
       throw new Error("Payment business does not match invoice business.");
     }
+    const externalIdentity = externalProviderPaymentIdentity(input);
+    const businessId = invoice.businessId || ensureBusinessForOwner(invoice.ownerUserId)?.id || null;
+    const existingExternalPayment = externalIdentity
+      ? findPaymentByExternalProviderIdentity(externalIdentity, businessId)
+      : null;
+    if (existingExternalPayment) {
+      assertExternalProviderPaymentCompatible(existingExternalPayment, input, externalIdentity, invoiceId);
+      refreshInvoicePaymentStatus(invoice);
+      return clone({ invoice, payment: existingExternalPayment, idempotentReplay: true });
+    }
+    assertInvoiceCanReceivePayment(invoice);
     const idempotencyKey = paymentIdempotencyKey(input);
     const existingPayment = idempotencyKey ? state.payments.find((payment) => (
       payment.invoiceId === invoiceId
       && payment.idempotencyKey === idempotencyKey
     )) : null;
     if (existingPayment) {
+      if (externalIdentity) {
+        const existingIdentity = paymentExternalProviderIdentity(existingPayment);
+        if (!existingIdentity) {
+          throw new Error("External provider Payment identity conflicts with an existing non-provider Payment.");
+        }
+        assertExternalProviderPaymentCompatible(existingPayment, input, externalIdentity, invoiceId);
+      }
       refreshInvoicePaymentStatus(invoice);
       return clone({ invoice, payment: existingPayment, idempotentReplay: true });
     }
@@ -3854,7 +3970,7 @@ export function createStore(seed = {}, options = {}) {
     const payment = {
       id: nextId("pay", ++state.counters.payment),
       ownerUserId: invoice.ownerUserId,
-      businessId: invoice.businessId || ensureBusinessForOwner(invoice.ownerUserId)?.id || null,
+      businessId,
       invoiceId,
       idempotencyKey,
       amount,
@@ -3866,6 +3982,11 @@ export function createStore(seed = {}, options = {}) {
       gateway: input.gateway?.trim() || "",
       gatewayPaymentId: input.gatewayPaymentId?.trim() || "",
       gatewayOrderId: input.gatewayOrderId?.trim() || "",
+      ...(externalIdentity ? {
+        provider: externalIdentity.provider,
+        providerPaymentId: externalIdentity.providerPaymentId,
+        providerOrderId: externalIdentity.providerOrderId,
+      } : {}),
       paymentDate: input.paymentDate?.trim() || new Date().toISOString().slice(0, 10),
       createdAt: new Date().toISOString(),
     };
@@ -3875,6 +3996,20 @@ export function createStore(seed = {}, options = {}) {
     refreshInvoicePaymentStatus(invoice);
     if (postingBusiness) postPaymentCaptured(state, payment, invoice, postingBusiness);
     return persistAndReturn(clone({ invoice, payment }));
+  }
+
+  function recordInvoicePayment(invoiceId, input = {}) {
+    if (!externalProviderPaymentIdentity(input) || typeof persistenceAdapter.mutateState !== "function") {
+      return recordInvoicePaymentLocal(invoiceId, input);
+    }
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.recordInvoicePaymentLocal(invoiceId, input);
+      return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
   }
 
   function recordPurchaseOrderPayment(purchaseOrderId, input = {}) {
