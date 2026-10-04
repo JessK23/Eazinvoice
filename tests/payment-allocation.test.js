@@ -363,6 +363,136 @@ test("Payment Allocation rejects cross-business, nonexistent, and incompatible d
   assert.throws(() => first.api.createPaymentAllocation({ paymentId: payment.id, documentType: "VENDOR_BILL", documentId: "missing-bill", allocatedAmount: 1 }, { user: first.user, businessId: first.businessId }), /document was not found|direction/i);
 });
 
+test("Invoice receivable capacity includes posted Credit Notes before Payment Allocation", () => {
+  const { api, user, businessId } = setup();
+  const customer = api.createCustomer({ ownerUserId: user.id, businessId, name: "Credit Capacity Customer" });
+  const source = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    customerId: customer.id,
+    status: "created",
+    currency: "INR",
+    taxRate: 0,
+    items: [{ description: "Credit capacity", quantity: 1, rate: 10000 }],
+  });
+  api.createSalesCreditNote({
+    businessId,
+    sourceInvoiceId: source.id,
+    status: "posted",
+    currency: "INR",
+    items: [{ description: "Credit", quantity: 1, rate: 2000, gstRate: 0 }],
+  }, { user, businessId });
+  const receipt = api.recordCustomerReceipt({
+    customerId: customer.id,
+    businessId,
+    amount: 9000,
+    currency: "INR",
+    mode: "bank_transfer",
+    reference: "CN-CAPACITY-9000",
+    idempotencyKey: "cn-capacity-payment",
+  }, { user, businessId });
+
+  assert.equal(api.getInvoice(source.id, user, { businessId }).balanceAmount, 8000);
+  assert.throws(() => api.createPaymentAllocation({
+    paymentId: receipt.payment.id,
+    documentType: "INVOICE",
+    documentId: source.id,
+    allocatedAmount: 9000,
+    idempotencyKey: "cn-capacity-allocation",
+  }, { user, businessId }), /outstanding|capacity/i);
+  const allocation = api.createPaymentAllocation({
+    paymentId: receipt.payment.id,
+    documentType: "INVOICE",
+    documentId: source.id,
+    allocatedAmount: 8000,
+    idempotencyKey: "cn-capacity-allocation-valid",
+  }, { user, businessId });
+  assert.equal(allocation.allocation.allocatedAmount, 8000);
+  assert.equal(api.getInvoice(source.id, user, { businessId }).balanceAmount, 0);
+  assert.equal(api.getPaymentUnappliedAmount(receipt.payment.id, { businessId }), 1000);
+});
+
+test("PaymentRequest reservation uses Credit Note-adjusted Invoice capacity", () => {
+  const { api, user, businessId } = setup();
+  const source = invoice(api, user, businessId, "CN-REQUEST-CAPACITY", 10000);
+  api.createSalesCreditNote({
+    businessId,
+    sourceInvoiceId: source.id,
+    status: "posted",
+    currency: "INR",
+    items: [{ description: "Credit", quantity: 1, rate: 2000, gstRate: 0 }],
+  }, { user, businessId });
+  assert.throws(() => api.createPaymentRequest({
+    invoiceId: source.id,
+    businessId,
+    workspaceOwnerUserId: user.id,
+    requestedAmount: 9000,
+    currency: "INR",
+    requestKey: "cn-request-too-large",
+  }, { user, businessId }), /outstanding|collectible/i);
+  const request = api.createPaymentRequest({
+    invoiceId: source.id,
+    businessId,
+    workspaceOwnerUserId: user.id,
+    requestedAmount: 8000,
+    currency: "INR",
+    requestKey: "cn-request-valid",
+  }, { user, businessId });
+  assert.equal(request.paymentRequest.requestedAmount, 8000);
+});
+
+test("legacy Invoice Payments remain capacity-bound after a Credit Note", () => {
+  const { api, user, businessId } = setup();
+  const customer = api.createCustomer({ ownerUserId: user.id, businessId, name: "Legacy Credit Customer" });
+  const source = api.createInvoice({
+    ownerUserId: user.id,
+    businessId,
+    customerId: customer.id,
+    status: "created",
+    currency: "INR",
+    taxRate: 0,
+    items: [{ description: "Legacy capacity", quantity: 1, rate: 10000 }],
+  });
+  api.createSalesCreditNote({
+    businessId,
+    sourceInvoiceId: source.id,
+    status: "posted",
+    currency: "INR",
+    items: [{ description: "Credit", quantity: 1, rate: 2000, gstRate: 0 }],
+  }, { user, businessId });
+  assert.throws(() => api.recordInvoicePayment(source.id, {
+    businessId,
+    amount: 9000,
+    currency: "INR",
+    idempotencyKey: "legacy-over-capacity",
+  }, { user, businessId }), /collectible|outstanding|pending/i);
+  assert.equal(api.listInvoicePayments(source.id).length, 0);
+  const exact = api.recordInvoicePayment(source.id, {
+    businessId,
+    amount: 8000,
+    currency: "INR",
+    idempotencyKey: "legacy-exact-capacity",
+  }, { user, businessId });
+  assert.equal(exact.payment.amount, 8000);
+  assert.equal(exact.invoice.balanceAmount, 0);
+});
+
+test("legacy Invoice payment links use canonical Credit Note-adjusted capacity", () => {
+  const { api, user, businessId } = setup();
+  const source = invoice(api, user, businessId, "LEGACY-LINK-CAPACITY", 10000);
+  api.createSalesCreditNote({
+    businessId,
+    sourceInvoiceId: source.id,
+    status: "posted",
+    currency: "INR",
+    items: [{ description: "Credit", quantity: 1, rate: 2000, gstRate: 0 }],
+  }, { user, businessId });
+  const collectionOptions = { user, businessId, previewPlan: "standard" };
+  assert.throws(() => api.createInvoicePaymentLink(source.id, { amount: 9000 }, collectionOptions), /collectible|outstanding/i);
+  const link = api.createInvoicePaymentLink(source.id, { amount: 8000 }, collectionOptions);
+  assert.equal(link.paymentLink.amount, 8000);
+});
+
 test("Payment Allocation reversal is explicit and does not post accounting or touch Banking", () => {
   const { api, user, businessId } = setup();
   const source = invoice(api, user, businessId, "REVERSE-SOURCE", 20000);

@@ -3156,10 +3156,15 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function refreshInvoicePaymentStatus(invoice) {
-    Object.assign(invoice, calculatePaymentState(
+    const paymentState = calculatePaymentState(
       invoice,
       effectiveInvoicePayments(invoice.id),
-    ));
+    );
+    paymentState.balanceAmount = fromMinor(invoiceOutstandingMinor(invoice));
+    if (paymentState.balanceAmount <= 0 && isInvoiceFinalized(invoice)) {
+      paymentState.paymentStatus = "paid";
+    }
+    Object.assign(invoice, paymentState);
     return invoice;
   }
 
@@ -3204,10 +3209,34 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function documentOutstandingMinor(documentType, document) {
+    if (documentType === "INVOICE") return invoiceOutstandingMinor(document);
     const total = documentType === "VENDOR_BILL"
       ? toNumber(document?.netVendorPayable ?? document?.total)
       : toNumber(document?.balanceAmount ?? document?.total);
     return Math.max(0, Math.round(total * 100));
+  }
+
+  // Single operational receivable-capacity authority for Invoice consumers.
+  // Invoice.balanceAmount remains a compatibility projection; it must not
+  // override this derived value at a financial mutation boundary.
+  function invoiceOutstandingMinor(invoice) {
+    if (!invoice?.id) return 0;
+    const invoiceCurrency = String(invoice.currency || "INR").trim().toUpperCase();
+    const effectivePaidMinor = effectiveInvoicePayments(invoice.id)
+      .filter((payment) => String(payment.currency || invoiceCurrency).trim().toUpperCase() === invoiceCurrency)
+      .reduce((sum, payment) => sum + Math.max(0, Math.round(toNumber(payment.amount) * 100)), 0);
+    const creditMinor = state.creditNotes
+      .filter((note) => (
+        note.sourceInvoiceId === invoice.id
+        && note.businessId === invoice.businessId
+        && (!invoice.customerId || !note.customerId || note.customerId === invoice.customerId)
+        && String(note.currency || invoiceCurrency).trim().toUpperCase() === invoiceCurrency
+        && normalizeRecordStatus(note.status, "draft") !== "draft"
+      ))
+      .reduce((sum, note) => sum + Math.max(0, Math.round(toNumber(note.total) * 100)), 0);
+    const refundedCreditMinor = customerRefundMinorForInvoice(invoice.id);
+    const totalMinor = Math.max(0, Math.round(toNumber(invoice.total) * 100));
+    return Math.max(0, totalMinor - Math.min(totalMinor, effectivePaidMinor) - creditMinor + refundedCreditMinor);
   }
 
   function paymentAvailableMinor(payment) {
@@ -3353,12 +3382,7 @@ export function createStore(seed = {}, options = {}) {
     }
     const availablePaymentMinor = paymentAvailableMinor(payment);
     if (amountMinor > availablePaymentMinor) throw new Error("Payment allocation cannot exceed the Payment's available amount.");
-    const outstandingMinor = target.type === "INVOICE"
-      ? Math.max(0, Math.round(toNumber(calculatePaymentState(
-        target.record,
-        effectiveInvoicePayments(target.record.id),
-      ).balanceAmount) * 100))
-      : documentOutstandingMinor(target.type, target.record);
+    const outstandingMinor = documentOutstandingMinor(target.type, target.record);
     const existingTargetAllocations = state.paymentAllocations
       .filter((allocation) => allocation.documentType === target.type && allocation.documentId === target.record.id && normalizeRecordStatus(allocation.status, "active") === "active")
       .reduce((sum, allocation) => sum + Math.round(toNumber(allocation.allocatedAmount) * 100), 0);
@@ -4104,7 +4128,7 @@ export function createStore(seed = {}, options = {}) {
     let allocationResult = existingAllocation ? { allocation: clone(existingAllocation), idempotentReplay: true } : null;
     if (!existingAllocation) {
       const availableMinor = paymentAvailableMinor(payment);
-      const outstandingMinor = Math.max(0, Math.round(toNumber(calculatePaymentState(invoice, effectiveInvoicePayments(invoice.id)).balanceAmount) * 100));
+      const outstandingMinor = invoiceOutstandingMinor(invoice);
       const allocationMinor = Math.min(availableMinor, outstandingMinor);
       if (allocationMinor > 0) {
         allocationResult = createPaymentAllocationLocal({
@@ -4290,6 +4314,9 @@ export function createStore(seed = {}, options = {}) {
       },
       effectiveInvoicePayments(invoice.id),
     );
+    if (Math.round(toNumber(amount) * 100) > invoiceOutstandingMinor(invoice)) {
+      throw new Error("Payment amount cannot be more than the invoice's collectible outstanding balance.");
+    }
     const payment = {
       id: nextId("pay", ++state.counters.payment),
       ownerUserId: invoice.ownerUserId,
@@ -4502,13 +4529,20 @@ export function createStore(seed = {}, options = {}) {
     const invoice = state.invoices.find((entry) => entry.id === invoiceId);
     if (!invoice) return null;
     assertInvoiceCanReceivePayment(invoice);
+    const outstandingMinor = invoiceOutstandingMinor(invoice);
+    const requestedMinor = input.amount === undefined || input.amount === null
+      ? outstandingMinor
+      : Math.round(toNumber(input.amount) * 100);
+    if (requestedMinor <= 0 || requestedMinor > outstandingMinor) {
+      throw new Error("Payment link amount cannot exceed the invoice's collectible outstanding balance.");
+    }
     const linkId = `plink_${invoice.id}_${Date.now()}`;
     invoice.paymentGateway = input.gateway?.trim() || "razorpay";
     invoice.paymentLink = {
       id: linkId,
       provider: invoice.paymentGateway,
       status: "created",
-      amount: Math.max(0, toNumber(invoice.balanceAmount || invoice.total)),
+      amount: fromMinor(requestedMinor),
       currency: invoice.currency || "INR",
       url: input.url?.trim() || `https://rzp.io/i/${linkId}`,
       createdAt: new Date().toISOString(),
@@ -4523,7 +4557,7 @@ export function createStore(seed = {}, options = {}) {
     const invoice = state.invoices.find((entry) => entry.id === invoiceId || entry.paymentLink?.id === paymentLinkId);
     if (!invoice) return null;
     return recordInvoicePayment(invoice.id, {
-      amount: input.amount ?? invoice.paymentLink?.amount ?? invoice.balanceAmount ?? invoice.total,
+      amount: input.amount ?? invoice.paymentLink?.amount ?? fromMinor(invoiceOutstandingMinor(invoice)),
       currency: input.currency || invoice.currency,
       mode: "payment_gateway",
       reference: input.reference || input.razorpay_payment_id || input.paymentId || "",
@@ -6071,6 +6105,14 @@ export function createStore(seed = {}, options = {}) {
     return invoice ? clone(invoice) : null;
   }
 
+  function getInvoiceOutstandingAmount(id, input = {}) {
+    const invoice = state.invoices.find((entry) => entry.id === id);
+    if (!invoice) return null;
+    if (input.businessId && invoice.businessId !== input.businessId) return null;
+    if (input.workspaceOwnerUserId && invoice.ownerUserId && invoice.ownerUserId !== input.workspaceOwnerUserId) return null;
+    return fromMinor(invoiceOutstandingMinor(invoice));
+  }
+
   function getPurchaseOrder(id, user) {
     const purchaseOrder = state.purchaseOrders.find((entry) => entry.id === id);
     if (!purchaseOrder) return null;
@@ -6728,6 +6770,9 @@ export function createStore(seed = {}, options = {}) {
       if (existing) return clone(existing);
     }
     const status = normalizeRecordStatus(input.status, "draft");
+    const creditCurrency = String(input.currency || invoice.currency || "INR").trim().toUpperCase();
+    const invoiceCurrency = String(invoice.currency || "INR").trim().toUpperCase();
+    if (creditCurrency !== invoiceCurrency) throw new Error("Credit note currency must match the source invoice currency.");
     const items = normalizeFinancialItems(input.items, toNumber(input.taxRate ?? invoice.taxRate)).filter((item) => item.description);
     if (items.length > limits.invoiceItemsPerInvoice) throw new Error("credit note items exceed active plan limit");
     const totals = calculateInvoiceTotals(items, toNumber(input.taxRate ?? invoice.taxRate), { ...input, gstMode: input.gstMode || invoice.gstMode || "intra" });
@@ -6747,7 +6792,7 @@ export function createStore(seed = {}, options = {}) {
       reason: String(input.reason || "correction").trim(),
       status,
       idempotencyKey,
-      currency: input.currency?.trim() || invoice.currency || "INR",
+      currency: creditCurrency,
       gstMode: input.gstMode?.trim() || invoice.gstMode || "intra",
       fullReversal: Boolean(input.fullReversal),
       reversesFinancialEventId: event?.id || "",
@@ -6764,6 +6809,7 @@ export function createStore(seed = {}, options = {}) {
     if (status !== "draft") {
       buildComplianceSnapshot("sales_credit_note", note, { direction: "output" });
       postSalesCreditNotePosted(state, note, invoice, business);
+      refreshInvoicePaymentStatus(invoice);
     }
     persist();
     return clone(note);
@@ -6901,6 +6947,10 @@ export function createStore(seed = {}, options = {}) {
       if (updates[field] !== undefined) note[field] = String(updates[field] || "").trim();
     });
     if (updates.status !== undefined) note.status = normalizeRecordStatus(updates.status, note.status || "draft");
+    const invoice = state.invoices.find((entry) => entry.id === note.sourceInvoiceId);
+    if (invoice && String(note.currency || invoice.currency || "INR").trim().toUpperCase() !== String(invoice.currency || "INR").trim().toUpperCase()) {
+      throw new Error("Credit note currency must match the source invoice currency.");
+    }
     if (updates.items !== undefined) {
       note.items = normalizeFinancialItems(updates.items, toNumber(updates.taxRate ?? note.taxRate)).filter((item) => item.description);
       if (note.items.length > limits.invoiceItemsPerInvoice) throw new Error("credit note items exceed active plan limit");
@@ -6908,12 +6958,12 @@ export function createStore(seed = {}, options = {}) {
     }
     note.updatedAt = new Date().toISOString();
     if (normalizeRecordStatus(note.status, "draft") !== "draft") {
-      const invoice = state.invoices.find((entry) => entry.id === note.sourceInvoiceId);
       const business = findBusinessByIdOrLegacyOwner(note.businessId);
       validateAccountingPosting(business, note.creditNoteDate, { ...updates, sourceType: "sales_credit_note", sourceId: note.id });
       const remainingMinor = Math.round(toNumber(invoice?.total) * 100) - postedCreditMinorForInvoice(note.sourceInvoiceId, note.id);
       if (Math.round(toNumber(note.total) * 100) > remainingMinor) throw new Error("Credit note exceeds remaining creditable invoice amount.");
       postSalesCreditNotePosted(state, note, invoice, business);
+      refreshInvoicePaymentStatus(invoice);
     }
     persist();
     return clone(note);
@@ -7166,6 +7216,7 @@ export function createStore(seed = {}, options = {}) {
     listInvoices,
     listInvoicePayments,
     getInvoice,
+    getInvoiceOutstandingAmount,
     updateInvoice,
     finalizeInvoice,
     updatePurchaseOrder,

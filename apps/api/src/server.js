@@ -4091,7 +4091,10 @@ if (url.pathname === "/customers" && req.method === "GET") {
             sendJson(res, 503, { error: "Business Razorpay merchant credentials are not ready for Invoice collection." });
             return;
           }
-          const amount = Number(invoice.balanceAmount ?? invoice.total ?? 0);
+          const amount = Number(api.getInvoiceOutstandingAmount(invoice.id, user, {
+            businessId: invoice.businessId || null,
+            workspaceOwnerUserId: invoice.ownerUserId || null,
+          }) ?? 0);
           if (!Number.isFinite(amount) || amount <= 0) {
             sendJson(res, 400, { error: "This invoice has no pending balance." });
             return;
@@ -6804,12 +6807,16 @@ if (url.pathname === "/customers" && req.method === "GET") {
         sendJson(res, 404, { error: "Not found" });
         return;
       }
-      const amount = Number(body.amount ?? existing.balanceAmount ?? existing.total);
+      const canonicalBalance = Number(api.getInvoiceOutstandingAmount(id, user, {
+        businessId: body.businessId || existing.businessId || null,
+        workspaceOwnerUserId: body.workspaceOwnerUserId || existing.ownerUserId || null,
+      }) ?? 0);
+      const amount = Number(body.amount ?? canonicalBalance);
       if (!Number.isFinite(amount) || amount <= 0) {
         sendJson(res, 400, { error: "Enter a valid received amount" });
         return;
       }
-      const balance = Number(existing.balanceAmount ?? existing.total ?? 0);
+      const balance = canonicalBalance;
       if (balance > 0 && amount > balance + 0.01) {
         sendJson(res, 400, { error: "Payment amount cannot be more than the pending invoice balance" });
         return;

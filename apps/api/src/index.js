@@ -1912,6 +1912,13 @@ export function createApi(deps = {}) {
       if (workspace.businessId && invoice && (invoice.businessId === workspace.businessId || invoice.ownerUserId === workspace.ownerUserId)) return invoice;
       return store.getInvoice(id, workspace.owner);
     },
+    getInvoiceOutstandingAmount(id, user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return store.getInvoiceOutstandingAmount(id, {
+        businessId: workspace.businessId || options.businessId || null,
+        workspaceOwnerUserId: workspace.ownerUserId || options.workspaceOwnerUserId || null,
+      });
+    },
     updateInvoice(id, updates, options = {}) {
       const actor = options.user || (updates.actorUserId ? store.getUserById(updates.actorUserId) : null);
       const current = store.getInvoice(id);

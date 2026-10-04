@@ -85,6 +85,22 @@ test("PAY-ATOMIC derives overpayment remainder from current Invoice capacity", (
   assert.equal(s.api.getPaymentUnappliedAmount(result.payment.id, { businessId: s.businessId }), 2000);
 });
 
+test("PAY-ATOMIC preserves overpayment after a Credit Note-adjusted allocation", () => {
+  const s = scenario({ amount: 10000, requestedAmount: 9000 });
+  s.api.createSalesCreditNote({
+    businessId: s.businessId,
+    sourceInvoiceId: s.invoice.id,
+    status: "posted",
+    currency: "INR",
+    items: [{ description: "Credit", quantity: 1, rate: 2000, gstRate: 0 }],
+  }, { user: s.user, businessId: s.businessId });
+  const result = complete(s, "pay_atomic_credit_overpayment", 900000);
+  assert.equal(result.payment.amount, 9000);
+  assert.equal(result.allocation.allocatedAmount, 8000);
+  assert.equal(s.api.getInvoice(s.invoice.id, s.user, { businessId: s.businessId }).balanceAmount, 0);
+  assert.equal(s.api.getPaymentUnappliedAmount(result.payment.id, { businessId: s.businessId }), 1000);
+});
+
 test("PAY-ATOMIC preserves a genuine captured payment when Invoice capacity is zero", () => {
   const s = scenario();
   s.api.recordInvoicePayment(s.invoice.id, { businessId: s.businessId, amount: 10000, idempotencyKey: "paid-before-capture" }, { user: s.user, businessId: s.businessId });
