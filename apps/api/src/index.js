@@ -2219,6 +2219,9 @@ export function createApi(deps = {}) {
         workspaceOwnerUserId: workspace.ownerUserId || current.workspaceOwnerUserId,
       });
     },
+    completeVerifiedProviderPaymentAtomic(input = {}) {
+      return store.completeVerifiedProviderPaymentAtomic(input);
+    },
     listInvoicePayments(invoiceId) {
       return store.listInvoicePayments(invoiceId);
     },

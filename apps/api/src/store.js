@@ -4045,6 +4045,110 @@ export function createStore(seed = {}, options = {}) {
     });
   }
 
+  function completeVerifiedProviderPaymentAtomicLocal(input = {}) {
+    if (input.verifiedPaymentEvidence !== true) throw new Error("Verified provider payment evidence is required.");
+    const provider = String(input.provider || "").trim().toLowerCase();
+    const providerPaymentId = String(input.providerPaymentId || "").trim();
+    const providerOrderId = String(input.providerOrderId || "").trim();
+    const paymentRequestId = String(input.paymentRequestId || "").trim();
+    const status = String(input.status ?? "").trim().toLowerCase();
+    if (!provider || !providerPaymentId || !paymentRequestId || (provider === "razorpay" && !providerOrderId)) throw new Error("Verified provider payment identity is incomplete.");
+    if (status !== "captured") throw new Error("Verified provider payment must have an explicitly captured status.");
+    const amountMinor = Number(input.amountMinor);
+    if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) throw new Error("Verified provider payment amount is invalid.");
+    const currency = String(input.currency || "INR").trim().toUpperCase();
+    const request = state.paymentRequests.find((entry) => entry.id === paymentRequestId);
+    if (!request) throw new Error("PaymentRequest was not found for verified provider payment.");
+    if (input.businessId && request.businessId !== input.businessId) throw new Error("PaymentRequest business lineage does not match.");
+    if (input.workspaceOwnerUserId && request.workspaceOwnerUserId !== input.workspaceOwnerUserId) throw new Error("PaymentRequest workspace lineage does not match.");
+    const invoice = state.invoices.find((entry) => entry.id === request.invoiceId);
+    const business = findBusinessByIdOrLegacyOwner(request.businessId);
+    if (!invoice || !business || invoice.businessId !== request.businessId) throw new Error("Verified provider payment Invoice or business lineage is invalid.");
+    if (input.invoiceId && input.invoiceId !== invoice.id) throw new Error("Verified provider payment Invoice lineage does not match.");
+    if (invoice.customerId && input.customerId && invoice.customerId !== input.customerId) throw new Error("Verified provider payment customer lineage does not match.");
+    if (String(request.currency || invoice.currency || "INR").trim().toUpperCase() !== currency
+      || (invoice.currency && String(invoice.currency).trim().toUpperCase() !== currency)) throw new Error("Verified provider payment currency does not match the PaymentRequest Invoice.");
+    if (amountMinor !== Math.round(toNumber(request.requestedAmount) * 100)) throw new Error("Verified provider payment amount does not match the PaymentRequest.");
+    const requestProvider = String(request.providerIntent?.provider || request.provider || provider).trim().toLowerCase();
+    if (requestProvider !== provider) throw new Error("Verified provider does not match the PaymentRequest.");
+    const requestOrderId = String(request.providerIntent?.providerOrderId || "").trim();
+    if (requestOrderId && requestOrderId !== providerOrderId) throw new Error("Verified provider Order does not match the PaymentRequest.");
+    const identity = { provider, providerPaymentId, providerOrderId };
+    const paymentInput = {
+      provider, providerPaymentId, providerOrderId, amount: amountMinor / 100, currency, status: "captured", direction: "customer",
+      customerId: invoice.customerId, businessId: business.id,
+      workspaceOwnerUserId: request.workspaceOwnerUserId || business.ownerUserId || "",
+    };
+    let payment = findPaymentByExternalProviderIdentity(identity, business.id);
+    let receiptResult;
+    if (payment) {
+      assertExternalProviderPaymentCompatible(payment, paymentInput, identity, "");
+      if (payment.businessId !== business.id || payment.customerId !== invoice.customerId || payment.invoiceId || payment.vendorBillId) throw new Error("Verified provider Payment is bound to incompatible financial lineage.");
+      const existingIdentity = paymentExternalProviderIdentity(payment);
+      if (!existingIdentity?.providerOrderId || existingIdentity.providerOrderId !== providerOrderId) throw new Error("Verified provider Payment Order identity is incomplete or conflicting.");
+    } else {
+      receiptResult = recordCustomerReceiptLocal({
+        ...paymentInput, customerId: invoice.customerId, businessId: business.id,
+        workspaceOwnerUserId: request.workspaceOwnerUserId || business.ownerUserId || "",
+        mode: "payment_gateway", reference: providerPaymentId, notes: "Verified Razorpay PaymentRequest payment",
+      });
+      payment = receiptResult.payment;
+    }
+    if (String(payment.status ?? "").trim().toLowerCase() !== "captured") throw new Error("Verified provider Payment is not explicitly captured.");
+    if (!receiptAccountingAuthorityForPayment(payment, business)) throw new Error("Verified provider Payment has no valid receipt-first accounting authority.");
+
+    const existingAllocation = state.paymentAllocations.find((allocation) => (
+      allocation.paymentId === payment.id && allocation.documentType === "INVOICE" && allocation.documentId === invoice.id
+      && normalizeRecordStatus(allocation.status, "active") === "active"
+    ));
+    let allocationResult = existingAllocation ? { allocation: clone(existingAllocation), idempotentReplay: true } : null;
+    if (!existingAllocation) {
+      const availableMinor = paymentAvailableMinor(payment);
+      const outstandingMinor = Math.max(0, Math.round(toNumber(calculatePaymentState(invoice, effectiveInvoicePayments(invoice.id)).balanceAmount) * 100));
+      const allocationMinor = Math.min(availableMinor, outstandingMinor);
+      if (allocationMinor > 0) {
+        allocationResult = createPaymentAllocationLocal({
+          paymentId: payment.id, documentType: "INVOICE", documentId: invoice.id,
+          allocatedAmount: allocationMinor / 100, currency,
+          idempotencyKey: `pay-atomic:${provider}:${providerPaymentId}:${invoice.id}`,
+          businessId: business.id, workspaceOwnerUserId: request.workspaceOwnerUserId || business.ownerUserId || "",
+        });
+      }
+    }
+
+    const requestCompleted = normalizeRecordStatus(request.status, "active") === "completed";
+    let completionResult;
+    if (requestCompleted) {
+      if (request.completedPaymentId && request.completedPaymentId !== payment.id) completionResult = { paymentRequest: paymentRequestView(request), preservedCompletion: true };
+      else completionResult = { paymentRequest: paymentRequestView(request), idempotentReplay: true };
+    } else {
+      completionResult = completePaymentRequestLocal(request.id, {
+        paymentId: payment.id, providerPaymentId, providerOrderId, verifiedPaymentEvidence: true,
+        businessId: business.id, workspaceOwnerUserId: request.workspaceOwnerUserId || business.ownerUserId || "",
+      });
+    }
+    return {
+      payment,
+      receiptAccounting: receiptResult?.receiptAccounting || receiptAccountingAuthorityForPayment(payment, business),
+      allocation: allocationResult?.allocation || null,
+      paymentRequest: completionResult.paymentRequest,
+      ...(completionResult.idempotentReplay ? { idempotentReplay: true } : {}),
+      ...(completionResult.preservedCompletion ? { preservedCompletion: true } : {}),
+    };
+  }
+
+  function completeVerifiedProviderPaymentAtomic(input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return completeVerifiedProviderPaymentAtomicLocal(input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.completeVerifiedProviderPaymentAtomic(input);
+      return { result, state: transactionStore.exportState(), persist: true };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
   function normalizeExternalProvider(value) {
     const provider = String(value || "").trim().toLowerCase();
     return provider && !["manual", "cash", "bank_transfer", "bank-transfer", "upi_manual"].includes(provider)
@@ -7094,6 +7198,7 @@ export function createStore(seed = {}, options = {}) {
     recoverPaymentRequestProviderIntent,
     cancelPaymentRequest,
     completePaymentRequest,
+    completeVerifiedProviderPaymentAtomic,
     createInvoicePaymentLink,
     recordGatewayPayment,
     listPaymentsForUser,

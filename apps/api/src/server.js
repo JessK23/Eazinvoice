@@ -2679,17 +2679,30 @@ export function createServer(options = {}) {
           return;
         }
         if (providerEvidence) {
-          // PAY-REQ-02C owns financial completion. This webhook path only
-          // identifies the authoritative lineage after signature verification.
-          sendJson(res, 200, {
-            ok: true,
-            identified: true,
+          const providerStatus = String(payload.status || payload.payment_status || "").trim().toLowerCase();
+          const amountMinor = Number(payload.amount);
+          if (!paymentId || !Number.isSafeInteger(amountMinor) || !payload.currency || providerStatus !== "captured") {
+            sendJson(res, 400, { error: "Verified Razorpay payment evidence is incomplete or not captured." });
+            return;
+          }
+          const completed = await api.completeVerifiedProviderPaymentAtomic({
+            verifiedPaymentEvidence: true,
             provider: providerEvidence.provider,
+            providerPaymentId: paymentId,
             providerOrderId: providerEvidence.providerOrderId || orderId,
             paymentRequestId: providerEvidence.paymentRequest.id,
             invoiceId: providerEvidence.invoice.id,
             businessId: providerEvidence.business.id,
             workspaceOwnerUserId: providerEvidence.workspace.ownerUserId,
+            customerId: providerEvidence.invoice.customerId,
+            amountMinor,
+            currency: payload.currency,
+            status: providerStatus,
+          });
+          sendJson(res, 200, {
+            ok: true,
+            completed: true,
+            ...completed,
           });
           return;
         }

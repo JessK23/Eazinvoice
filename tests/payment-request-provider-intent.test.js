@@ -94,7 +94,7 @@ test("provider evidence resolves authoritative PaymentRequest lineage and reject
   assert.equal(s.store.exportState().paymentAllocations.length, 0);
 });
 
-test("Razorpay webhook identifies PaymentRequest lineage without financial completion", async () => {
+test("Razorpay webhook completes verified PaymentRequest financial flow atomically", async () => {
   const s = scenario();
   const started = s.api.beginPaymentRequestProviderIntent(s.paymentRequest.id, s.user, { businessId: s.business.id });
   const bound = s.api.bindPaymentRequestProviderIntent(s.paymentRequest.id, s.user, {
@@ -111,6 +111,7 @@ test("Razorpay webhook identifies PaymentRequest lineage without financial compl
       order_id: bound.providerIntent.providerOrderId,
       amount: 400000,
       currency: "INR",
+      status: "captured",
       notes: { paymentRequestId: s.paymentRequest.id, invoiceId: s.invoice.id, businessId: s.business.id, receipt: started.providerIntent.receipt },
     } } },
   });
@@ -123,13 +124,10 @@ test("Razorpay webhook identifies PaymentRequest lineage without financial compl
     });
     const payload = await response.json();
     assert.equal(response.status, 200, JSON.stringify(payload));
-    assert.equal(payload.identified, true);
-    assert.equal(payload.paymentRequestId, s.paymentRequest.id);
-    assert.equal(payload.invoiceId, s.invoice.id);
-    assert.equal(payload.businessId, s.business.id);
-    assert.equal(s.store.exportState().payments.length, 0);
-    assert.equal(s.store.exportState().paymentAllocations.length, 0);
-    assert.equal(s.api.getPaymentRequest(s.paymentRequest.id, s.user, { businessId: s.business.id }).status, "active");
+    assert.equal(payload.completed, true);
+    assert.equal(s.store.exportState().payments.length, 1);
+    assert.equal(s.store.exportState().paymentAllocations.length, 1);
+    assert.equal(s.api.getPaymentRequest(s.paymentRequest.id, s.user, { businessId: s.business.id }).status, "completed");
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
