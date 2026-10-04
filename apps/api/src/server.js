@@ -3168,6 +3168,121 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
       return;
     }
 
+    const publicPaymentRequestMatch = url.pathname.match(/^\/public\/payment-requests\/([^/]+)$/);
+    if (publicPaymentRequestMatch && req.method === "GET") {
+      const token = decodeURIComponent(publicPaymentRequestMatch[1] || "");
+      const publicPaymentRequest = api.getPublicPaymentRequest(token);
+      if (!publicPaymentRequest) {
+        sendJson(res, 404, { error: "Payment request not found" });
+        return;
+      }
+      sendJson(res, 200, { paymentRequest: publicPaymentRequest });
+      return;
+    }
+
+    if (publicPaymentRequestMatch && req.method === "POST") {
+      const token = decodeURIComponent(publicPaymentRequestMatch[1] || "");
+      try {
+        const authority = api.getPublicPaymentRequestAuthority(token);
+        if (!authority) {
+          sendJson(res, 404, { error: "Payment request not found" });
+          return;
+        }
+        const credentials = api.getBusinessRazorpayCredentialsForSystem(authority.businessId);
+        if (!credentials || !["READY_TEST", "READY_LIVE"].includes(credentials.status)) {
+          sendJson(res, 503, { error: "Business Razorpay merchant credentials are not ready for PaymentRequest collection." });
+          return;
+        }
+        const result = await api.preparePublicPaymentRequest(token);
+        if (!result) {
+          sendJson(res, 404, { error: "Payment request not found" });
+          return;
+        }
+        const request = result.paymentRequest;
+        const safeIntent = (intent) => intent ? {
+          provider: intent.provider,
+          status: intent.status,
+          providerOrderId: intent.providerOrderId || "",
+          amount: intent.amount,
+          currency: intent.currency,
+          mode: intent.mode || "",
+          createdAt: intent.createdAt || "",
+        } : null;
+        if (result.idempotentReplay) {
+          sendJson(res, 200, {
+            paymentRequest: result.publicPaymentRequest,
+            providerIntent: safeIntent(result.providerIntent),
+            publicKeyId: credentials.keyId,
+          });
+          return;
+        }
+        if (result.recoveryRequired) {
+          let matches;
+          try {
+            matches = await listRazorpayOrdersByReceipt(result.providerIntent.receipt, credentials);
+          } catch {
+            sendJson(res, 409, { code: "PROVIDER_RECOVERY_REQUIRED", error: "Provider intent recovery is required before another order can be created." });
+            return;
+          }
+          if (matches.length !== 1) {
+            sendJson(res, 409, {
+              code: matches.length ? "PROVIDER_RECOVERY_AMBIGUOUS" : "PROVIDER_RECOVERY_REQUIRED",
+              error: matches.length ? "Multiple provider orders match this PaymentRequest; manual recovery is required." : "Provider intent recovery is required before another order can be created.",
+            });
+            return;
+          }
+          const recovered = await api.recoverPaymentRequestProviderIntent(request.id, null, {
+            providerOrder: matches[0],
+            providerOrderId: matches[0].id,
+            mode: credentials.mode,
+            merchantAccountId: credentials.merchantAccountId,
+            providerStatus: matches[0].status || "created",
+          }, { businessId: request.businessId, workspaceOwnerUserId: request.workspaceOwnerUserId });
+          if (recovered?.recoveryRequired) {
+            sendJson(res, 409, { code: "PROVIDER_RECOVERY_REQUIRED", error: "Recovered provider evidence did not match this PaymentRequest." });
+            return;
+          }
+          sendJson(res, 200, {
+            paymentRequest: result.publicPaymentRequest,
+            providerIntent: safeIntent(recovered.providerIntent),
+            publicKeyId: credentials.keyId,
+            recovered: true,
+          });
+          return;
+        }
+        const intent = result.providerIntent;
+        const providerOrder = await razorpayRequest("/orders", {
+          amount: Math.round(Number(intent.amount) * 100),
+          currency: intent.currency,
+          receipt: intent.receipt,
+          notes: {
+            eazinvoice_provider: "razorpay",
+            paymentRequestId: request.id,
+            invoiceId: request.invoiceId,
+            businessId: request.businessId,
+            workspaceOwnerUserId: request.workspaceOwnerUserId,
+            receipt: intent.receipt,
+          },
+        }, credentials);
+        if (!providerOrder?.id) throw new Error("Razorpay did not return a provider order identity.");
+        const bound = await api.bindPaymentRequestProviderIntent(request.id, null, {
+          providerOrderId: providerOrder.id,
+          mode: credentials.mode,
+          merchantAccountId: credentials.merchantAccountId,
+          providerStatus: providerOrder.status || "created",
+        }, { businessId: request.businessId, workspaceOwnerUserId: request.workspaceOwnerUserId });
+        sendJson(res, 201, {
+          paymentRequest: result.publicPaymentRequest,
+          providerIntent: safeIntent(bound.providerIntent),
+          publicKeyId: credentials.keyId,
+        });
+      } catch (error) {
+        const status = error.code === "PAYMENT_REQUEST_NOT_PAYABLE" || error.code === "PAYMENT_REQUEST_AMOUNT_STALE" ? 409 : 502;
+        sendJson(res, status, { error: error.message, code: error.code || "PUBLIC_PAYMENT_REQUEST_ERROR" });
+      }
+      return;
+    }
+
     const token = extractToken(req);
     const sessionUser = token ? sessions.get(token) : null;
     const user = sessionUser ? api.getUserById(sessionUser.id) || sessionUser : null;

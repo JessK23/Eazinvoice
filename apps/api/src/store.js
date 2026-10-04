@@ -103,6 +103,10 @@ function nextDocumentId() {
   return `doc_${crypto.randomBytes(16).toString("hex")}`;
 }
 
+function nextPaymentRequestPublicAccessToken() {
+  return `eaz_payreq_${crypto.randomBytes(32).toString("base64url")}`;
+}
+
 function makeCodeFromText(text, fallback) {
   const cleaned = String(text || "")
     .trim()
@@ -3526,6 +3530,61 @@ export function createStore(seed = {}, options = {}) {
     return clone({ ...request, status: paymentRequestEffectiveStatus(request, now) });
   }
 
+  function paymentRequestPublicView(request, now = Date.now()) {
+    if (!request) return null;
+    const status = paymentRequestEffectiveStatus(request, now);
+    const invoice = state.invoices.find((entry) => entry.id === request.invoiceId);
+    const business = state.businesses.find((entry) => entry.id === request.businessId);
+    const requestedMinor = Math.round(toNumber(request.requestedAmount) * 100);
+    const outstandingMinor = invoice ? invoiceOutstandingMinor(invoice) : 0;
+    const amountStillCollectible = outstandingMinor >= requestedMinor && requestedMinor > 0;
+    const paymentAllowed = status === "active" && Boolean(invoice) && amountStillCollectible;
+    let paymentBlockReason = "";
+    if (!invoice) paymentBlockReason = "invoice_unavailable";
+    else if (status === "completed") paymentBlockReason = "completed";
+    else if (status === "expired") paymentBlockReason = "expired";
+    else if (status === "cancelled") paymentBlockReason = "cancelled";
+    else if (status === "unknown") paymentBlockReason = "invalid_status";
+    else if (outstandingMinor <= 0) paymentBlockReason = "no_collectible_outstanding";
+    else if (!amountStillCollectible) paymentBlockReason = "amount_no_longer_collectible";
+    return {
+      publicReference: String(request.publicAccessToken || "").slice(-12),
+      status,
+      amount: request.requestedAmount,
+      currency: String(request.currency || "INR").toUpperCase(),
+      expiresAt: request.expiresAt || null,
+      paymentAllowed,
+      paymentBlockReason: paymentBlockReason || null,
+      business: { name: String(business?.name || "EazInvoice business").trim() },
+      invoice: {
+        number: String(invoice?.invoiceNumber || invoice?.draftNumber || "").trim() || null,
+        description: String(invoice?.description || "Invoice payment").trim() || "Invoice payment",
+      },
+      provider: String(request.provider || request.providerIntent?.provider || "razorpay").trim().toLowerCase() || "razorpay",
+    };
+  }
+
+  function getPublicPaymentRequest(token) {
+    const supplied = String(token || "").trim();
+    if (!supplied || supplied.length < 32 || supplied.length > 128) return null;
+    const request = state.paymentRequests.find((entry) => entry.publicAccessToken === supplied);
+    return request ? paymentRequestPublicView(request) : null;
+  }
+
+  function getPublicPaymentRequestAuthority(token) {
+    const supplied = String(token || "").trim();
+    if (!supplied || supplied.length < 32 || supplied.length > 128) return null;
+    const request = state.paymentRequests.find((entry) => entry.publicAccessToken === supplied);
+    if (!request) return null;
+    return {
+      id: request.id,
+      businessId: request.businessId,
+      workspaceOwnerUserId: request.workspaceOwnerUserId,
+      invoiceId: request.invoiceId,
+      publicPaymentRequest: paymentRequestPublicView(request),
+    };
+  }
+
   function paymentRequestProviderIntentView(request) {
     if (!request?.providerIntent) return null;
     return clone({
@@ -3621,6 +3680,7 @@ export function createStore(seed = {}, options = {}) {
     const now = new Date().toISOString();
     const paymentRequest = {
       id: nextId("preq", ++state.counters.paymentRequest),
+      publicAccessToken: nextPaymentRequestPublicAccessToken(),
       workspaceOwnerUserId: invoice.ownerUserId || workspaceOwnerUserId || null,
       businessId,
       invoiceId,
@@ -3719,6 +3779,38 @@ export function createStore(seed = {}, options = {}) {
     return paymentRequestView(request);
   }
 
+  function preparePublicPaymentRequestLocal(token) {
+    const supplied = String(token || "").trim();
+    const request = state.paymentRequests.find((entry) => entry.publicAccessToken === supplied);
+    if (!request) return null;
+    const publicView = paymentRequestPublicView(request);
+    if (!publicView.paymentAllowed) {
+      const error = new Error("Payment request is not currently payable.");
+      error.code = "PAYMENT_REQUEST_NOT_PAYABLE";
+      throw error;
+    }
+    const result = beginPaymentRequestProviderIntentLocal(request.id, {
+      businessId: request.businessId,
+      workspaceOwnerUserId: request.workspaceOwnerUserId,
+    });
+    return {
+      ...result,
+      publicPaymentRequest: paymentRequestPublicView(state.paymentRequests.find((entry) => entry.id === request.id)),
+    };
+  }
+
+  function preparePublicPaymentRequest(token) {
+    if (typeof persistenceAdapter.mutateState !== "function") return preparePublicPaymentRequestLocal(token);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.preparePublicPaymentRequestLocal(token);
+      return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay && !result?.recoveryRequired };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
   function resolvePaymentRequestProviderEvidence(input = {}) {
     const provider = String(input.provider || "razorpay").trim().toLowerCase();
     if (provider !== "razorpay") return null;
@@ -3797,6 +3889,11 @@ export function createStore(seed = {}, options = {}) {
     if (!invoice || invoice.businessId !== request.businessId) throw new Error("Payment request Invoice lineage is no longer valid.");
     if (String(invoice.currency || "INR").toUpperCase() !== String(request.currency || "INR").toUpperCase()) {
       throw new Error("Payment request Invoice currency is no longer compatible.");
+    }
+    if (invoiceOutstandingMinor(invoice) < Math.round(toNumber(request.requestedAmount) * 100)) {
+      const error = new Error("Payment request amount is no longer fully collectible from the current Invoice outstanding balance.");
+      error.code = "PAYMENT_REQUEST_AMOUNT_STALE";
+      throw error;
     }
     if (request.providerIntent?.status === "created" && request.providerIntent.providerOrderId) {
       return {
@@ -7322,6 +7419,9 @@ export function createStore(seed = {}, options = {}) {
     reissuePaymentRequest,
     listPaymentRequests,
     getPaymentRequest,
+    getPublicPaymentRequest,
+    getPublicPaymentRequestAuthority,
+    preparePublicPaymentRequest,
     resolvePaymentRequestProviderEvidence,
     beginPaymentRequestProviderIntent,
     bindPaymentRequestProviderIntent,

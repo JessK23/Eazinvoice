@@ -2104,6 +2104,15 @@ export function createApi(deps = {}) {
         workspaceOwnerUserId: workspace.ownerUserId || current.workspaceOwnerUserId,
       });
     },
+    getPublicPaymentRequest(token) {
+      return store.getPublicPaymentRequest(token);
+    },
+    getPublicPaymentRequestAuthority(token) {
+      return store.getPublicPaymentRequestAuthority(token);
+    },
+    preparePublicPaymentRequest(token) {
+      return store.preparePublicPaymentRequest(token);
+    },
     beginPaymentRequestProviderIntent(id, user, options = {}) {
       const current = store.getPaymentRequest(id);
       if (!current) return null;
