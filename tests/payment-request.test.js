@@ -79,14 +79,98 @@ test("PaymentRequest idempotency replays identical intent and rejects changed in
   assert.throws(() => s.api.createPaymentRequest(requestInput(s, { invoiceId: otherInvoice.id, requestedAmount: 1000 })), /idempotency/i);
 });
 
-test("active PaymentRequests reserve capacity while Invoice balance remains unchanged", () => {
+test("only one active PaymentRequest owns an Invoice collection authority", () => {
   const s = scenario();
   const first = s.api.createPaymentRequest(requestInput(s, { requestedAmount: 6000, requestKey: "reserve-a" }), { user: s.user, businessId: s.businessId });
-  const second = s.api.createPaymentRequest(requestInput(s, { requestedAmount: 4000, requestKey: "reserve-b" }), { user: s.user, businessId: s.businessId });
   assert.equal(first.paymentRequest.status, "active");
-  assert.equal(second.paymentRequest.status, "active");
-  assert.throws(() => s.api.createPaymentRequest(requestInput(s, { requestedAmount: 1, requestKey: "reserve-c" })), /active payment requests/i);
+  const replay = s.api.createPaymentRequest(requestInput(s, { requestedAmount: 6000, requestKey: "reserve-a" }), { user: s.user, businessId: s.businessId });
+  assert.equal(replay.idempotentReplay, true);
+  assert.equal(replay.paymentRequest.id, first.paymentRequest.id);
+  assert.throws(() => s.api.createPaymentRequest(requestInput(s, { requestedAmount: 4000, requestKey: "reserve-b" })), /active payment request/i);
+  assert.throws(() => s.api.createPaymentRequest(requestInput(s, { requestedAmount: 1, requestKey: "reserve-c" })), /active payment request/i);
   assert.equal(s.api.getInvoice(s.invoice.id, s.user, { businessId: s.businessId }).balanceAmount, 10000);
+});
+
+test("ambiguous PaymentRequest statuses fail closed for create, reissue, and provider intent", () => {
+  const ambiguousStatuses = [undefined, null, "", "   ", "mystery", { malformed: true }];
+  for (const status of ambiguousStatuses) {
+    const s = scenario({ ownerName: `Ambiguous ${String(status)}`, email: `ambiguous-${Math.random().toString(16).slice(2)}@example.com` });
+    const created = s.api.createPaymentRequest(requestInput(s, { requestKey: `ambiguous-${Math.random().toString(16).slice(2)}` }), { user: s.user, businessId: s.businessId });
+    const state = s.store.exportState();
+    if (status === undefined) delete state.paymentRequests[0].status;
+    else state.paymentRequests[0].status = status;
+    const malformedStore = createStore(state, { persist: false, useSupabaseEmailOtp: false });
+    const malformedApi = createApi({ store: malformedStore });
+    const user = state.users.find((entry) => entry.id === s.user.id);
+    assert.throws(() => malformedApi.createPaymentRequest(requestInput({ ...s, user }, { requestKey: `different-${Math.random().toString(16).slice(2)}` }), { user, businessId: s.businessId }), /ambiguous/i);
+    assert.throws(() => malformedApi.reissuePaymentRequest(s.invoice.id, { requestKey: `reissue-${Math.random().toString(16).slice(2)}` }, { user, businessId: s.businessId }), /ambiguous/i);
+    assert.throws(() => malformedApi.beginPaymentRequestProviderIntent(created.paymentRequest.id, user, { businessId: s.businessId }), /ambiguous/i);
+    assert.equal(malformedApi.getPaymentRequest(created.paymentRequest.id, user, { businessId: s.businessId }).providerIntent, null);
+  }
+});
+
+test("completed, expired, and cancelled statuses retain valid reissue behavior", async () => {
+  for (const status of ["completed", "expired", "cancelled"]) {
+    const s = scenario({ ownerName: `Valid ${status}`, email: `valid-${status}-${Math.random().toString(16).slice(2)}@example.com` });
+    const created = s.api.createPaymentRequest(requestInput(s, { requestKey: `valid-${status}` }), { user: s.user, businessId: s.businessId });
+    const state = s.store.exportState();
+    state.paymentRequests[0].status = status;
+    if (status === "expired") state.paymentRequests[0].expiresAt = new Date(Date.now() - 1000).toISOString();
+    const validStore = createStore(state, { persist: false, useSupabaseEmailOtp: false });
+    const validApi = createApi({ store: validStore });
+    const user = state.users.find((entry) => entry.id === s.user.id);
+    const reissued = validApi.reissuePaymentRequest(s.invoice.id, { requestKey: `reissue-${status}` }, { user, businessId: s.businessId });
+    assert.equal(reissued.paymentRequest.status, "active");
+    assert.notEqual(reissued.paymentRequest.id, created.paymentRequest.id);
+  }
+});
+
+test("remaining-balance reissue derives current canonical outstanding and stays financially inert", () => {
+  const s = scenario();
+  const first = s.api.createPaymentRequest(requestInput(s, { requestedAmount: 4000, requestKey: "partial-request" }), { user: s.user, businessId: s.businessId });
+  s.api.cancelPaymentRequest(first.paymentRequest.id, {}, { user: s.user, businessId: s.businessId });
+  s.api.recordInvoicePayment(s.invoice.id, { businessId: s.businessId, amount: 4000, currency: "INR", idempotencyKey: "partial-before-reissue" }, { user: s.user, businessId: s.businessId });
+  const before = s.api.exportDataSnapshot();
+  const reissued = s.api.reissuePaymentRequest(s.invoice.id, { requestKey: "remaining-request" }, { user: s.user, businessId: s.businessId });
+  assert.equal(reissued.paymentRequest.requestedAmount, 6000);
+  assert.notEqual(reissued.paymentRequest.id, first.paymentRequest.id);
+  assert.equal(reissued.paymentRequest.invoiceId, s.invoice.id);
+  assert.equal(s.api.listPayments(s.user, { businessId: s.businessId }).length, before.payments.length);
+  assert.equal(s.api.listPaymentAllocations(s.user, { businessId: s.businessId }).length, before.paymentAllocations.length);
+  assert.equal(s.api.exportDataSnapshot().accountingJournals.length, before.accountingJournals.length);
+});
+
+test("remaining-balance reissue rejects caller-supplied stale amount and zero capacity", () => {
+  const s = scenario();
+  assert.throws(() => s.api.reissuePaymentRequest(s.invoice.id, { requestedAmount: 4000, requestKey: "stale-amount" }, { user: s.user, businessId: s.businessId }), /outstanding authority/i);
+  const paid = s.api.recordInvoicePayment(s.invoice.id, { businessId: s.businessId, amount: 10000, currency: "INR", idempotencyKey: "paid-before-reissue" }, { user: s.user, businessId: s.businessId });
+  assert.equal(paid.payment.amount, 10000);
+  assert.throws(() => s.api.reissuePaymentRequest(s.invoice.id, { requestKey: "zero-balance" }, { user: s.user, businessId: s.businessId }), /fully paid|no collectible outstanding/i);
+});
+
+test("remaining-balance reissue uses Credit Note-adjusted capacity and preserves historical amounts", () => {
+  const s = scenario();
+  const first = s.api.createPaymentRequest(requestInput(s, { requestedAmount: 8000, requestKey: "credit-request" }), { user: s.user, businessId: s.businessId });
+  s.api.cancelPaymentRequest(first.paymentRequest.id, {}, { user: s.user, businessId: s.businessId });
+  s.api.createSalesCreditNote({
+    businessId: s.businessId,
+    sourceInvoiceId: s.invoice.id,
+    status: "posted",
+    currency: "INR",
+    items: [{ description: "Credit", quantity: 1, rate: 2000, gstRate: 0 }],
+  }, { user: s.user, businessId: s.businessId });
+  const reissued = s.api.reissuePaymentRequest(s.invoice.id, { requestKey: "credit-reissue" }, { user: s.user, businessId: s.businessId });
+  assert.equal(first.paymentRequest.requestedAmount, 8000);
+  assert.equal(reissued.paymentRequest.requestedAmount, 8000);
+  assert.notEqual(reissued.paymentRequest.id, first.paymentRequest.id);
+});
+
+test("active reissue retries converge on one collection authority", () => {
+  const s = scenario();
+  const first = s.api.reissuePaymentRequest(s.invoice.id, { requestKey: "active-reissue" }, { user: s.user, businessId: s.businessId });
+  const replay = s.api.reissuePaymentRequest(s.invoice.id, { requestKey: "different-retry-key" }, { user: s.user, businessId: s.businessId });
+  assert.equal(replay.paymentRequest.id, first.paymentRequest.id);
+  assert.equal(replay.activeAuthorityReplay, true);
 });
 
 test("cancelled and expired PaymentRequests release reservation without creating money movement", async () => {
@@ -313,6 +397,14 @@ test("PaymentRequest HTTP API exposes list, get, create, and cancel only", async
     const cancelled = await request(`/payment-requests/${encodeURIComponent(id)}/cancel`, { method: "POST", token: signup.payload.token, body: {} });
     assert.equal(cancelled.response.status, 200);
     assert.equal(cancelled.payload.paymentRequest.status, "cancelled");
+    const reissued = await request(`/invoices/${encodeURIComponent(invoice.id)}/payment-requests/reissue`, {
+      method: "POST",
+      token: signup.payload.token,
+      body: { requestKey: "http-request-reissue" },
+    });
+    assert.equal(reissued.response.status, 201);
+    assert.equal(reissued.payload.paymentRequest.requestedAmount, 1000);
+    assert.notEqual(reissued.payload.paymentRequest.id, id);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

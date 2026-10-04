@@ -3506,11 +3506,19 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function paymentRequestEffectiveStatus(request, now = Date.now()) {
-    if (normalizeRecordStatus(request?.status, "active") === "active" && request?.expiresAt) {
+    const status = normalizeRecordStatus(request?.status, "");
+    if (!["active", "completed", "expired", "cancelled"].includes(status)) return "unknown";
+    if (status === "active" && request?.expiresAt) {
       const expiresAt = Date.parse(request.expiresAt);
       if (Number.isFinite(expiresAt) && expiresAt <= now) return "expired";
     }
-    return normalizeRecordStatus(request?.status, "active");
+    return status;
+  }
+
+  function assertPaymentRequestStatusKnown(request) {
+    const status = paymentRequestEffectiveStatus(request);
+    if (status === "unknown") throw new Error("Payment request lifecycle status is ambiguous; collection authority is blocked.");
+    return status;
   }
 
   function paymentRequestView(request, now = Date.now()) {
@@ -3539,8 +3547,12 @@ export function createStore(seed = {}, options = {}) {
   }
 
   function activePaymentRequestReservationMinor(invoiceId, now = Date.now()) {
-    return state.paymentRequests
-      .filter((request) => request.invoiceId === invoiceId && paymentRequestEffectiveStatus(request, now) === "active")
+    const requests = state.paymentRequests.filter((request) => request.invoiceId === invoiceId);
+    if (requests.some((request) => paymentRequestEffectiveStatus(request, now) === "unknown")) {
+      throw new Error("Payment request lifecycle status is ambiguous; collection authority is blocked.");
+    }
+    return requests
+      .filter((request) => paymentRequestEffectiveStatus(request, now) === "active")
       .reduce((sum, request) => sum + Math.round(toNumber(request.requestedAmount) * 100), 0);
   }
 
@@ -3549,6 +3561,18 @@ export function createStore(seed = {}, options = {}) {
       && Math.round(toNumber(request.requestedAmount) * 100) === Math.round(toNumber(input.requestedAmount ?? input.amount) * 100)
       && String(request.currency || "").toUpperCase() === String(input.currency || "").trim().toUpperCase()
       && String(request.expiresAt || "") === String(input.expiresAt || "");
+  }
+
+  function activePaymentRequestForInvoice(invoiceId, businessId, now = Date.now()) {
+    const requests = state.paymentRequests.filter((request) => request.invoiceId === invoiceId && request.businessId === businessId);
+    if (requests.some((request) => paymentRequestEffectiveStatus(request, now) === "unknown")) {
+      throw new Error("Payment request lifecycle status is ambiguous; collection authority is blocked.");
+    }
+    return requests.find((request) => (
+      request.invoiceId === invoiceId
+      && request.businessId === businessId
+      && paymentRequestEffectiveStatus(request, now) === "active"
+    )) || null;
   }
 
   function createPaymentRequestLocal(input = {}) {
@@ -3573,6 +3597,7 @@ export function createStore(seed = {}, options = {}) {
       const expiryTime = Date.parse(expiresAt);
       if (!Number.isFinite(expiryTime) || expiryTime <= Date.now()) throw new Error("Payment request expiry must be a valid future timestamp.");
     }
+    const activeRequest = activePaymentRequestForInvoice(invoiceId, businessId);
     const requestKey = String(input.requestKey || input.idempotencyKey || "").trim();
     if (requestKey) {
       const existing = state.paymentRequests.find((request) => request.businessId === businessId && request.requestKey === requestKey);
@@ -3582,6 +3607,12 @@ export function createStore(seed = {}, options = {}) {
         }
         return { paymentRequest: paymentRequestView(existing), idempotentReplay: true };
       }
+    }
+    if (activeRequest) {
+      if (paymentRequestMaterialMatches(activeRequest, { ...input, invoiceId, requestedAmount, currency, expiresAt })) {
+        return { paymentRequest: paymentRequestView(activeRequest), idempotentReplay: true, activeAuthorityReplay: true };
+      }
+      throw new Error("An active payment request already exists for this Invoice.");
     }
     const outstandingMinor = documentOutstandingMinor("INVOICE", invoice);
     if (amountMinor > outstandingMinor) throw new Error("Payment request amount cannot exceed the invoice's collectible outstanding balance.");
@@ -3617,6 +3648,50 @@ export function createStore(seed = {}, options = {}) {
     return persistenceAdapter.mutateState((authoritativeState) => {
       const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
       const result = transactionStore.createPaymentRequestLocal(input);
+      return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
+  function reissuePaymentRequestLocal(input = {}) {
+    const invoiceId = String(input.invoiceId || "").trim();
+    const invoice = state.invoices.find((entry) => entry.id === invoiceId);
+    if (!invoice) throw new Error("Invoice not found.");
+    assertInvoiceCanReceivePayment(invoice);
+    const businessId = String(input.businessId || invoice.businessId || "").trim();
+    if (!businessId || invoice.businessId !== businessId) throw new Error("Payment request business does not match invoice business.");
+    const workspaceOwnerUserId = String(input.workspaceOwnerUserId || invoice.ownerUserId || "").trim();
+    if (workspaceOwnerUserId && invoice.ownerUserId && workspaceOwnerUserId !== invoice.ownerUserId) {
+      throw new Error("Payment request owner does not match invoice owner.");
+    }
+    const currency = String(invoice.currency || "INR").trim().toUpperCase();
+    if (input.currency && String(input.currency).trim().toUpperCase() !== currency) {
+      throw new Error("Payment request currency must match the invoice currency.");
+    }
+    const outstandingMinor = documentOutstandingMinor("INVOICE", invoice);
+    if (outstandingMinor <= 0) throw new Error("Invoice has no collectible outstanding balance.");
+    if (input.requestedAmount != null || input.amount != null) {
+      const suppliedMinor = Math.round(toNumber(input.requestedAmount ?? input.amount) * 100);
+      if (suppliedMinor !== outstandingMinor) throw new Error("Remaining balance is determined by the Invoice outstanding authority.");
+    }
+    return createPaymentRequestLocal({
+      ...input,
+      invoiceId,
+      businessId,
+      workspaceOwnerUserId: invoice.ownerUserId || workspaceOwnerUserId,
+      requestedAmount: outstandingMinor / 100,
+      currency,
+    });
+  }
+
+  function reissuePaymentRequest(invoiceId, input = {}) {
+    const normalizedInput = { ...input, invoiceId };
+    if (typeof persistenceAdapter.mutateState !== "function") return reissuePaymentRequestLocal(normalizedInput);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.reissuePaymentRequestLocal(normalizedInput);
       return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
     }).then((outcome) => {
       if (outcome.state) applyAuthoritativeState(outcome.state);
@@ -3712,7 +3787,7 @@ export function createStore(seed = {}, options = {}) {
     if (!request) return null;
     if (input.businessId && request.businessId !== input.businessId) throw new Error("Payment request was not found in this business.");
     if (input.workspaceOwnerUserId && request.workspaceOwnerUserId !== input.workspaceOwnerUserId) throw new Error("Payment request was not found in this workspace.");
-    const status = paymentRequestEffectiveStatus(request);
+    const status = assertPaymentRequestStatusKnown(request);
     if (["cancelled", "completed"].includes(status)) throw new Error("Payment request is terminal and cannot initiate a provider intent.");
     const providerIntentStatus = request.providerIntent?.status || "";
     if (status === "expired" && !["creating", "created", "recovery_required"].includes(providerIntentStatus)) {
@@ -3778,6 +3853,7 @@ export function createStore(seed = {}, options = {}) {
     if (!request) return null;
     if (input.businessId && request.businessId !== input.businessId) throw new Error("Payment request was not found in this business.");
     if (input.workspaceOwnerUserId && request.workspaceOwnerUserId !== input.workspaceOwnerUserId) throw new Error("Payment request was not found in this workspace.");
+    assertPaymentRequestStatusKnown(request);
     const providerOrderId = String(input.providerOrderId || "").trim();
     if (!providerOrderId) throw new Error("Provider order identity is required.");
     if (request.providerIntent?.status === "created" && request.providerIntent.providerOrderId === providerOrderId) {
@@ -3816,6 +3892,7 @@ export function createStore(seed = {}, options = {}) {
     const request = state.paymentRequests.find((entry) => entry.id === id);
     if (!request) return null;
     if (input.businessId && request.businessId !== input.businessId) throw new Error("Payment request was not found in this business.");
+    assertPaymentRequestStatusKnown(request);
     if (["created", "failed"].includes(request.providerIntent?.status)) return { paymentRequest: paymentRequestView(request), providerIntent: paymentRequestProviderIntentView(request), idempotentReplay: true };
     request.providerIntent = {
       ...(request.providerIntent || {}),
@@ -3843,6 +3920,7 @@ export function createStore(seed = {}, options = {}) {
     const request = state.paymentRequests.find((entry) => entry.id === id);
     if (!request) return null;
     if (input.businessId && request.businessId !== input.businessId) throw new Error("Payment request was not found in this business.");
+    assertPaymentRequestStatusKnown(request);
     if (!request.providerIntent || !["creating", "recovery_required"].includes(request.providerIntent.status)) {
       if (request.providerIntent?.status === "created") return { paymentRequest: paymentRequestView(request), providerIntent: paymentRequestProviderIntentView(request), idempotentReplay: true };
       throw new Error("Payment request is not awaiting provider recovery.");
@@ -3921,6 +3999,7 @@ export function createStore(seed = {}, options = {}) {
     const request = state.paymentRequests.find((entry) => entry.id === id);
     if (!request) return null;
     if (input.businessId && request.businessId !== input.businessId) throw new Error("Payment request was not found in this business.");
+    assertPaymentRequestStatusKnown(request);
     if (request.providerIntent?.status !== "creating") return { paymentRequest: paymentRequestView(request), providerIntent: paymentRequestProviderIntentView(request), idempotentReplay: true };
     request.providerIntent = { ...request.providerIntent, status: "failed", providerStatus: String(input.providerStatus || "failed").trim().toLowerCase() };
     request.updatedAt = new Date().toISOString();
@@ -3944,7 +4023,7 @@ export function createStore(seed = {}, options = {}) {
     if (!request) return null;
     if (input.businessId && request.businessId !== input.businessId) throw new Error("Payment request was not found in this business.");
     if (input.workspaceOwnerUserId && request.workspaceOwnerUserId !== input.workspaceOwnerUserId) throw new Error("Payment request was not found in this workspace.");
-    const status = paymentRequestEffectiveStatus(request);
+    const status = assertPaymentRequestStatusKnown(request);
     if (status === "completed") throw new Error("Completed payment requests are terminal and cannot be cancelled.");
     if (status === "cancelled" || status === "expired") return { paymentRequest: paymentRequestView(request), idempotentReplay: true };
     if (["creating", "created", "recovery_required"].includes(request.providerIntent?.status)) {
@@ -3974,9 +4053,10 @@ export function createStore(seed = {}, options = {}) {
     if (!request) return null;
     if (input.businessId && request.businessId !== input.businessId) throw new Error("Payment request was not found in this business.");
     if (input.workspaceOwnerUserId && request.workspaceOwnerUserId !== input.workspaceOwnerUserId) throw new Error("Payment request was not found in this workspace.");
+    const status = paymentRequestEffectiveStatus(request);
     const requestedPaymentId = String(input.paymentId || input.canonicalPaymentId || "").trim();
     const completedPaymentId = String(request.completedPaymentId || "").trim();
-    if (normalizeRecordStatus(request.status, "active") === "completed") {
+    if (status === "completed") {
       if (requestedPaymentId && completedPaymentId && requestedPaymentId !== completedPaymentId) {
         throw new Error("Completed PaymentRequest cannot be rebound to another Payment.");
       }
@@ -7239,6 +7319,7 @@ export function createStore(seed = {}, options = {}) {
     postCustomerReceiptAccounting,
     postCustomerPaymentAllocationAccounting,
     createPaymentRequest,
+    reissuePaymentRequest,
     listPaymentRequests,
     getPaymentRequest,
     resolvePaymentRequestProviderEvidence,

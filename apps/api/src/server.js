@@ -6358,6 +6358,28 @@ if (url.pathname === "/customers" && req.method === "GET") {
       return;
     }
 
+    if (url.pathname.startsWith("/invoices/") && url.pathname.endsWith("/payment-requests/reissue") && req.method === "POST") {
+      try {
+        const parts = url.pathname.split("/");
+        const invoiceId = decodeURIComponent(parts[2] || "");
+        const body = await readBody(req).catch(() => ({}));
+        const result = await api.reissuePaymentRequest(invoiceId, body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        });
+        if (!result) {
+          sendJson(res, 404, { error: "Invoice not found" });
+          return;
+        }
+        sendJson(res, result.idempotentReplay ? 200 : 201, result);
+      } catch (error) {
+        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+      }
+      return;
+    }
+
     if (url.pathname === "/payment-requests" && req.method === "GET") {
       sendJson(res, 200, api.listPaymentRequests(user, {
         previewPlan,

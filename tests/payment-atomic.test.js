@@ -76,6 +76,20 @@ test("PAY-ATOMIC partial payment consumes the request and leaves the Invoice bal
   assert.equal(s.api.listPaymentRequests(s.user, { businessId: s.businessId, invoiceId: s.invoice.id }).length, 1);
 });
 
+test("completed partial PaymentRequest can be explicitly reissued for the remaining balance", () => {
+  const s = scenario({ amount: 10000, requestedAmount: 4000 });
+  const result = complete(s, "pay_atomic_reissue_partial", 400000);
+  const reissued = s.api.reissuePaymentRequest(s.invoice.id, { requestKey: "pay-atomic-remaining" }, { user: s.user, businessId: s.businessId });
+  assert.equal(result.paymentRequest.status, "completed");
+  assert.equal(reissued.paymentRequest.requestedAmount, 6000);
+  assert.notEqual(reissued.paymentRequest.id, result.paymentRequest.id);
+  const intent = s.api.beginPaymentRequestProviderIntent(reissued.paymentRequest.id, s.user, { businessId: s.businessId });
+  assert.notEqual(intent.providerIntent.receipt, s.request.providerIntent.receipt);
+  assert.equal(intent.providerIntent.paymentRequestId, reissued.paymentRequest.id);
+  assert.equal(s.api.listPayments(s.user, { businessId: s.businessId }).length, 1);
+  assert.equal(s.api.listPaymentAllocations(s.user, { businessId: s.businessId }).length, 1);
+});
+
 test("PAY-ATOMIC derives overpayment remainder from current Invoice capacity", () => {
   const s = scenario({ amount: 10000 });
   s.api.recordInvoicePayment(s.invoice.id, { businessId: s.businessId, amount: 2000, idempotencyKey: "pre-existing-payment" }, { user: s.user, businessId: s.businessId });
@@ -129,6 +143,19 @@ test("PAY-ATOMIC preserves a second genuine Payment without rebinding the reques
   assert.equal(s.api.listPayments(s.user, { businessId: s.businessId }).length, 2);
   assert.equal(s.api.listPaymentAllocations(s.user, { businessId: s.businessId }).length, 1);
   assert.equal(s.api.getPaymentUnappliedAmount(second.payment.id, { businessId: s.businessId }), 10000);
+});
+
+test("PAY-ATOMIC preserves captured money while resolving an ambiguous historical request status", () => {
+  const s = scenario({ amount: 10000, requestedAmount: 4000 });
+  const state = s.store.exportState();
+  state.paymentRequests[0].status = "legacy_unknown";
+  const malformedStore = createStore(state, { persist: false, useSupabaseEmailOtp: false });
+  const malformedApi = createApi({ store: malformedStore });
+  const malformed = { ...s, api: malformedApi, request: state.paymentRequests[0] };
+  const result = complete(malformed, "pay_atomic_ambiguous_status", 400000);
+  assert.equal(result.payment.amount, 4000);
+  assert.equal(result.allocation.allocatedAmount, 4000);
+  assert.equal(result.paymentRequest.status, "completed");
 });
 
 test("PAY-ATOMIC fails closed for non-captured provider evidence", () => {

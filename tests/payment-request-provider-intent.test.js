@@ -151,6 +151,7 @@ test("provider intent eligibility rejects cancelled, completed, and expired requ
   assert.throws(() => completed.api.beginPaymentRequestProviderIntent(completed.paymentRequest.id, completed.user, { businessId: completed.business.id }), /terminal/i);
 
   const expired = scenario();
+  expired.api.cancelPaymentRequest(expired.paymentRequest.id, {}, { user: expired.user, businessId: expired.business.id });
   const expiring = expired.api.createPaymentRequest({ invoiceId: expired.invoice.id, businessId: expired.business.id, workspaceOwnerUserId: expired.user.id, requestedAmount: 1000, currency: "INR", requestKey: "expiring-provider-intent", expiresAt: new Date(Date.now() + 5).toISOString() }, { user: expired.user, businessId: expired.business.id });
   await new Promise((resolve) => setTimeout(resolve, 15));
   assert.throws(() => expired.api.beginPaymentRequestProviderIntent(expiring.paymentRequest.id, expired.user, { businessId: expired.business.id }), /expired/i);
@@ -331,6 +332,7 @@ test("provider recovery binds one matching order and rejects mismatch or ambigui
 
 test("expired requests retain recovery capability without permitting a new order", async () => {
   const s = scenario();
+  s.api.cancelPaymentRequest(s.paymentRequest.id, {}, { user: s.user, businessId: s.business.id });
   const expiring = s.api.createPaymentRequest({ invoiceId: s.invoice.id, businessId: s.business.id, workspaceOwnerUserId: s.user.id, requestedAmount: 1000, currency: "INR", requestKey: "expiring-recovery", expiresAt: new Date(Date.now() + 20).toISOString() }, { user: s.user, businessId: s.business.id });
   const started = s.api.beginPaymentRequestProviderIntent(expiring.paymentRequest.id, s.user, { businessId: s.business.id });
   await new Promise((resolve) => setTimeout(resolve, 35));

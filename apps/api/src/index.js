@@ -2193,6 +2193,25 @@ export function createApi(deps = {}) {
         workspaceOwnerUserId: workspace.ownerUserId || invoice.ownerUserId,
       });
     },
+    reissuePaymentRequest(invoiceId, input = {}, options = {}) {
+      const invoice = store.getInvoice(invoiceId);
+      if (!invoice) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || (invoice.ownerUserId ? store.getUserById(invoice.ownerUserId) : null), {
+        ...options,
+        workspaceOwnerUserId: options.workspaceOwnerUserId || invoice.ownerUserId,
+        businessId: options.businessId || invoice.businessId || null,
+      }, "writeRecords");
+      const visible = this.getInvoice(invoice.id, workspace.owner, {
+        workspaceOwnerUserId: workspace.ownerUserId,
+        businessId: workspace.businessId,
+      });
+      if (!visible) return null;
+      return store.reissuePaymentRequest(invoice.id, {
+        ...input,
+        businessId: workspace.businessId || invoice.businessId,
+        workspaceOwnerUserId: workspace.ownerUserId || invoice.ownerUserId,
+      });
+    },
     cancelPaymentRequest(id, input = {}, options = {}) {
       const current = store.getPaymentRequest(id);
       if (!current) return null;
