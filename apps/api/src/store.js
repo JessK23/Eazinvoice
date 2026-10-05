@@ -316,6 +316,7 @@ export function createStore(seed = {}, options = {}) {
     paymentRequests: [],
     providerRecoveryEvents: [],
     providerCredentialVersions: [],
+    providerSettlements: [],
     subscriptions: [],
     billingOrders: [],
     monetization: [],
@@ -368,6 +369,7 @@ export function createStore(seed = {}, options = {}) {
       paymentRequest: 0,
       providerRecoveryEvent: 0,
       providerCredentialVersion: 0,
+      providerSettlement: 0,
       subscription: 0,
       billingOrder: 0,
       monetization: 0,
@@ -424,6 +426,7 @@ export function createStore(seed = {}, options = {}) {
     paymentRequest: 0,
     providerRecoveryEvent: 0,
     providerCredentialVersion: 0,
+    providerSettlement: 0,
     subscription: 0,
     billingOrder: 0,
     monetization: 0,
@@ -490,6 +493,7 @@ export function createStore(seed = {}, options = {}) {
       paymentRequests: state.paymentRequests,
       providerRecoveryEvents: state.providerRecoveryEvents,
       providerCredentialVersions: state.providerCredentialVersions,
+      providerSettlements: state.providerSettlements,
       subscriptions: state.subscriptions,
       billingOrders: state.billingOrders,
       monetization: state.monetization,
@@ -1993,6 +1997,134 @@ export function createStore(seed = {}, options = {}) {
     version.revocationReason = String(reason || "compromised").trim().slice(0, 120);
     persist();
     return providerCredentialVersionView(version);
+  }
+
+  function providerSettlementView(settlement) {
+    if (!settlement) return null;
+    return clone(settlement);
+  }
+
+  function settlementFingerprint(input = {}) {
+    return crypto.createHash("sha256").update(JSON.stringify({
+      provider: String(input.provider || "").trim().toLowerCase(),
+      businessId: String(input.businessId || "").trim(),
+      companyId: input.companyId || null,
+      merchantAccountId: String(input.merchantAccountId || "").trim(),
+      providerSettlementId: String(input.providerSettlementId || input.payoutId || input.settlementId || "").trim(),
+      grossAmount: toNumber(input.grossAmount),
+      feeAmount: toNumber(input.feeAmount),
+      feeTaxAmount: toNumber(input.feeTaxAmount),
+      adjustmentAmount: toNumber(input.adjustmentAmount),
+      netAmount: toNumber(input.netAmount),
+      currency: String(input.currency || "INR").trim().toUpperCase(),
+      settlementDate: String(input.settlementDate || "").trim(),
+      paymentLinks: (Array.isArray(input.paymentLinks) ? input.paymentLinks : []).map((link) => ({
+        paymentId: String(link.paymentId || "").trim(),
+        amount: toNumber(link.amount),
+      })),
+    })).digest("hex");
+  }
+
+  function normalizeSettlementPaymentLinks(input = {}, businessId, provider, currency, excludeSettlementId = "") {
+    const links = Array.isArray(input.paymentLinks) ? input.paymentLinks : [];
+    const seen = new Set();
+    return links.map((link) => {
+      const paymentId = String(link.paymentId || "").trim();
+      if (!paymentId || seen.has(paymentId)) throw new Error("Provider settlement Payment linkage must contain unique Payment IDs.");
+      seen.add(paymentId);
+      const payment = state.payments.find((entry) => entry.id === paymentId);
+      if (!payment || payment.businessId !== businessId) throw new Error("Provider settlement Payment does not belong to this business.");
+      if (String(payment.status || "").trim().toLowerCase() !== "captured") throw new Error("Provider settlement can link only captured Payments.");
+      const identity = paymentExternalProviderIdentity(payment);
+      if (!identity || identity.provider !== provider) throw new Error("Provider settlement Payment provider identity does not match.");
+      const paymentCurrency = String(payment.currency || "INR").trim().toUpperCase();
+      if (paymentCurrency !== currency) throw new Error("Provider settlement Payment currency does not match.");
+      const amount = toNumber(link.amount ?? payment.amount);
+      if (!Number.isFinite(amount) || amount <= 0 || amount > toNumber(payment.amount)) throw new Error("Provider settlement Payment linkage amount is invalid.");
+      const alreadyLinkedMinor = state.providerSettlements
+        .filter((settlement) => settlement.businessId === businessId && settlement.id !== excludeSettlementId)
+        .flatMap((settlement) => settlement.paymentLinks || [])
+        .filter((entry) => entry.paymentId === paymentId)
+        .reduce((sum, entry) => sum + Math.round(toNumber(entry.amount) * 100), 0);
+      if (alreadyLinkedMinor + Math.round(amount * 100) > Math.round(toNumber(payment.amount) * 100)) {
+        throw new Error("Provider settlement would link more than the captured Payment amount.");
+      }
+      return { paymentId, providerPaymentId: identity.providerPaymentId, providerOrderId: identity.providerOrderId || "", amount, currency };
+    });
+  }
+
+  function createProviderSettlementLocal(input = {}) {
+    const provider = String(input.provider || "razorpay").trim().toLowerCase();
+    const businessId = String(input.businessId || "").trim();
+    const providerSettlementId = String(input.providerSettlementId || input.payoutId || input.settlementId || "").trim();
+    const merchantAccountId = String(input.merchantAccountId || "").trim();
+    const currency = String(input.currency || "INR").trim().toUpperCase();
+    if (!businessId || !findBusinessByIdOrLegacyOwner(businessId)) throw new Error("Provider settlement business is required.");
+    if (!provider || !providerSettlementId || !merchantAccountId) throw new Error("Provider settlement identity is incomplete.");
+    const grossAmount = toNumber(input.grossAmount);
+    const feeAmount = toNumber(input.feeAmount);
+    const feeTaxAmount = toNumber(input.feeTaxAmount);
+    const adjustmentAmount = toNumber(input.adjustmentAmount);
+    const calculatedNet = Math.round((grossAmount - feeAmount - feeTaxAmount + adjustmentAmount) * 100) / 100;
+    const netAmount = input.netAmount === undefined ? calculatedNet : toNumber(input.netAmount);
+    if (grossAmount <= 0 || feeAmount < 0 || feeTaxAmount < 0 || !Number.isFinite(adjustmentAmount) || netAmount < 0 || Math.round(netAmount * 100) !== Math.round(calculatedNet * 100)) {
+      throw new Error("Provider settlement amounts are invalid or do not reconcile to net amount.");
+    }
+    const identityMatch = state.providerSettlements.find((settlement) => (
+      settlement.provider === provider
+      && settlement.businessId === businessId
+      && (settlement.companyId || null) === (input.companyId || null)
+      && settlement.merchantAccountId === merchantAccountId
+      && settlement.providerSettlementId === providerSettlementId
+    ));
+    const paymentLinks = normalizeSettlementPaymentLinks(input, businessId, provider, currency, identityMatch?.id || "");
+    const fingerprint = settlementFingerprint({ ...input, provider, businessId, merchantAccountId, currency, grossAmount, feeAmount, feeTaxAmount, adjustmentAmount, netAmount, paymentLinks });
+    if (identityMatch) {
+      if (identityMatch.fingerprint !== fingerprint) throw new Error("Provider settlement identity conflicts with immutable payout evidence.");
+      return { settlement: providerSettlementView(identityMatch), idempotentReplay: true };
+    }
+    const destinationBankAccountId = String(input.destinationBankAccountId || "").trim();
+    if (destinationBankAccountId) {
+      const bankAccount = state.bankAccounts.find((entry) => entry.id === destinationBankAccountId && entry.businessId === businessId && entry.status !== "deleted");
+      if (!bankAccount || !["bank", "cash"].includes(String(bankAccount.accountType || "").toLowerCase())) throw new Error("Provider settlement destination must be an active business bank or cash account.");
+    }
+    const now = new Date().toISOString();
+    const settlement = {
+      id: nextId("pset", ++state.counters.providerSettlement),
+      provider, businessId, companyId: input.companyId || null, merchantAccountId, providerSettlementId,
+      status: String(input.status || "received").trim().toLowerCase(), currency,
+      grossAmount, feeAmount, feeTaxAmount, adjustmentAmount, netAmount,
+      settlementDate: String(input.settlementDate || "").trim(), providerCreatedAt: String(input.providerCreatedAt || "").trim(),
+      destinationBankAccountId, paymentLinks, fingerprint,
+      accountingStatus: "not_posted", createdAt: now, updatedAt: now,
+      metadata: input.metadata && typeof input.metadata === "object" ? clone(input.metadata) : {},
+    };
+    state.providerSettlements.push(settlement);
+    return persistAndReturn({ settlement: providerSettlementView(settlement) });
+  }
+
+  function createProviderSettlement(input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return createProviderSettlementLocal(input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.createProviderSettlementLocal(input);
+      return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
+  function getProviderSettlement(id, input = {}) {
+    const settlement = state.providerSettlements.find((entry) => entry.id === String(id || "").trim());
+    if (!settlement || (input.businessId && settlement.businessId !== input.businessId)) return null;
+    return providerSettlementView(settlement);
+  }
+
+  function listProviderSettlements(input = {}) {
+    return state.providerSettlements
+      .filter((entry) => (!input.businessId || entry.businessId === input.businessId) && (!input.provider || entry.provider === String(input.provider).trim().toLowerCase()))
+      .map(providerSettlementView);
   }
 
   function resolveBusinessRazorpayCredentials(businessId, companyId = null, credentialVersionId = null) {
@@ -7696,6 +7828,9 @@ export function createStore(seed = {}, options = {}) {
     ensureProviderCredentialVersion,
     getProviderCredentialVersion,
     revokeProviderCredentialVersion,
+    createProviderSettlement,
+    getProviderSettlement,
+    listProviderSettlements,
     upsertBusinessSettings,
     validateBusinessEmailSettings,
     recordBusinessEmailDelivery,

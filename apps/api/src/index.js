@@ -799,6 +799,36 @@ export function createApi(deps = {}) {
       return store.revokeProviderCredentialVersion(id, reason);
     },
 
+    createProviderSettlement(user, input = {}, options = {}) {
+      const access = this.requireBusinessWorkspaceAccess(user, {
+        ...options,
+        businessId: input.businessId || options.businessId || null,
+      }, "manageSettings");
+      return store.createProviderSettlement({
+        ...input,
+        businessId: access.businessId,
+        companyId: input.companyId || options.companyId || access.companyId || null,
+      });
+    },
+
+    getProviderSettlement(user, id, options = {}) {
+      const access = this.requireBusinessWorkspaceAccess(user, options, "read");
+      return store.getProviderSettlement(id, { businessId: access.businessId });
+    },
+
+    listProviderSettlements(user, options = {}) {
+      const access = this.requireBusinessWorkspaceAccess(user, options, "read");
+      return store.listProviderSettlements({ businessId: access.businessId, provider: options.provider });
+    },
+
+    getProviderSettlementForSystem(id, businessId) {
+      return store.getProviderSettlement(id, { businessId });
+    },
+
+    createProviderSettlementForSystem(input = {}) {
+      return store.createProviderSettlement(input);
+    },
+
     resolvePaymentRequestProviderEvidence(input = {}) {
       return store.resolvePaymentRequestProviderEvidence(input);
     },
