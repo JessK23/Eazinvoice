@@ -320,6 +320,7 @@ export function createStore(seed = {}, options = {}) {
     providerRecoveryEvents: [],
     providerCredentialVersions: [],
     providerSettlements: [],
+    providerTaxDocuments: [],
     subscriptions: [],
     billingOrders: [],
     monetization: [],
@@ -373,6 +374,7 @@ export function createStore(seed = {}, options = {}) {
       providerRecoveryEvent: 0,
       providerCredentialVersion: 0,
       providerSettlement: 0,
+      providerTaxDocument: 0,
       subscription: 0,
       billingOrder: 0,
       monetization: 0,
@@ -430,6 +432,7 @@ export function createStore(seed = {}, options = {}) {
     providerRecoveryEvent: 0,
     providerCredentialVersion: 0,
     providerSettlement: 0,
+    providerTaxDocument: 0,
     subscription: 0,
     billingOrder: 0,
     monetization: 0,
@@ -497,6 +500,7 @@ export function createStore(seed = {}, options = {}) {
       providerRecoveryEvents: state.providerRecoveryEvents,
       providerCredentialVersions: state.providerCredentialVersions,
       providerSettlements: state.providerSettlements,
+      providerTaxDocuments: state.providerTaxDocuments,
       subscriptions: state.subscriptions,
       billingOrders: state.billingOrders,
       monetization: state.monetization,
@@ -2005,6 +2009,170 @@ export function createStore(seed = {}, options = {}) {
   function providerSettlementView(settlement) {
     if (!settlement) return null;
     return clone(settlement);
+  }
+
+  function providerTaxDocumentView(document) {
+    if (!document) return null;
+    const output = clone(document);
+    delete output.rawEvidence;
+    delete output.payload;
+    return output;
+  }
+
+  function normalizeProviderTaxDocumentComponents(input = {}) {
+    const source = input.components && typeof input.components === "object" ? input.components : input;
+    const taxableFeeAmount = toNumber(source.taxableFeeAmount ?? source.taxableAmount);
+    const cgstAmount = toNumber(source.cgstAmount);
+    const sgstAmount = toNumber(source.sgstAmount);
+    const igstAmount = toNumber(source.igstAmount);
+    const totalTax = toNumber(source.totalTax ?? source.taxAmount);
+    const documentTotal = source.documentTotal === undefined ? null : toNumber(source.documentTotal);
+    const supplied = ["taxableFeeAmount", "taxableAmount", "cgstAmount", "sgstAmount", "igstAmount", "totalTax", "taxAmount"].some((key) => source[key] !== undefined);
+    const reasons = [];
+    if (!supplied) reasons.push("missing_explicit_tax_components");
+    if ([taxableFeeAmount, cgstAmount, sgstAmount, igstAmount, totalTax].some((amount) => !Number.isFinite(amount) || amount < 0)) reasons.push("invalid_tax_component");
+    const sumTax = Math.round((cgstAmount + sgstAmount + igstAmount) * 100) / 100;
+    if (supplied && Math.round(totalTax * 100) !== Math.round(sumTax * 100)) reasons.push("tax_component_total_mismatch");
+    if (cgstAmount > 0 && sgstAmount <= 0) reasons.push("incomplete_intra_state_components");
+    if (igstAmount > 0 && (cgstAmount > 0 || sgstAmount > 0)) reasons.push("mixed_gst_jurisdiction");
+    if (documentTotal !== null && (!Number.isFinite(documentTotal) || documentTotal < 0 || Math.round(documentTotal * 100) !== Math.round((taxableFeeAmount + totalTax) * 100))) reasons.push("document_total_mismatch");
+    return { value: { taxableFeeAmount, cgstAmount, sgstAmount, igstAmount, totalTax, documentTotal }, reasons };
+  }
+
+  function providerTaxDocumentFingerprint(input = {}) {
+    return crypto.createHash("sha256").update(JSON.stringify({
+      businessId: String(input.businessId || "").trim(), provider: String(input.provider || "").trim().toLowerCase(), merchantAccountId: String(input.merchantAccountId || "").trim(), taxDocumentId: String(input.taxDocumentId || "").trim(), documentVersion: String(input.documentVersion || "").trim(), documentDate: String(input.documentDate || "").trim(), taxPeriod: String(input.taxPeriod || "").trim(), currency: String(input.currency || "INR").trim().toUpperCase(), components: input.components || {}, componentClaims: input.componentClaims || [], jurisdiction: input.jurisdiction || {}, providerTaxIdentity: input.providerTaxIdentity || "", provenance: input.provenance || {}, settlementLinks: input.settlementLinks || [], supersedesId: input.supersedesId || "",
+    })).digest("hex");
+  }
+
+  function normalizeProviderTaxSettlementLinks(input = {}, businessId, provider, merchantAccountId, currency) {
+    const raw = Array.isArray(input.settlementLinks) ? input.settlementLinks : [];
+    const seen = new Set();
+    return raw.map((link) => {
+      const settlementId = String(link?.settlementId || "").trim();
+      if (!settlementId || seen.has(settlementId)) throw new Error("Provider tax document settlement linkage must be unique.");
+      seen.add(settlementId);
+      const settlement = state.providerSettlements.find((entry) => entry.id === settlementId);
+      if (!settlement || settlement.businessId !== businessId || settlement.provider !== provider || settlement.merchantAccountId !== merchantAccountId) throw new Error("Provider tax document settlement linkage is invalid.");
+      if (String(settlement.currency || "INR").toUpperCase() !== currency) throw new Error("Provider tax document settlement currency does not match.");
+      const feeAmount = link.feeAmount === undefined ? settlement.feeAmount : toNumber(link.feeAmount);
+      if (!Number.isFinite(feeAmount) || feeAmount < 0 || feeAmount > toNumber(settlement.feeAmount)) throw new Error("Provider tax document settlement fee linkage is invalid.");
+      const componentAmounts = link.componentAmounts && typeof link.componentAmounts === "object" ? {
+        cgstAmount: toNumber(link.componentAmounts.cgstAmount),
+        sgstAmount: toNumber(link.componentAmounts.sgstAmount),
+        igstAmount: toNumber(link.componentAmounts.igstAmount),
+        totalTax: toNumber(link.componentAmounts.totalTax),
+      } : null;
+      return { settlementId, feeAmount, currency, componentAmounts };
+    });
+  }
+
+  function deriveProviderTaxComponentClaims(input, components, settlementLinks, businessId, provider, merchantAccountId, correctionType = "") {
+    const documentComponents = { cgst: components.cgstAmount, sgst: components.sgstAmount, igst: components.igstAmount };
+    const sourceReference = String(input.componentReference || input.provenance?.componentReference || input.provenance?.sourceRecordId || input.provenance?.sourceReference || "").trim();
+    const claims = [];
+    const reasons = [];
+    for (const type of ["cgst", "sgst", "igst"]) {
+      const totalAmount = toNumber(documentComponents[type]);
+      if (totalAmount <= 0) continue;
+      if (settlementLinks.length > 1 && settlementLinks.some((link) => !link.componentAmounts)) return { claims: [], reasons: ["ambiguous_multi_settlement_component_allocation"] };
+      let allocatedMinor = 0;
+      for (const link of settlementLinks) {
+        const hasExplicitAllocation = Boolean(link.componentAmounts);
+        const amount = hasExplicitAllocation ? toNumber(link.componentAmounts?.[`${type}Amount`]) : totalAmount;
+        if (hasExplicitAllocation && amount < 0) reasons.push("negative_component_allocation");
+        if (hasExplicitAllocation && totalAmount <= 0 && amount > 0) reasons.push("allocation_for_absent_component");
+        allocatedMinor += Math.round(amount * 100);
+        if (amount <= 0) continue;
+        const componentReference = sourceReference || String(link.componentAmounts?.sourceReference || "").trim();
+        if (!componentReference) return { claims: [], reasons: ["missing_authoritative_component_reference"] };
+        const economicIdentity = [businessId, provider, merchantAccountId, link.settlementId, type, "provider_input_gst:v1"].join(":");
+        claims.push({ economicIdentity, settlementId: link.settlementId, componentType: type, amount, componentReference, accountingActionVersion: "provider_input_gst:v1", correctionType: correctionType || "original" });
+      }
+      if (allocatedMinor !== Math.round(totalAmount * 100)) reasons.push("component_allocation_total_mismatch");
+    }
+    for (const type of ["cgst", "sgst", "igst"]) {
+      if (toNumber(documentComponents[type]) > 0) continue;
+      const supplied = settlementLinks.some((link) => toNumber(link.componentAmounts?.[`${type}Amount`]) > 0);
+      if (supplied) reasons.push("allocation_for_absent_component");
+    }
+    return { claims, reasons };
+  }
+
+  function createProviderTaxDocumentLocal(input = {}, options = {}) {
+    const businessId = String(input.businessId || "").trim();
+    const provider = String(input.provider || "").trim().toLowerCase();
+    const merchantAccountId = String(input.merchantAccountId || "").trim();
+    const taxDocumentId = String(input.taxDocumentId || input.documentId || "").trim();
+    const documentVersion = String(input.documentVersion || input.version || "1").trim();
+    const currency = String(input.currency || "INR").trim().toUpperCase();
+    if (!businessId || !findBusinessByIdOrLegacyOwner(businessId)) throw new Error("Provider tax document business is required.");
+    if (!provider || !merchantAccountId || !taxDocumentId) throw new Error("Provider tax document identity is incomplete.");
+    if (!/^[A-Z]{3}$/.test(currency)) throw new Error("Provider tax document currency is unsupported.");
+    const components = normalizeProviderTaxDocumentComponents(input);
+    const jurisdictionSource = input.jurisdiction && typeof input.jurisdiction === "object" ? input.jurisdiction : {};
+    const jurisdiction = { country: String(jurisdictionSource.country || "").trim().toUpperCase(), stateCode: String(jurisdictionSource.stateCode || "").trim().toUpperCase(), placeOfSupply: String(jurisdictionSource.placeOfSupply || "").trim(), sourceReference: String(jurisdictionSource.sourceReference || input.jurisdictionSourceReference || "").trim() };
+    const providerTaxIdentity = String(input.providerTaxIdentity || input.providerGstin || "").trim();
+    const provenance = input.provenance && typeof input.provenance === "object" ? input.provenance : {};
+    const settlementLinks = normalizeProviderTaxSettlementLinks(input, businessId, provider, merchantAccountId, currency);
+    const reasons = [...components.reasons];
+    if (!provenance.sourceType || !(provenance.sourceReference || provenance.sourceRecordId || provenance.payloadHash)) reasons.push("missing_authoritative_provenance");
+    if (components.value.totalTax > 0 && (!jurisdiction.country || !jurisdiction.placeOfSupply || !jurisdiction.sourceReference)) reasons.push("missing_authoritative_jurisdiction");
+    if (components.value.totalTax > 0 && !providerTaxIdentity) reasons.push("missing_authoritative_provider_tax_identity");
+    if (settlementLinks.length === 0) reasons.push("missing_settlement_linkage");
+    const linkedFeeAmount = settlementLinks.reduce((sum, link) => sum + toNumber(link.feeAmount), 0);
+    if (components.value.taxableFeeAmount > linkedFeeAmount) reasons.push("taxable_fee_exceeds_linked_settlement_fees");
+    const identity = `${businessId}:${provider}:${merchantAccountId}:${taxDocumentId}:${documentVersion}`;
+    const supersedesId = String(input.supersedesId || input.replacesId || "").trim();
+    const correctionType = supersedesId ? String(input.correctionType || "replacement").trim() : "";
+    const claimsResult = deriveProviderTaxComponentClaims(input, components.value, settlementLinks, businessId, provider, merchantAccountId, correctionType);
+    reasons.push(...claimsResult.reasons);
+    const componentClaims = claimsResult.claims;
+    const fingerprint = providerTaxDocumentFingerprint({ ...input, businessId, provider, merchantAccountId, taxDocumentId, documentVersion, currency, components: components.value, jurisdiction, providerTaxIdentity, settlementLinks, componentClaims });
+    const identityMatch = state.providerTaxDocuments.find((entry) => entry.identity === identity);
+    if (identityMatch) {
+      if (identityMatch.fingerprint !== fingerprint) throw new Error("Provider tax document identity conflicts with immutable evidence.");
+      return { document: providerTaxDocumentView(identityMatch), idempotentReplay: true };
+    }
+    if (supersedesId) {
+      const prior = state.providerTaxDocuments.find((entry) => entry.id === supersedesId && entry.businessId === businessId);
+      if (!prior || prior.provider !== provider || prior.merchantAccountId !== merchantAccountId) throw new Error("Provider tax document correction lineage is invalid.");
+      if (prior.status === "rejected") reasons.push("cannot_correct_rejected_tax_document");
+      if (state.providerTaxDocuments.some((entry) => entry.supersedesId === supersedesId)) reasons.push("multiple_authoritative_successors");
+    }
+    const existingClaims = new Map(state.providerTaxDocuments.flatMap((entry) => (entry.componentClaims || []).map((claim) => [claim.economicIdentity, { entry, claim }])));
+    for (const claim of componentClaims) {
+      const existing = existingClaims.get(claim.economicIdentity);
+      if (!existing) continue;
+      const allowedCorrection = Boolean(supersedesId && existing.entry.id === supersedesId && !reasons.includes("multiple_authoritative_successors"));
+      if (!allowedCorrection) reasons.push(existing.claim.amount === claim.amount ? "duplicate_component_economic_identity" : "conflicting_component_economic_identity");
+    }
+    const trusted = options.trusted === true;
+    const status = trusted && reasons.length === 0 ? "verified" : reasons.length ? "manual_review" : "pending";
+    const now = new Date().toISOString();
+    const document = { id: nextId("ptaxdoc", ++state.counters.providerTaxDocument), identity, businessId, provider, merchantAccountId, taxDocumentId, documentVersion, documentDate: String(input.documentDate || "").trim(), taxPeriod: String(input.taxPeriod || "").trim(), currency, providerTaxIdentity, jurisdiction, components: components.value, settlementLinks, componentClaims, provenance: { sourceType: String(provenance.sourceType || "").trim(), sourceReference: String(provenance.sourceReference || "").trim(), sourceRecordId: String(provenance.sourceRecordId || "").trim(), payloadHash: String(provenance.payloadHash || "").trim(), receivedAt: String(provenance.receivedAt || now).trim() }, status, accountingReadiness: "blocked", accountingStatus: "not_posted", reasons: [...new Set(reasons)], supersedesId, correctionType, fingerprint, createdAt: now, updatedAt: now };
+    state.providerTaxDocuments.push(document);
+    return persistAndReturn({ document: providerTaxDocumentView(document) });
+  }
+
+  function createProviderTaxDocument(input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return createProviderTaxDocumentLocal(input);
+    return persistenceAdapter.mutateState((authoritativeState) => { const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false }); const result = transactionStore.createProviderTaxDocumentLocal(input); return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay }; }).then((outcome) => { if (outcome.state) applyAuthoritativeState(outcome.state); return outcome.result; });
+  }
+
+  function createProviderTaxDocumentForSystem(input = {}) {
+    if (input.trustedEvidence !== true) throw new Error("Trusted provider tax evidence is required.");
+    if (typeof persistenceAdapter.mutateState !== "function") return createProviderTaxDocumentLocal(input, { trusted: true });
+    return persistenceAdapter.mutateState((authoritativeState) => { const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false }); const result = transactionStore.createProviderTaxDocumentLocal(input, { trusted: true }); return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay }; }).then((outcome) => { if (outcome.state) applyAuthoritativeState(outcome.state); return outcome.result; });
+  }
+
+  function getProviderTaxDocument(id, input = {}) {
+    const document = state.providerTaxDocuments.find((entry) => entry.id === String(id || "").trim() && (!input.businessId || entry.businessId === input.businessId));
+    return providerTaxDocumentView(document);
+  }
+
+  function listProviderTaxDocuments(input = {}) {
+    return state.providerTaxDocuments.filter((entry) => (!input.businessId || entry.businessId === input.businessId) && (!input.provider || entry.provider === String(input.provider).trim().toLowerCase())).map(providerTaxDocumentView);
   }
 
   const KNOWN_SETTLEMENT_ADJUSTMENTS = new Set([
@@ -8054,6 +8222,10 @@ export function createStore(seed = {}, options = {}) {
     getProviderCredentialVersion,
     revokeProviderCredentialVersion,
     createProviderSettlement,
+    createProviderTaxDocument,
+    createProviderTaxDocumentForSystem,
+    getProviderTaxDocument,
+    listProviderTaxDocuments,
     getProviderSettlement,
     listProviderSettlements,
     evaluateProviderSettlementReadiness,

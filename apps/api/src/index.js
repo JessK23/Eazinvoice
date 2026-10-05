@@ -843,6 +843,25 @@ export function createApi(deps = {}) {
       return store.createProviderSettlement(input);
     },
 
+    submitProviderTaxDocument(user, input = {}, options = {}) {
+      const access = this.requireBusinessWorkspaceAccess(user, { ...options, businessId: input.businessId || options.businessId || null }, "manageSettings");
+      return store.createProviderTaxDocument({ ...input, businessId: access.businessId });
+    },
+
+    getProviderTaxDocument(user, id, options = {}) {
+      const access = this.requireBusinessWorkspaceAccess(user, options, "read");
+      return store.getProviderTaxDocument(id, { businessId: access.businessId });
+    },
+
+    listProviderTaxDocuments(user, options = {}) {
+      const access = this.requireBusinessWorkspaceAccess(user, options, "read");
+      return store.listProviderTaxDocuments({ businessId: access.businessId, provider: options.provider });
+    },
+
+    createProviderTaxDocumentForSystem(input = {}) {
+      return store.createProviderTaxDocumentForSystem(input);
+    },
+
     resolvePaymentRequestProviderEvidence(input = {}) {
       return store.resolvePaymentRequestProviderEvidence(input);
     },
