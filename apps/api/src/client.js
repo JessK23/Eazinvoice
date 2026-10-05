@@ -183,6 +183,12 @@ export const apiClient = {
   getPaymentRequest(token, requestId, options = {}) {
     return request(`/payment-requests/${encodeURIComponent(requestId)}${queryString(options)}`, { token });
   },
+  getPublicPaymentRequest(publicToken) {
+    return request(`/public/payment-requests/${encodeURIComponent(publicToken)}`);
+  },
+  preparePublicPaymentRequest(publicToken) {
+    return request(`/public/payment-requests/${encodeURIComponent(publicToken)}`, { method: "POST", body: {} });
+  },
   createPaymentRequest(token, body) {
     return request("/payment-requests", { method: "POST", token, body });
   },

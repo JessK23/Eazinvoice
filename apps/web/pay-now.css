@@ -1,0 +1,53 @@
+.pay-now-body {
+  min-height: 100vh;
+  margin: 0;
+  background: linear-gradient(135deg, #f3f7ff 0%, #f8fafc 55%, #eef8f5 100%);
+}
+
+.pay-now-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+}
+
+.pay-now-card {
+  width: min(100%, 560px);
+  box-sizing: border-box;
+  padding: clamp(24px, 5vw, 48px);
+  text-align: center;
+}
+
+.pay-now-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 28px;
+  color: #173b67;
+  font-weight: 800;
+  letter-spacing: .01em;
+}
+
+.pay-now-brand img { width: 32px; height: 32px; object-fit: contain; }
+
+.pay-now-status { display: flex; justify-content: center; align-items: center; gap: 10px; min-height: 28px; color: #52657d; }
+.pay-now-spinner { width: 16px; height: 16px; border: 2px solid #c8d5e5; border-top-color: #2468a8; border-radius: 50%; animation: pay-now-spin .8s linear infinite; }
+@keyframes pay-now-spin { to { transform: rotate(360deg); } }
+
+.pay-now-card h1 { margin: 6px 0 10px; color: #173b67; }
+.pay-now-description { color: #52657d; margin: 0 auto 24px; max-width: 42ch; }
+.pay-now-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0 12px; text-align: left; }
+.pay-now-summary div { padding: 14px; background: #f5f8fc; border-radius: 12px; }
+.pay-now-summary span, .pay-now-summary strong { display: block; }
+.pay-now-summary span { margin-bottom: 5px; color: #718198; font-size: .78rem; }
+.pay-now-summary strong { color: #173b67; overflow-wrap: anywhere; }
+.pay-now-expiry { color: #718198; font-size: .9rem; }
+.pay-now-button { min-width: 180px; margin: 14px 0 6px; }
+.pay-now-button[disabled] { cursor: not-allowed; opacity: .65; }
+.pay-now-error { margin-top: 20px; padding: 14px; border-radius: 10px; background: #fff2f0; color: #9b3328; }
+.pay-now-refresh { margin-top: 14px; }
+
+@media (max-width: 560px) {
+  .pay-now-shell { padding: 12px; }
+  .pay-now-summary { grid-template-columns: 1fr; }
+}

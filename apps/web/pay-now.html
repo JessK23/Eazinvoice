@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Secure EazInvoice payment" />
+  <title>Pay securely | EazInvoice</title>
+  <link rel="stylesheet" href="./styles.css?v=20260723-ui-banner-refresh-5" />
+  <link rel="stylesheet" href="./design-system-v1.css?v=20260919-stage1" />
+  <link rel="stylesheet" href="./pay-now.css?v=20261005-pay-now-1" />
+</head>
+<body class="pay-now-body">
+  <main class="pay-now-shell" aria-labelledby="payNowTitle">
+    <section class="pay-now-card panel">
+      <div class="pay-now-brand">
+        <img src="./assets/logo-mark.png?v=20260605-logo-refresh" alt="EazInvoice" />
+        <span>EazInvoice</span>
+      </div>
+      <div id="payNowStatus" class="pay-now-status" role="status" aria-live="polite">
+        <span class="pay-now-spinner" aria-hidden="true"></span>
+        <span>Loading secure payment details…</span>
+      </div>
+      <div id="payNowContent" hidden>
+        <p id="payNowBusiness" class="eyebrow"></p>
+        <h1 id="payNowTitle">Pay your invoice</h1>
+        <p id="payNowDescription" class="pay-now-description"></p>
+        <div class="pay-now-summary" aria-label="Payment summary">
+          <div><span>Invoice</span><strong id="payNowInvoice">-</strong></div>
+          <div><span>Amount</span><strong id="payNowAmount">-</strong></div>
+          <div><span>Status</span><strong id="payNowLifecycle">-</strong></div>
+        </div>
+        <p id="payNowExpiry" class="pay-now-expiry"></p>
+        <button id="payNowButton" class="primary pay-now-button" type="button">Pay Now</button>
+        <p id="payNowHint" class="hint">Your payment is verified securely by EazInvoice after checkout.</p>
+      </div>
+      <div id="payNowError" class="pay-now-error" role="alert" hidden></div>
+      <button id="payNowRefresh" class="ghost pay-now-refresh" type="button" hidden>Refresh payment status</button>
+    </section>
+  </main>
+  <script type="module" src="./pay-now.js?v=20261005-pay-now-1"></script>
+</body>
+</html>
