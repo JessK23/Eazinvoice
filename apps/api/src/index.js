@@ -2257,6 +2257,24 @@ export function createApi(deps = {}) {
     completeVerifiedProviderPaymentAtomic(input = {}) {
       return store.completeVerifiedProviderPaymentAtomic(input);
     },
+    ingestProviderEvent(input = {}) {
+      return store.ingestProviderEvent(input);
+    },
+    getProviderRecoveryEvent(id, options = {}) {
+      return store.getProviderRecoveryEvent(id, options);
+    },
+    markProviderEventVerified(id, input = {}) {
+      return store.markProviderEventVerified(id, input);
+    },
+    claimProviderEvent(id, input = {}) {
+      return store.claimProviderEvent(id, input);
+    },
+    updateProviderEvent(id, input = {}) {
+      return store.updateProviderEvent(id, input);
+    },
+    listProviderRecoveryEvents(options = {}) {
+      return store.listProviderRecoveryEvents(options);
+    },
     listInvoicePayments(invoiceId) {
       return store.listInvoicePayments(invoiceId);
     },

@@ -314,6 +314,7 @@ export function createStore(seed = {}, options = {}) {
     payments: [],
     paymentAllocations: [],
     paymentRequests: [],
+    providerRecoveryEvents: [],
     subscriptions: [],
     billingOrders: [],
     monetization: [],
@@ -364,6 +365,7 @@ export function createStore(seed = {}, options = {}) {
       payment: 0,
       paymentAllocation: 0,
       paymentRequest: 0,
+      providerRecoveryEvent: 0,
       subscription: 0,
       billingOrder: 0,
       monetization: 0,
@@ -418,6 +420,7 @@ export function createStore(seed = {}, options = {}) {
     payment: 0,
     paymentAllocation: 0,
     paymentRequest: 0,
+    providerRecoveryEvent: 0,
     subscription: 0,
     billingOrder: 0,
     monetization: 0,
@@ -482,6 +485,7 @@ export function createStore(seed = {}, options = {}) {
       payments: state.payments,
       paymentAllocations: state.paymentAllocations,
       paymentRequests: state.paymentRequests,
+      providerRecoveryEvents: state.providerRecoveryEvents,
       subscriptions: state.subscriptions,
       billingOrders: state.billingOrders,
       monetization: state.monetization,
@@ -3507,6 +3511,207 @@ export function createStore(seed = {}, options = {}) {
       if (outcome.state) applyAuthoritativeState(outcome.state);
       return outcome.result;
     });
+  }
+
+  function providerRecoveryEventView(event, options = {}) {
+    if (!event) return null;
+    const safe = clone(event);
+    if (!options.includeRaw) {
+      delete safe.rawBody;
+      delete safe.signature;
+    }
+    return safe;
+  }
+
+  function providerRecoveryEventIdentity(input = {}, payloadHash = "") {
+    const provider = String(input.provider || "razorpay").trim().toLowerCase();
+    const merchantScope = String(input.merchantAccountId || input.businessId || "unknown").trim();
+    const eventId = String(input.providerEventId || "").trim();
+    if (eventId) return `${provider}:${merchantScope}:event:${eventId}`;
+    return [
+      provider,
+      merchantScope,
+      String(input.eventType || "unknown").trim().toLowerCase(),
+      String(input.providerPaymentId || "").trim(),
+      String(input.providerOrderId || "").trim(),
+      payloadHash,
+    ].join(":");
+  }
+
+  function ingestProviderEventLocal(input = {}) {
+    const provider = String(input.provider || "razorpay").trim().toLowerCase();
+    const rawBody = String(input.rawBody || "");
+    if (!provider || !rawBody) throw new Error("Provider event raw evidence is required.");
+    const payloadHash = crypto.createHash("sha256").update(rawBody, "utf8").digest("hex");
+    const eventIdentity = providerRecoveryEventIdentity(input, payloadHash);
+    const existing = state.providerRecoveryEvents.find((event) => event.eventIdentity === eventIdentity);
+    if (existing) {
+      if (existing.payloadHash !== payloadHash
+        || existing.providerPaymentId !== String(input.providerPaymentId || "").trim()
+        || existing.providerOrderId !== String(input.providerOrderId || "").trim()) {
+        throw new Error("Provider event identity conflicts with immutable recovery evidence.");
+      }
+      return { event: providerRecoveryEventView(existing), idempotentReplay: true };
+    }
+    const now = new Date().toISOString();
+    const event = {
+      id: nextId("pevt", ++state.counters.providerRecoveryEvent),
+      eventIdentity,
+      provider,
+      providerEventId: String(input.providerEventId || "").trim(),
+      merchantAccountId: String(input.merchantAccountId || "").trim(),
+      businessId: String(input.businessId || "").trim(),
+      workspaceOwnerUserId: String(input.workspaceOwnerUserId || "").trim(),
+      eventType: String(input.eventType || "").trim().toLowerCase(),
+      providerPaymentId: String(input.providerPaymentId || "").trim(),
+      providerOrderId: String(input.providerOrderId || "").trim(),
+      rawBody,
+      signature: String(input.signature || "").trim(),
+      payloadHash,
+      verificationStatus: "unverified",
+      processingStatus: "received",
+      attemptCount: 0,
+      lastAttemptAt: "",
+      nextRetryAt: "",
+      leaseOwnerId: "",
+      leaseExpiresAt: "",
+      errorCategory: "",
+      errorCode: "",
+      lastError: "",
+      createdAt: now,
+      updatedAt: now,
+      verifiedAt: "",
+      completedAt: "",
+      version: 1,
+    };
+    state.providerRecoveryEvents.push(event);
+    return persistAndReturn({ event: providerRecoveryEventView(event) });
+  }
+
+  function ingestProviderEvent(input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return ingestProviderEventLocal(input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.ingestProviderEventLocal(input);
+      return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
+  function getProviderRecoveryEventLocal(id, options = {}) {
+    return providerRecoveryEventView(state.providerRecoveryEvents.find((event) => event.id === id), options);
+  }
+
+  function getProviderRecoveryEvent(id, options = {}) {
+    return getProviderRecoveryEventLocal(id, options);
+  }
+
+  function markProviderEventVerifiedLocal(id, input = {}) {
+    const event = state.providerRecoveryEvents.find((entry) => entry.id === id);
+    if (!event) return null;
+    if (["completed", "terminal_failure"].includes(event.processingStatus)) return providerRecoveryEventView(event);
+    if (event.processingStatus === "processing") return providerRecoveryEventView(event);
+    if (input.businessId && event.businessId && input.businessId !== event.businessId) {
+      throw new Error("Provider recovery business lineage is immutable.");
+    }
+    event.businessId = event.businessId || String(input.businessId || "").trim();
+    event.workspaceOwnerUserId = event.workspaceOwnerUserId || String(input.workspaceOwnerUserId || "").trim();
+    event.merchantAccountId = event.merchantAccountId || String(input.merchantAccountId || "").trim();
+    event.verificationStatus = "verified";
+    event.processingStatus = "verified_pending";
+    event.verifiedAt = event.verifiedAt || new Date().toISOString();
+    event.updatedAt = new Date().toISOString();
+    event.errorCategory = "";
+    event.errorCode = "";
+    event.lastError = "";
+    return persistAndReturn(providerRecoveryEventView(event));
+  }
+
+  function markProviderEventVerified(id, input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return markProviderEventVerifiedLocal(id, input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.markProviderEventVerifiedLocal(id, input);
+      return { result, state: transactionStore.exportState(), persist: Boolean(result) };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
+  function claimProviderEventLocal(id, input = {}) {
+    const event = state.providerRecoveryEvents.find((entry) => entry.id === id);
+    if (!event) return null;
+    const now = new Date(input.now || Date.now());
+    if (event.processingStatus === "completed") return { event: providerRecoveryEventView(event), claimed: false, alreadyCompleted: true };
+    if (event.processingStatus === "terminal_failure" || event.processingStatus === "manual_review") return { event: providerRecoveryEventView(event), claimed: false, blocked: true };
+    if (event.verificationStatus !== "verified") throw new Error("Provider event must be verified before processing.");
+    if (event.processingStatus === "processing" && event.leaseExpiresAt && Date.parse(event.leaseExpiresAt) > now.getTime()) {
+      return { event: providerRecoveryEventView(event), claimed: false, busy: true };
+    }
+    const requestedLeaseMs = input.leaseMs === undefined ? 60000 : Number(input.leaseMs);
+    const leaseMs = Math.max(1, Number.isFinite(requestedLeaseMs) ? requestedLeaseMs : 60000);
+    event.processingStatus = "processing";
+    event.attemptCount = Number(event.attemptCount || 0) + 1;
+    event.lastAttemptAt = now.toISOString();
+    event.leaseOwnerId = String(input.workerId || crypto.randomUUID());
+    event.leaseExpiresAt = new Date(now.getTime() + leaseMs).toISOString();
+    event.updatedAt = now.toISOString();
+    return persistAndReturn({ event: providerRecoveryEventView(event), claimed: true });
+  }
+
+  function claimProviderEvent(id, input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return claimProviderEventLocal(id, input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.claimProviderEventLocal(id, input);
+      return { result, state: transactionStore.exportState(), persist: Boolean(result?.claimed) };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
+  function updateProviderEventLocal(id, input = {}) {
+    const event = state.providerRecoveryEvents.find((entry) => entry.id === id);
+    if (!event) return null;
+    const status = String(input.processingStatus || "").trim().toLowerCase();
+    if (!["completed", "retryable_failure", "terminal_failure", "manual_review"].includes(status)) {
+      throw new Error("Invalid provider recovery transition.");
+    }
+    if (event.processingStatus === "terminal_failure" && status === "completed") throw new Error("Terminal provider recovery event cannot complete without re-verification.");
+    event.processingStatus = status;
+    event.errorCategory = String(input.errorCategory || "").trim().toLowerCase();
+    event.errorCode = String(input.errorCode || "").trim().slice(0, 100);
+    event.lastError = String(input.lastError || "").replace(/\s+/g, " ").trim().slice(0, 500);
+    event.nextRetryAt = status === "retryable_failure" ? new Date(input.nextRetryAt || Date.now() + 60000).toISOString() : "";
+    event.leaseOwnerId = "";
+    event.leaseExpiresAt = "";
+    if (status === "completed") event.completedAt = new Date().toISOString();
+    event.updatedAt = new Date().toISOString();
+    return persistAndReturn(providerRecoveryEventView(event));
+  }
+
+  function updateProviderEvent(id, input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") return updateProviderEventLocal(id, input);
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.updateProviderEventLocal(id, input);
+      return { result, state: transactionStore.exportState(), persist: Boolean(result) };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
+  function listProviderRecoveryEvents(options = {}) {
+    const now = Date.now();
+    return clone(state.providerRecoveryEvents)
+      .filter((event) => !options.status || event.processingStatus === options.status)
+      .filter((event) => !options.due || (event.processingStatus === "retryable_failure" && Date.parse(event.nextRetryAt || 0) <= now))
+      .map((event) => providerRecoveryEventView(event));
   }
 
   function paymentRequestEffectiveStatus(request, now = Date.now()) {
@@ -7431,6 +7636,12 @@ export function createStore(seed = {}, options = {}) {
     cancelPaymentRequest,
     completePaymentRequest,
     completeVerifiedProviderPaymentAtomic,
+    ingestProviderEvent,
+    getProviderRecoveryEvent,
+    markProviderEventVerified,
+    claimProviderEvent,
+    updateProviderEvent,
+    listProviderRecoveryEvents,
     createInvoicePaymentLink,
     recordGatewayPayment,
     listPaymentsForUser,

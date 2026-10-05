@@ -1869,6 +1869,82 @@ export function createServer(options = {}) {
     return bucket.length > max;
   }
 
+  async function processProviderRecoveryEvent(eventId, options = {}) {
+    const event = api.getProviderRecoveryEvent(eventId, { includeRaw: true });
+    if (!event) return null;
+    if (event.processingStatus === "completed") return { event, alreadyCompleted: true };
+    let body;
+    try {
+      body = parseJsonBody(event.rawBody);
+    } catch (error) {
+      return { event: await api.updateProviderEvent(event.id, { processingStatus: "terminal_failure", errorCategory: "malformed", errorCode: "INVALID_JSON", lastError: error.message }) };
+    }
+    const payload = body.payload?.payment?.entity || body.payload?.payment_link?.entity || body.payload?.payment?.entity || body.payload || body;
+    const orderId = String(payload.order_id || payload.razorpay_order_id || payload.notes?.gatewayOrderId || event.providerOrderId || "").trim();
+    const paymentId = String(payload.razorpay_payment_id || payload.payment_id || payload.id || event.providerPaymentId || "").trim();
+    let providerEvidence;
+    try {
+      providerEvidence = api.resolvePaymentRequestProviderEvidence({
+        provider: event.provider,
+        providerOrderId: orderId,
+        receipt: payload.receipt || payload.notes?.receipt || "",
+        paymentRequestId: payload.notes?.paymentRequestId || payload.paymentRequestId || "",
+        invoiceId: payload.invoiceId || payload.notes?.invoiceId,
+        businessId: payload.notes?.businessId || event.businessId,
+        workspaceOwnerUserId: payload.notes?.workspaceOwnerUserId || event.workspaceOwnerUserId,
+        amount: payload.amount,
+        currency: payload.currency,
+        notes: payload.notes,
+      });
+    } catch (error) {
+      return { event: await api.updateProviderEvent(event.id, { processingStatus: "manual_review", errorCategory: "lineage", errorCode: "EVIDENCE_CONFLICT", lastError: error.message }) };
+    }
+    if (!providerEvidence) {
+      return { event: await api.updateProviderEvent(event.id, { processingStatus: "manual_review", errorCategory: "lineage", errorCode: "PAYMENT_REQUEST_NOT_FOUND", lastError: "PaymentRequest provider evidence could not be resolved." }) };
+    }
+    const credentials = api.getBusinessRazorpayCredentialsForSystem(
+      providerEvidence.business.id,
+      providerEvidence.workspace.companyId || null,
+    );
+    if (!verifyRazorpayWebhook(event.rawBody, event.signature, credentials.webhookSecret)) {
+      return { event: await api.updateProviderEvent(event.id, { processingStatus: "terminal_failure", errorCategory: "security", errorCode: "INVALID_SIGNATURE", lastError: "Provider webhook signature verification failed." }) };
+    }
+    await api.markProviderEventVerified(event.id, {
+      businessId: providerEvidence.business.id,
+      workspaceOwnerUserId: providerEvidence.workspace.ownerUserId,
+      merchantAccountId: credentials.merchantAccountId,
+    });
+    const claim = await api.claimProviderEvent(event.id, {
+      workerId: options.workerId || `server:${process.pid}`,
+      leaseMs: options.leaseMs,
+    });
+    if (!claim?.claimed) return claim;
+    const providerStatus = String(payload.status || payload.payment_status || "").trim().toLowerCase();
+    const amountMinor = Number(payload.amount);
+    if (!paymentId || !Number.isSafeInteger(amountMinor) || !payload.currency || providerStatus !== "captured") {
+      return { event: await api.updateProviderEvent(event.id, { processingStatus: "terminal_failure", errorCategory: "evidence", errorCode: "NOT_CAPTURED", lastError: "Verified provider evidence is incomplete or not captured." }) };
+    }
+    try {
+      await api.completeVerifiedProviderPaymentAtomic({
+        verifiedPaymentEvidence: true,
+        provider: providerEvidence.provider,
+        providerPaymentId: paymentId,
+        providerOrderId: providerEvidence.providerOrderId || orderId,
+        paymentRequestId: providerEvidence.paymentRequest.id,
+        invoiceId: providerEvidence.invoice.id,
+        businessId: providerEvidence.business.id,
+        workspaceOwnerUserId: providerEvidence.workspace.ownerUserId,
+        customerId: providerEvidence.invoice.customerId,
+        amountMinor,
+        currency: payload.currency,
+        status: providerStatus,
+      });
+    } catch (error) {
+      return { event: await api.updateProviderEvent(event.id, { processingStatus: "retryable_failure", errorCategory: "financial_processing", errorCode: "PAY_ATOMIC_FAILED", lastError: error.message, nextRetryAt: new Date(Date.now() + 60000).toISOString() }) };
+    }
+    return { event: await api.updateProviderEvent(event.id, { processingStatus: "completed" }) };
+  }
+
   function subscriptionEntitlementKey(subscription) {
     if (!subscription) return "";
     return [
@@ -2648,6 +2724,19 @@ export function createServer(options = {}) {
         const payload = body.payload?.payment?.entity || body.payload?.payment_link?.entity || body.payload || body;
         const orderId = payload.order_id || payload.razorpay_order_id || payload.notes?.gatewayOrderId || "";
         const paymentId = payload.razorpay_payment_id || payload.payment_id || payload.id || "";
+        const providerEventId = req.headers["x-razorpay-event-id"] || body.id || body.event_id || "";
+        const paymentRequestHint = payload.notes?.paymentRequestId || payload.paymentRequestId || "";
+        let recoveryEvent = paymentRequestHint ? await api.ingestProviderEvent({
+          provider: "razorpay",
+          providerEventId,
+          eventType: event,
+          providerPaymentId: paymentId,
+          providerOrderId: orderId,
+          businessId: payload.notes?.businessId || "",
+          workspaceOwnerUserId: payload.notes?.workspaceOwnerUserId || "",
+          rawBody,
+          signature: req.headers["x-razorpay-signature"],
+        }) : null;
         const orderMeta = orderId ? api.getBillingOrderByGatewayOrderId(orderId) : null;
         const providerEvidence = api.resolvePaymentRequestProviderEvidence({
           provider: "razorpay",
@@ -2661,6 +2750,33 @@ export function createServer(options = {}) {
           currency: payload.currency,
           notes: payload.notes,
         });
+        if (!recoveryEvent && providerEvidence) {
+          recoveryEvent = await api.ingestProviderEvent({
+            provider: "razorpay",
+            providerEventId,
+            eventType: event,
+            providerPaymentId: paymentId,
+            providerOrderId: orderId,
+            businessId: providerEvidence.business.id,
+            workspaceOwnerUserId: providerEvidence.workspace.ownerUserId,
+            rawBody,
+            signature: req.headers["x-razorpay-signature"],
+          });
+        }
+        if (recoveryEvent) {
+          const processed = await processProviderRecoveryEvent(recoveryEvent.event.id);
+          const status = processed?.event?.processingStatus || "received";
+          if (status === "completed") {
+            sendJson(res, 200, { ok: true, completed: true, recovered: true, idempotentReplay: Boolean(recoveryEvent.idempotentReplay) });
+          } else if (processed?.event?.errorCode === "INVALID_SIGNATURE") {
+            sendJson(res, 401, { error: "Invalid Razorpay webhook signature" });
+          } else if (["terminal_failure", "manual_review", "retryable_failure", "processing", "verified_pending"].includes(status)) {
+            sendJson(res, 202, { ok: true, accepted: true, recoveryStatus: status, recoveryEventId: recoveryEvent.event.id });
+          } else {
+            sendJson(res, 202, { ok: true, accepted: true, recoveryEventId: recoveryEvent.event.id });
+          }
+          return;
+        }
         let config = getRazorpayConfig();
         if (providerEvidence) {
           config = api.getBusinessRazorpayCredentialsForSystem(
@@ -6444,6 +6560,36 @@ if (url.pathname === "/customers" && req.method === "GET") {
       return;
     }
 
+    if (url.pathname === "/admin/payment-recovery" && req.method === "GET") {
+      if (!isConfiguredAdminUser(user)) {
+        sendJson(res, 403, { error: "Forbidden" });
+        return;
+      }
+      sendJson(res, 200, api.listProviderRecoveryEvents({ status: url.searchParams.get("status") || "" }));
+      return;
+    }
+
+    if (url.pathname.startsWith("/admin/payment-recovery/") && url.pathname.endsWith("/retry") && req.method === "POST") {
+      if (!isConfiguredAdminUser(user)) {
+        sendJson(res, 403, { error: "Forbidden" });
+        return;
+      }
+      const parts = url.pathname.split("/");
+      const eventId = decodeURIComponent(parts[3] || "");
+      const event = api.getProviderRecoveryEvent(eventId);
+      if (!event) {
+        sendJson(res, 404, { error: "Provider recovery event not found" });
+        return;
+      }
+      if (!["received", "retryable_failure", "manual_review"].includes(event.processingStatus)) {
+        sendJson(res, 409, { error: "Provider recovery event is not eligible for operator retry." });
+        return;
+      }
+      const result = await server.eazinvoiceProcessProviderRecoveryEvent(eventId);
+      sendJson(res, 200, { event: result?.event || null, retried: true });
+      return;
+    }
+
     if (url.pathname === "/subscriptions" && req.method === "GET") {
       if (!isConfiguredAdminUser(user)) {
         sendJson(res, 403, { error: "Forbidden" });
@@ -7333,6 +7479,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
     }
   });
   server.eazinvoiceApi = api;
+  server.eazinvoiceProcessProviderRecoveryEvent = processProviderRecoveryEvent;
   server.eazinvoiceRunBusinessNotifications = runBusinessNotificationAutomation;
   return server;
 }
@@ -7396,6 +7543,36 @@ function setupBusinessNotificationScheduler(server) {
   });
 }
 
+function setupProviderRecoveryScheduler(server) {
+  if (String(process.env.PROVIDER_RECOVERY_SCHEDULER_ENABLED || "true").toLowerCase() === "false") return;
+  const intervalMs = Math.max(10000, Number(process.env.PROVIDER_RECOVERY_INTERVAL_MS || 30000));
+  const run = async () => {
+    try {
+      const api = server.eazinvoiceApi;
+      const candidates = [
+        ...api.listProviderRecoveryEvents({ status: "received" }),
+        ...api.listProviderRecoveryEvents({ status: "verified_pending" }),
+        ...api.listProviderRecoveryEvents({ due: true }),
+        ...api.listProviderRecoveryEvents({ status: "processing" }),
+      ];
+      const seen = new Set();
+      for (const event of candidates) {
+        if (seen.has(event.id)) continue;
+        seen.add(event.id);
+        await server.eazinvoiceProcessProviderRecoveryEvent(event.id);
+      }
+    } catch (error) {
+      console.error("Eazinvoice provider recovery scheduler failed:", error.message);
+    }
+  };
+  const startupTimer = setTimeout(run, Math.min(60000, Math.max(1000, Number(process.env.PROVIDER_RECOVERY_STARTUP_DELAY_MS || 5000))));
+  const intervalTimer = setInterval(run, intervalMs);
+  server.on("close", () => {
+    clearTimeout(startupTimer);
+    clearInterval(intervalTimer);
+  });
+}
+
 export async function createServerAsync(options = {}) {
   assertProductionConfig(options);
   if (!options.store && options.persist !== false && wantsPostgresStorage(options)) {
@@ -7418,6 +7595,7 @@ export function startServer(port = 3001) {
   server.listen(port);
   setupRecurringScheduler(server);
   setupBusinessNotificationScheduler(server);
+  setupProviderRecoveryScheduler(server);
   return server;
 }
 
@@ -7426,6 +7604,7 @@ export async function startServerAsync(port = 3001) {
   server.listen(port);
   setupRecurringScheduler(server);
   setupBusinessNotificationScheduler(server);
+  setupProviderRecoveryScheduler(server);
   return server;
 }
 
