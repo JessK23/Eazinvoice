@@ -110,6 +110,26 @@ test("unrelated business settings updates preserve merchant secrets and rotation
   assert.equal(rotated.webhookSecret, "new-webhook");
 });
 
+test("credential versions are immutable, redacted, and retired on rotation", () => {
+  const { api, ownerA, businessA } = setup();
+  api.updateBusinessSettings(ownerA, { businessId: businessA.id, paymentSettings: {
+    keyId: "rzp_test_version_a", keySecret: "secret-a", webhookSecret: "webhook-a", merchantAccountId: "acct-a", paymentLinkEnabled: true,
+  } }, { previewPlan: "business" });
+  const first = api.getBusinessRazorpayCredentialsForSystem(businessA.id);
+  const safeFirst = api.getProviderCredentialVersion(first.credentialVersionId);
+  assert.equal(safeFirst.status, "active");
+  assert.equal(Object.hasOwn(safeFirst, "keySecret"), false);
+  assert.equal(safeFirst.webhookSecretConfigured, true);
+  api.updateBusinessSettings(ownerA, { businessId: businessA.id, paymentSettings: {
+    keyId: "rzp_test_version_b", keySecret: "secret-b", webhookSecret: "webhook-b", merchantAccountId: "acct-a", paymentLinkEnabled: true,
+  } }, { previewPlan: "business" });
+  const second = api.getBusinessRazorpayCredentialsForSystem(businessA.id);
+  assert.notEqual(second.credentialVersionId, first.credentialVersionId);
+  assert.equal(api.getProviderCredentialVersion(first.credentialVersionId).status, "retired");
+  assert.equal(api.getBusinessRazorpayCredentialsForSystem(businessA.id, null, first.credentialVersionId).keySecret, "secret-a");
+  assert.equal(api.revokeProviderCredentialVersion("missing-version"), null);
+});
+
 test("partial credential rotation preserves omitted readiness fields and explicit revocation is distinct from disable", () => {
   const { api, ownerA, businessA } = setup();
   const options = { businessId: businessA.id, previewPlan: "business" };

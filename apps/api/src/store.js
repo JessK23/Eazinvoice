@@ -315,6 +315,7 @@ export function createStore(seed = {}, options = {}) {
     paymentAllocations: [],
     paymentRequests: [],
     providerRecoveryEvents: [],
+    providerCredentialVersions: [],
     subscriptions: [],
     billingOrders: [],
     monetization: [],
@@ -366,6 +367,7 @@ export function createStore(seed = {}, options = {}) {
       paymentAllocation: 0,
       paymentRequest: 0,
       providerRecoveryEvent: 0,
+      providerCredentialVersion: 0,
       subscription: 0,
       billingOrder: 0,
       monetization: 0,
@@ -421,6 +423,7 @@ export function createStore(seed = {}, options = {}) {
     paymentAllocation: 0,
     paymentRequest: 0,
     providerRecoveryEvent: 0,
+    providerCredentialVersion: 0,
     subscription: 0,
     billingOrder: 0,
     monetization: 0,
@@ -486,6 +489,7 @@ export function createStore(seed = {}, options = {}) {
       paymentAllocations: state.paymentAllocations,
       paymentRequests: state.paymentRequests,
       providerRecoveryEvents: state.providerRecoveryEvents,
+      providerCredentialVersions: state.providerCredentialVersions,
       subscriptions: state.subscriptions,
       billingOrders: state.billingOrders,
       monetization: state.monetization,
@@ -1923,7 +1927,75 @@ export function createStore(seed = {}, options = {}) {
     return { mode, inferredMode, modeMismatch, enabled, status, hasAnyCredential, hasCoreCredentials };
   }
 
-  function resolveBusinessRazorpayCredentials(businessId, companyId = null) {
+  function providerCredentialVersionView(version, options = {}) {
+    if (!version) return null;
+    const safe = clone(version);
+    if (!options.includeSecrets) {
+      delete safe.keySecret;
+      delete safe.webhookSecret;
+    }
+    safe.keySecretConfigured = Boolean(version.keySecret);
+    safe.webhookSecretConfigured = Boolean(version.webhookSecret);
+    return safe;
+  }
+
+  function credentialVersionScopeMatches(version, input = {}) {
+    return version.provider === String(input.provider || "razorpay").trim().toLowerCase()
+      && version.businessId === String(input.businessId || "").trim()
+      && (version.companyId || null) === (input.companyId || null)
+      && version.merchantAccountId === String(input.merchantAccountId || "").trim()
+      && version.mode === String(input.mode || "").trim().toLowerCase();
+  }
+
+  function ensureProviderCredentialVersionLocal(input = {}) {
+    const businessId = String(input.businessId || "").trim();
+    const keyId = String(input.keyId || "").trim();
+    const keySecret = String(input.keySecret || "");
+    const webhookSecret = String(input.webhookSecret || "");
+    if (!businessId || !keyId || !keySecret || !webhookSecret) return null;
+    const mode = String(input.mode || resolveRazorpayCredentialMode({ keyId }).mode || "").trim().toLowerCase();
+    const merchantAccountId = String(input.merchantAccountId || "").trim();
+    const fingerprint = crypto.createHash("sha256").update([keyId, keySecret, webhookSecret, merchantAccountId, mode].join("\u0000"), "utf8").digest("hex");
+    const scope = { provider: "razorpay", businessId, companyId: input.companyId || null, merchantAccountId, mode };
+    const existing = state.providerCredentialVersions.find((version) => credentialVersionScopeMatches(version, scope) && version.fingerprint === fingerprint && version.status === "active");
+    if (existing) return providerCredentialVersionView(existing, { includeSecrets: true });
+    state.providerCredentialVersions.filter((version) => credentialVersionScopeMatches(version, scope) && version.status === "active").forEach((version) => {
+      version.status = "retired";
+      version.retiredAt = new Date().toISOString();
+    });
+    const now = new Date().toISOString();
+    const version = {
+      id: nextId("pcv", ++state.counters.providerCredentialVersion),
+      provider: "razorpay", businessId, companyId: input.companyId || null,
+      merchantAccountId, mode, keyId, keySecret, webhookSecret, fingerprint,
+      status: "active", createdAt: now, retiredAt: "", revokedAt: "", revocationReason: "",
+    };
+    state.providerCredentialVersions.push(version);
+    return providerCredentialVersionView(version, { includeSecrets: true });
+  }
+
+  function ensureProviderCredentialVersion(input = {}) {
+    const result = ensureProviderCredentialVersionLocal(input);
+    if (result) persist();
+    return result ? providerCredentialVersionView(result) : null;
+  }
+
+  function getProviderCredentialVersion(id, options = {}) {
+    const version = state.providerCredentialVersions.find((entry) => entry.id === String(id || "").trim());
+    return providerCredentialVersionView(version, options);
+  }
+
+  function revokeProviderCredentialVersion(id, reason = "compromised") {
+    const version = state.providerCredentialVersions.find((entry) => entry.id === String(id || "").trim());
+    if (!version) return null;
+    version.status = "revoked";
+    version.revokedAt = new Date().toISOString();
+    version.revocationReason = String(reason || "compromised").trim().slice(0, 120);
+    persist();
+    return providerCredentialVersionView(version);
+  }
+
+  function resolveBusinessRazorpayCredentials(businessId, companyId = null, credentialVersionId = null) {
     const normalizedBusinessId = String(businessId || "").trim();
     if (!normalizedBusinessId) {
       return {
@@ -1942,15 +2014,28 @@ export function createStore(seed = {}, options = {}) {
       && (entry.companyId || null) === (companyId || null)
     ));
     const paymentSettings = settings?.paymentSettings || {};
+    const currentMode = resolveRazorpayCredentialMode(paymentSettings);
+    const currentCredentialsComplete = Boolean(paymentSettings.keyId && paymentSettings.keySecret && paymentSettings.webhookSecret);
+    const matchingVersion = credentialVersionId
+      ? state.providerCredentialVersions.find((version) => version.id === String(credentialVersionId).trim() && version.businessId === normalizedBusinessId && (version.companyId || null) === (companyId || null))
+      : currentCredentialsComplete && state.providerCredentialVersions.find((version) => credentialVersionScopeMatches(version, {
+        businessId: normalizedBusinessId,
+        companyId,
+        merchantAccountId: paymentSettings.merchantAccountId || paymentSettings.accountId,
+        mode: currentMode.mode,
+      }) && version.status === "active");
+    const source = matchingVersion || paymentSettings;
     return {
       provider: "razorpay",
       businessId: normalizedBusinessId,
       companyId: companyId || null,
-      keyId: String(paymentSettings.keyId || "").trim(),
-      keySecret: String(paymentSettings.keySecret || ""),
-      webhookSecret: String(paymentSettings.webhookSecret || ""),
-      merchantAccountId: String(paymentSettings.merchantAccountId || paymentSettings.accountId || "").trim(),
-      ...resolveRazorpayCredentialMode(paymentSettings),
+      keyId: String(source.keyId || "").trim(),
+      keySecret: String(source.keySecret || ""),
+      webhookSecret: String(source.webhookSecret || ""),
+      merchantAccountId: String(source.merchantAccountId || source.accountId || "").trim(),
+      credentialVersionId: matchingVersion?.id || "",
+      credentialVersionStatus: matchingVersion?.status || "legacy",
+      ...resolveRazorpayCredentialMode({ ...paymentSettings, ...source }),
     };
   }
 
@@ -2005,6 +2090,17 @@ export function createStore(seed = {}, options = {}) {
       settings.paymentSettings = {
         ...nextPaymentSettings,
       };
+      if (settings.paymentSettings.keyId && settings.paymentSettings.keySecret && settings.paymentSettings.webhookSecret) {
+        ensureProviderCredentialVersionLocal({
+          businessId,
+          companyId,
+          keyId: settings.paymentSettings.keyId,
+          keySecret: settings.paymentSettings.keySecret,
+          webhookSecret: settings.paymentSettings.webhookSecret,
+          merchantAccountId: settings.paymentSettings.merchantAccountId,
+          mode: settings.paymentSettings.mode,
+        });
+      }
     }
     if (input.complianceProfile) {
       settings.complianceProfile = {
@@ -3548,7 +3644,8 @@ export function createStore(seed = {}, options = {}) {
     if (existing) {
       if (existing.payloadHash !== payloadHash
         || existing.providerPaymentId !== String(input.providerPaymentId || "").trim()
-        || existing.providerOrderId !== String(input.providerOrderId || "").trim()) {
+        || existing.providerOrderId !== String(input.providerOrderId || "").trim()
+        || (input.credentialVersionId && existing.credentialVersionId && existing.credentialVersionId !== String(input.credentialVersionId).trim())) {
         throw new Error("Provider event identity conflicts with immutable recovery evidence.");
       }
       return { event: providerRecoveryEventView(existing), idempotentReplay: true };
@@ -3565,6 +3662,7 @@ export function createStore(seed = {}, options = {}) {
       eventType: String(input.eventType || "").trim().toLowerCase(),
       providerPaymentId: String(input.providerPaymentId || "").trim(),
       providerOrderId: String(input.providerOrderId || "").trim(),
+      credentialVersionId: String(input.credentialVersionId || "").trim(),
       rawBody,
       signature: String(input.signature || "").trim(),
       payloadHash,
@@ -3581,6 +3679,7 @@ export function createStore(seed = {}, options = {}) {
       createdAt: now,
       updatedAt: now,
       verifiedAt: "",
+      verificationProof: null,
       completedAt: "",
       version: 1,
     };
@@ -3619,9 +3718,30 @@ export function createStore(seed = {}, options = {}) {
     event.businessId = event.businessId || String(input.businessId || "").trim();
     event.workspaceOwnerUserId = event.workspaceOwnerUserId || String(input.workspaceOwnerUserId || "").trim();
     event.merchantAccountId = event.merchantAccountId || String(input.merchantAccountId || "").trim();
+    const credentialVersionId = String(input.credentialVersionId || event.credentialVersionId || "").trim();
+    if (event.credentialVersionId && credentialVersionId && event.credentialVersionId !== credentialVersionId) {
+      throw new Error("Provider credential version lineage is immutable.");
+    }
+    if (credentialVersionId) {
+      const version = state.providerCredentialVersions.find((entry) => entry.id === credentialVersionId);
+      if (!version || version.businessId !== event.businessId || (version.companyId || null) !== (input.companyId || null)) {
+        throw new Error("Provider credential version is not valid for this recovery event.");
+      }
+      if (version.status === "revoked") throw new Error("Revoked provider credential versions cannot verify new evidence.");
+      event.credentialVersionId = credentialVersionId;
+    }
     event.verificationStatus = "verified";
     event.processingStatus = "verified_pending";
     event.verifiedAt = event.verifiedAt || new Date().toISOString();
+    event.verificationProof = event.verificationProof || {
+      provider: event.provider,
+      businessId: event.businessId,
+      merchantAccountId: event.merchantAccountId,
+      credentialVersionId: event.credentialVersionId || "",
+      payloadHash: event.payloadHash,
+      signatureFingerprint: event.signature ? crypto.createHash("sha256").update(event.signature, "utf8").digest("hex") : "",
+      verifiedAt: event.verifiedAt,
+    };
     event.updatedAt = new Date().toISOString();
     event.errorCategory = "";
     event.errorCode = "";
@@ -3804,6 +3924,7 @@ export function createStore(seed = {}, options = {}) {
       currency: request.providerIntent.currency || request.currency,
       mode: request.providerIntent.mode || "",
       merchantAccountId: request.providerIntent.merchantAccountId || "",
+      credentialVersionId: request.providerIntent.credentialVersionId || "",
       providerStatus: request.providerIntent.providerStatus || "",
       receipt: request.providerIntent.receipt || "",
       createdAt: request.providerIntent.createdAt || "",
@@ -4162,6 +4283,13 @@ export function createStore(seed = {}, options = {}) {
       return { paymentRequest: paymentRequestView(request), providerIntent: paymentRequestProviderIntentView(request), idempotentReplay: true };
     }
     if (!["creating", "recovery_required"].includes(request.providerIntent?.status)) throw new Error("Payment request provider intent is not available for binding.");
+    const credentialVersionId = String(input.credentialVersionId || "").trim();
+    if (credentialVersionId) {
+      const version = state.providerCredentialVersions.find((entry) => entry.id === credentialVersionId);
+      if (!version || version.businessId !== request.businessId || version.status !== "active") {
+        throw new Error("Only an active business credential version may create a provider Order.");
+      }
+    }
     const providerOrder = input.providerOrder && typeof input.providerOrder === "object" ? input.providerOrder : null;
     const expectedAmountMinor = Math.round(toNumber(request.requestedAmount) * 100);
     const providerAmountMinor = providerOrder ? Number(providerOrder.amount) : expectedAmountMinor;
@@ -4183,6 +4311,7 @@ export function createStore(seed = {}, options = {}) {
       providerOrderId,
       mode: String(input.mode || "").trim().toLowerCase(),
       merchantAccountId: String(input.merchantAccountId || "").trim(),
+      credentialVersionId,
       providerStatus: String(input.providerStatus || "created").trim().toLowerCase(),
       createdAt: request.providerIntent.createdAt || now,
     };
@@ -7564,6 +7693,9 @@ export function createStore(seed = {}, options = {}) {
     getBusinessSettingsForUser,
     getRawBusinessSettingsForUser,
     resolveBusinessRazorpayCredentials,
+    ensureProviderCredentialVersion,
+    getProviderCredentialVersion,
+    revokeProviderCredentialVersion,
     upsertBusinessSettings,
     validateBusinessEmailSettings,
     recordBusinessEmailDelivery,

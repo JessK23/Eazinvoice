@@ -1902,17 +1902,28 @@ export function createServer(options = {}) {
     if (!providerEvidence) {
       return { event: await api.updateProviderEvent(event.id, { processingStatus: "manual_review", errorCategory: "lineage", errorCode: "PAYMENT_REQUEST_NOT_FOUND", lastError: "PaymentRequest provider evidence could not be resolved." }) };
     }
+    const lineageCredentialVersionId = String(event.credentialVersionId || providerEvidence.providerIntent?.credentialVersionId || "").trim();
     const credentials = api.getBusinessRazorpayCredentialsForSystem(
       providerEvidence.business.id,
       providerEvidence.workspace.companyId || null,
+      lineageCredentialVersionId || null,
     );
-    if (!verifyRazorpayWebhook(event.rawBody, event.signature, credentials.webhookSecret)) {
+    const proofMatches = event.verificationProof
+      && event.verificationProof.payloadHash === event.payloadHash
+      && event.verificationProof.businessId === providerEvidence.business.id
+      && (!lineageCredentialVersionId || event.verificationProof.credentialVersionId === lineageCredentialVersionId);
+    if (credentials.credentialVersionStatus === "revoked" && !proofMatches) {
+      return { event: await api.updateProviderEvent(event.id, { processingStatus: "manual_review", errorCategory: "security", errorCode: "CREDENTIAL_VERSION_REVOKED", lastError: "The credential version for this unverified provider evidence was revoked." }) };
+    }
+    if (!proofMatches && !verifyRazorpayWebhook(event.rawBody, event.signature, credentials.webhookSecret)) {
       return { event: await api.updateProviderEvent(event.id, { processingStatus: "terminal_failure", errorCategory: "security", errorCode: "INVALID_SIGNATURE", lastError: "Provider webhook signature verification failed." }) };
     }
     await api.markProviderEventVerified(event.id, {
       businessId: providerEvidence.business.id,
       workspaceOwnerUserId: providerEvidence.workspace.ownerUserId,
       merchantAccountId: credentials.merchantAccountId,
+      companyId: providerEvidence.workspace.companyId || null,
+      credentialVersionId: credentials.credentialVersionId || lineageCredentialVersionId,
     });
     const claim = await api.claimProviderEvent(event.id, {
       workerId: options.workerId || `server:${process.pid}`,
@@ -2734,6 +2745,10 @@ export function createServer(options = {}) {
           providerOrderId: orderId,
           businessId: payload.notes?.businessId || "",
           workspaceOwnerUserId: payload.notes?.workspaceOwnerUserId || "",
+          // Do not stamp the current credential version here. The persisted
+          // PaymentRequest provider intent is the historical lineage authority;
+          // processProviderRecoveryEvent resolves it before verification.
+          credentialVersionId: "",
           rawBody,
           signature: req.headers["x-razorpay-signature"],
         }) : null;
@@ -2751,6 +2766,7 @@ export function createServer(options = {}) {
           notes: payload.notes,
         });
         if (!recoveryEvent && providerEvidence) {
+          const evidenceCredentials = api.getBusinessRazorpayCredentialsForSystem(providerEvidence.business.id, providerEvidence.workspace.companyId || null);
           recoveryEvent = await api.ingestProviderEvent({
             provider: "razorpay",
             providerEventId,
@@ -2759,6 +2775,7 @@ export function createServer(options = {}) {
             providerOrderId: orderId,
             businessId: providerEvidence.business.id,
             workspaceOwnerUserId: providerEvidence.workspace.ownerUserId,
+            credentialVersionId: evidenceCredentials?.credentialVersionId || "",
             rawBody,
             signature: req.headers["x-razorpay-signature"],
           });
@@ -3323,6 +3340,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
           currency: intent.currency,
           mode: intent.mode || "",
           createdAt: intent.createdAt || "",
+          credentialVersionId: intent.credentialVersionId || "",
         } : null;
         if (result.idempotentReplay) {
           sendJson(res, 200, {
@@ -3352,6 +3370,7 @@ if (url.pathname === "/wordpress/connection" && req.method === "POST") {
             providerOrderId: matches[0].id,
             mode: credentials.mode,
             merchantAccountId: credentials.merchantAccountId,
+            credentialVersionId: credentials.credentialVersionId,
             providerStatus: matches[0].status || "created",
           }, { businessId: request.businessId, workspaceOwnerUserId: request.workspaceOwnerUserId });
           if (recovered?.recoveryRequired) {
@@ -6732,6 +6751,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
             providerOrderId: matches[0].id,
             mode: credentials.mode,
             merchantAccountId: credentials.merchantAccountId,
+            credentialVersionId: credentials.credentialVersionId,
             providerStatus: matches[0].status || "created",
           }, options);
           if (recovered?.recoveryRequired) {
@@ -6762,6 +6782,7 @@ if (url.pathname === "/customers" && req.method === "GET") {
           providerOrderId: providerOrder.id,
           mode: credentials.mode,
           merchantAccountId: credentials.merchantAccountId,
+          credentialVersionId: credentials.credentialVersionId,
           providerStatus: providerOrder.status || "created",
         }, options);
         sendJson(res, 201, { providerIntent: bound.providerIntent, publicKeyId: credentials.keyId });

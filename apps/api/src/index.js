@@ -779,11 +779,24 @@ export function createApi(deps = {}) {
       return store.resolveBusinessRazorpayCredentials(
         access.businessId,
         options.companyId || access.companyId || null,
+        options.credentialVersionId || null,
       );
     },
 
-    getBusinessRazorpayCredentialsForSystem(businessId, companyId = null) {
-      return store.resolveBusinessRazorpayCredentials(businessId, companyId);
+    getBusinessRazorpayCredentialsForSystem(businessId, companyId = null, credentialVersionId = null) {
+      return store.resolveBusinessRazorpayCredentials(businessId, companyId, credentialVersionId);
+    },
+
+    ensureProviderCredentialVersion(input = {}) {
+      return store.ensureProviderCredentialVersion(input);
+    },
+
+    getProviderCredentialVersion(id, options = {}) {
+      return store.getProviderCredentialVersion(id, options);
+    },
+
+    revokeProviderCredentialVersion(id, reason = "compromised") {
+      return store.revokeProviderCredentialVersion(id, reason);
     },
 
     resolvePaymentRequestProviderEvidence(input = {}) {

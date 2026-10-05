@@ -38,11 +38,13 @@ function scenario() {
     currency: "INR",
     requestKey: `recovery-${crypto.randomBytes(4).toString("hex")}`,
   }, { user, businessId: business.id });
+  const credentialVersionId = api.getBusinessRazorpayCredentialsForSystem(business.id).credentialVersionId;
   const started = api.beginPaymentRequestProviderIntent(paymentRequest.paymentRequest.id, user, { businessId: business.id });
   const bound = api.bindPaymentRequestProviderIntent(paymentRequest.paymentRequest.id, user, {
     providerOrderId: `order_recovery_${crypto.randomBytes(4).toString("hex")}`,
     mode: "test",
     merchantAccountId: "acct_recovery",
+    credentialVersionId,
   }, { businessId: business.id });
   return { api, store, user, business, customer, invoice, paymentRequest: paymentRequest.paymentRequest, started, bound };
 }
@@ -201,6 +203,57 @@ test("retry converges after PAY-ATOMIC commits but inbox completion marking fail
     assert.equal(s.store.exportState().payments.length, 1);
     assert.equal(s.store.exportState().paymentAllocations.length, 1);
     assert.equal(s.api.getPaymentRequest(s.paymentRequest.id, s.user, { businessId: s.business.id }).status, "completed");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("historical credential version verifies recovery after business rotation and leaves immutable proof", async () => {
+  const s = scenario();
+  const versionA = s.api.getBusinessRazorpayCredentialsForSystem(s.business.id).credentialVersionId;
+  const event = providerEvent(s, { eventId: "evt_recovery_rotated_secret", paymentId: "pay_recovery_rotated_secret" });
+  const ingested = s.api.ingestProviderEvent({
+    provider: "razorpay", providerEventId: event.eventId, eventType: "payment.captured",
+    providerPaymentId: event.paymentId, providerOrderId: s.bound.providerIntent.providerOrderId,
+    businessId: s.business.id, workspaceOwnerUserId: s.user.id, credentialVersionId: versionA,
+    rawBody: event.rawBody, signature: event.signature,
+  });
+  s.api.updateBusinessSettings(s.user, {
+    businessId: s.business.id,
+    paymentSettings: { keyId: "rzp_test_recovery_rotated", keySecret: "rotated-secret", webhookSecret: "rotated-webhook", merchantAccountId: "acct_recovery", paymentLinkEnabled: true },
+  }, { businessId: s.business.id, previewPlan: "business" });
+  const current = s.api.getBusinessRazorpayCredentialsForSystem(s.business.id);
+  assert.notEqual(current.credentialVersionId, versionA);
+  assert.equal(s.api.getBusinessRazorpayCredentialsForSystem(s.business.id, null, versionA).credentialVersionStatus, "retired");
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store: s.store });
+  try {
+    const processed = await server.eazinvoiceProcessProviderRecoveryEvent(ingested.event.id);
+    assert.equal(processed.event.processingStatus, "completed");
+    assert.equal(processed.event.credentialVersionId, versionA);
+    assert.equal(processed.event.verificationProof.credentialVersionId, versionA);
+    assert.equal(s.store.exportState().payments.length, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("revoked credential version blocks unverified historical recovery", async () => {
+  const s = scenario();
+  const versionA = s.api.getBusinessRazorpayCredentialsForSystem(s.business.id).credentialVersionId;
+  const event = providerEvent(s, { eventId: "evt_recovery_revoked_version", paymentId: "pay_recovery_revoked_version" });
+  const ingested = s.api.ingestProviderEvent({
+    provider: "razorpay", providerEventId: event.eventId, eventType: "payment.captured",
+    providerPaymentId: event.paymentId, providerOrderId: s.bound.providerIntent.providerOrderId,
+    businessId: s.business.id, workspaceOwnerUserId: s.user.id, credentialVersionId: versionA,
+    rawBody: event.rawBody, signature: event.signature,
+  });
+  s.api.revokeProviderCredentialVersion(versionA, "compromised");
+  const server = createServer({ persist: false, useSupabaseEmailOtp: false, store: s.store });
+  try {
+    const processed = await server.eazinvoiceProcessProviderRecoveryEvent(ingested.event.id);
+    assert.equal(processed.event.processingStatus, "manual_review");
+    assert.equal(processed.event.errorCode, "CREDENTIAL_VERSION_REVOKED");
+    assert.equal(s.store.exportState().payments.length, 0);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
