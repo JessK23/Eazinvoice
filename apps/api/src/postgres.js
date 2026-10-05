@@ -1,7 +1,7 @@
 import { Pool } from "pg";
 
 let pool;
-export const REQUIRED_SCHEMA_MIGRATION = "024_document_registry_foundation";
+export const REQUIRED_SCHEMA_MIGRATION = "025_accounting_authority_alignment";
 
 export function getDatabaseUrl() {
   return process.env.DATABASE_URL || "";
