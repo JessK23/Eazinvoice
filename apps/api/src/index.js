@@ -828,6 +828,13 @@ export function createApi(deps = {}) {
       return store.evaluateProviderSettlementReadiness(settlement);
     },
 
+    postProviderSettlementAccounting(user, id, options = {}) {
+      const access = this.requireBusinessWorkspaceAccess(user, options, "manageSettings");
+      const settlement = store.getProviderSettlement(id, { businessId: access.businessId });
+      if (!settlement) return null;
+      return store.postProviderSettlementAccounting(id);
+    },
+
     getProviderSettlementForSystem(id, businessId) {
       return store.getProviderSettlement(id, { businessId });
     },

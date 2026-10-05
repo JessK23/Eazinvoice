@@ -303,6 +303,28 @@ async function requireAccountingAuthority(ownerUserId, companyId = null) {
   return result;
 }
 
+export async function requireCompletedAccountingAuthority(client, businessId) {
+  if (!client || typeof client.query !== "function" || !businessId) {
+    throw new Error("Durable accounting authority validation is required before settlement posting.");
+  }
+  const result = await client.query(
+    `select business_id, migration_version, status, fingerprint
+     from eazinvoice_accounting_authority_migrations
+     where business_id = $1 and migration_version = $2
+     for update`,
+    [businessId, ACCOUNTING_AUTHORITY_MIGRATION],
+  );
+  const row = result.rows[0];
+  if (!row || row.business_id !== businessId || row.migration_version !== ACCOUNTING_AUTHORITY_MIGRATION) {
+    throw new Error("Accounting authority migration is missing.");
+  }
+  if (row.status !== "completed") throw new Error(`Accounting authority migration is ${row.status || "invalid"}.`);
+  if (!row.fingerprint || row.fingerprint !== chartFingerprint()) {
+    throw new Error("Accounting authority migration chart fingerprint is stale or invalid.");
+  }
+  return row;
+}
+
 async function listAccounts(client, ownerUserId, companyId = null) {
   await ensureDefaultAccounts(client, ownerUserId, companyId);
   const params = [ownerUserId];

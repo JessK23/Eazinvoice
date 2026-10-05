@@ -107,6 +107,50 @@ export function resolveProviderFeeAccount(state, business = {}) {
   return { status: "canonical", reasonCode: "canonical_provider_fee_account", account: clone(account) };
 }
 
+export function postProviderSettlementSimple(state, settlement = {}, business = {}, destinationBankAccount = {}, options = {}) {
+  if (!settlement?.id || !business?.id || settlement.businessId !== business.id) throw new Error("Provider settlement business is invalid.");
+  const feeAuthority = resolveProviderFeeAccount(state, business);
+  if (feeAuthority.status !== "canonical") throw new Error(`Provider fee authority is ${feeAuthority.reasonCode}.`);
+  const clearingCandidates = (state.ledgerAccounts || []).filter((entry) => entry.businessId === business.id && entry.accountCode === "1110");
+  const accounts = { bank_clearing: clearingCandidates.length === 1 ? clearingCandidates[0] : null };
+  if (!accounts.bank_clearing
+    || accounts.bank_clearing.status !== "active"
+    || accounts.bank_clearing.accountRole !== "bank_clearing"
+    || accounts.bank_clearing.accountType !== "asset"
+    || accounts.bank_clearing.normalBalance !== "debit") {
+    throw new Error("Provider clearing authority is unavailable.");
+  }
+  if (!destinationBankAccount?.ledgerAccountId) throw new Error("Settlement destination bank ledger mapping is required.");
+  const bankLedger = state.ledgerAccounts.find((entry) => entry.id === destinationBankAccount.ledgerAccountId && entry.businessId === business.id && entry.status === "active");
+  if (!bankLedger || String(bankLedger.accountRole || "") === "bank_clearing" || bankLedger.accountCode === "1110") throw new Error("Settlement destination bank ledger is invalid.");
+  const action = String(options.accountingAction || "provider_settlement_posted:v1").trim();
+  const idempotencyKey = [business.id, settlement.provider, settlement.merchantAccountId, settlement.providerSettlementId, action].join(":");
+  const { event, replay } = createFinancialEvent(state, {
+    businessId: business.id,
+    eventType: "provider_settlement_posted",
+    sourceType: "provider_settlement",
+    sourceId: settlement.id,
+    sourceStatus: settlement.accountingStatus || "not_posted",
+    eventTimestamp: settlement.settlementDate || settlement.createdAt,
+    idempotencyKey,
+    metadata: { provider: settlement.provider, merchantAccountId: settlement.merchantAccountId, providerSettlementId: settlement.providerSettlementId, accountingAction: action },
+  });
+  if (event.postingStatus === "posted") return { posted: true, replay: true, event: clone(event), journal: clone(state.accountingJournals.find((entry) => entry.id === event.journalId)) };
+  const journal = persistJournal(state, event, {
+    ownerUserId: business.ownerUserId,
+    journalDate: settlement.settlementDate || settlement.createdAt?.slice(0, 10),
+    narration: `Provider settlement ${settlement.providerSettlementId}`,
+    currency: settlement.currency,
+    postingRule: "provider_settlement_simple_v1",
+    lines: [
+      { account: bankLedger, debit: settlement.netAmount, description: "Provider settlement to actual bank" },
+      ...(toMinor(settlement.feeAmount) > 0 ? [{ account: feeAuthority.account, debit: settlement.feeAmount, description: "Payment provider processing fee" }] : []),
+      { account: accounts.bank_clearing, credit: settlement.grossAmount, description: "Provider clearing settled" },
+    ],
+  });
+  return { posted: true, replay, event: clone(event), journal: clone(journal) };
+}
+
 function ensureAccountBusiness(account, businessId) {
   if (!account || account.businessId !== businessId) {
     throw new Error("Ledger account does not belong to this business.");

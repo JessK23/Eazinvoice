@@ -25,6 +25,7 @@ import {
   postVendorRefundReceived,
   postSalesCreditNotePosted,
   postVendorCreditPosted,
+  postProviderSettlementSimple,
   publicJournalWithLines,
   reconcileAccountingPostings,
   validateBalancedJournal,
@@ -74,6 +75,7 @@ import {
   validateAccountingDate,
   validatePostingPeriod,
 } from "./accounting-period-service.js";
+import { requireCompletedAccountingAuthority } from "./postgres-accounting.js";
 import { buildBalanceSheet } from "./balance-sheet-service.js";
 import {
   buildComparativeFinancialYears,
@@ -2212,6 +2214,112 @@ export function createStore(seed = {}, options = {}) {
       const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
       const result = transactionStore.createProviderSettlementLocal(input);
       return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
+    }).then((outcome) => {
+      if (outcome.state) applyAuthoritativeState(outcome.state);
+      return outcome.result;
+    });
+  }
+
+  function effectiveProviderClearingAvailable(payment, business) {
+    const capturedMinor = Math.round(toNumber(payment.amount) * 100);
+    const reductions = new Map();
+    const addReduction = (record, kind) => {
+      const status = String(record?.status || "").toLowerCase();
+      if (!record || !["posted", "processed", "received"].includes(status)) return;
+      const event = record.financialEventId
+        ? state.financialEvents.find((entry) => entry.id === record.financialEventId)
+        : null;
+      const journal = record.journalId
+        ? state.accountingJournals.find((entry) => entry.id === record.journalId)
+        : null;
+      if (event && event.postingStatus !== "posted") return;
+      if (!event && !journal) throw new Error("payment_clearing_reduction_ambiguous");
+      const identity = event?.id || journal?.id;
+      if (!identity) throw new Error("payment_clearing_reduction_ambiguous");
+      const amountMinor = Math.round(toNumber(record.amount) * 100);
+      const existing = reductions.get(identity);
+      if (existing && existing.amountMinor !== amountMinor) throw new Error("payment_clearing_reduction_inconsistent");
+      reductions.set(identity, { amountMinor, kind });
+    };
+    try {
+      state.paymentReversals
+        .filter((entry) => entry.originalPaymentId === payment.id && entry.businessId === business.id)
+        .forEach((entry) => addReduction(entry, "reversal"));
+      state.customerRefunds
+        .filter((entry) => entry.sourcePaymentId === payment.id && entry.businessId === business.id)
+        .forEach((entry) => addReduction(entry, "refund"));
+    } catch (error) {
+      return { status: "ambiguous", availableMinor: 0, reason: error.message || "payment_clearing_reduction_ambiguous" };
+    }
+    const reductionMinor = [...reductions.values()].reduce((sum, entry) => sum + entry.amountMinor, 0);
+    const consumedMinor = state.providerSettlements
+      .filter((entry) => entry.businessId === business.id && entry.accountingStatus === "posted")
+      .flatMap((entry) => entry.paymentLinks || [])
+      .filter((entry) => entry.paymentId === payment.id)
+      .reduce((sum, entry) => sum + Math.round(toNumber(entry.amount) * 100), 0);
+    const availableMinor = capturedMinor - reductionMinor - consumedMinor;
+    if (availableMinor < 0) return { status: "inconsistent", availableMinor: 0, reason: "payment_clearing_reduction_exceeds_captured" };
+    return { status: "available", availableMinor, reason: "payment_clearing_available" };
+  }
+
+  async function postProviderSettlementAccountingLocal(id, transactionContext = {}) {
+    const settlement = state.providerSettlements.find((entry) => entry.id === String(id || "").trim());
+    if (!settlement) throw new Error("Provider settlement was not found.");
+    const business = findBusinessByIdOrLegacyOwner(settlement.businessId);
+    if (!business) throw new Error("Provider settlement business is unavailable.");
+    if (settlement.accountingStatus === "posted") {
+      const event = state.financialEvents.find((entry) => entry.sourceType === "provider_settlement" && entry.sourceId === settlement.id && entry.postingStatus === "posted");
+      return { posted: true, idempotentReplay: true, settlement: providerSettlementView(settlement), journal: event ? clone(state.accountingJournals.find((entry) => entry.id === event.journalId)) : null };
+    }
+    if (settlement.evidenceLifecycle !== "evidence_verified") throw new Error("Provider settlement evidence is not verified.");
+    if (settlement.feeTaxAmount !== 0 || settlement.taxComponents?.cgstAmount || settlement.taxComponents?.sgstAmount || settlement.taxComponents?.igstAmount) throw new Error("Provider settlement tax is unsupported by the simple settlement authority.");
+    if (settlement.withholding || settlement.adjustmentAmount !== 0 || (settlement.adjustments || []).length) throw new Error("Provider settlement adjustments or withholding are unsupported by the simple settlement authority.");
+    if (!settlement.provider || !settlement.merchantAccountId || !settlement.providerSettlementId) throw new Error("Provider settlement identity is incomplete.");
+    await requireCompletedAccountingAuthority(transactionContext.client, business.id);
+    const destination = state.bankAccounts.find((account) => account.id === settlement.destinationBankAccountId && account.businessId === business.id && account.status === "active");
+    if (!destination || String(destination.accountType || "").toLowerCase() !== "bank") throw new Error("Provider settlement destination bank is invalid.");
+    if (String(destination.currency || settlement.currency || "INR").toUpperCase() !== String(settlement.currency || "INR").toUpperCase()) throw new Error("Provider settlement destination currency does not match.");
+    const destinationLedger = state.ledgerAccounts.find((account) => account.id === destination.ledgerAccountId && account.businessId === business.id && account.status === "active");
+    if (!destinationLedger
+      || destinationLedger.accountType !== "asset"
+      || destinationLedger.normalBalance !== "debit"
+      || destinationLedger.bankAccountType !== "bank"
+      || destinationLedger.systemAccount
+      || destinationLedger.accountCode === "1110"
+      || destinationLedger.accountCode === "5300"
+      || destinationLedger.accountCode === "1100"
+      || destinationLedger.accountCode === "2110"
+      || destinationLedger.accountRole === "bank_clearing") throw new Error("Provider settlement destination ledger is invalid.");
+    const links = Array.isArray(settlement.paymentLinks) ? settlement.paymentLinks : [];
+    if (!links.length || Math.round(links.reduce((sum, link) => sum + toNumber(link.amount), 0) * 100) !== Math.round(toNumber(settlement.grossAmount) * 100)) throw new Error("Provider settlement clearing coverage does not equal gross amount.");
+    const seen = new Set();
+    for (const link of links) {
+      if (seen.has(link.paymentId)) throw new Error("Provider settlement Payment linkage is duplicated.");
+      seen.add(link.paymentId);
+      const payment = state.payments.find((entry) => entry.id === link.paymentId);
+      const identity = paymentExternalProviderIdentity(payment || {});
+      if (!payment || payment.businessId !== business.id || String(payment.status || "").toLowerCase() !== "captured" || identity.provider !== settlement.provider || identity.providerPaymentId !== link.providerPaymentId || String(payment.currency || "INR").toUpperCase() !== String(settlement.currency || "INR").toUpperCase()) throw new Error("Provider settlement Payment clearing coverage is invalid.");
+      const linkMinor = Math.round(toNumber(link.amount) * 100);
+      const availability = effectiveProviderClearingAvailable(payment, business);
+      if (availability.status !== "available") throw new Error(`Provider settlement clearing is ${availability.reason}.`);
+      if (linkMinor <= 0 || linkMinor > availability.availableMinor) throw new Error("Provider settlement Payment clearing availability is insufficient.");
+    }
+    if (Math.round((toNumber(settlement.netAmount) + toNumber(settlement.feeAmount)) * 100) !== Math.round(toNumber(settlement.grossAmount) * 100)) throw new Error("Provider settlement simple arithmetic is invalid.");
+    validateAccountingPosting(business, settlement.settlementDate || new Date().toISOString().slice(0, 10), { sourceType: "provider_settlement", sourceId: settlement.id });
+    const result = postProviderSettlementSimple(state, settlement, business, destination);
+    settlement.accountingStatus = "posted";
+    settlement.accountingJournalId = result.journal?.id || result.event?.journalId || "";
+    settlement.accountingAction = "provider_settlement_posted:v1";
+    settlement.updatedAt = new Date().toISOString();
+    return { ...result, settlement: providerSettlementView(settlement) };
+  }
+
+  function postProviderSettlementAccounting(id) {
+    if (typeof persistenceAdapter.mutateState !== "function") return persistAndReturn(postProviderSettlementAccountingLocal(id));
+    return persistenceAdapter.mutateState(async (authoritativeState, transactionContext) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = await transactionStore.postProviderSettlementAccountingLocal(id, transactionContext);
+      return { result, state: transactionStore.exportState(), persist: true };
     }).then((outcome) => {
       if (outcome.state) applyAuthoritativeState(outcome.state);
       return outcome.result;
@@ -7949,6 +8057,9 @@ export function createStore(seed = {}, options = {}) {
     getProviderSettlement,
     listProviderSettlements,
     evaluateProviderSettlementReadiness,
+    createProviderSettlementLocal,
+    postProviderSettlementAccountingLocal,
+    postProviderSettlementAccounting,
     upsertBusinessSettings,
     validateBusinessEmailSettings,
     recordBusinessEmailDelivery,
