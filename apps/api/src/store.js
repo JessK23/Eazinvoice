@@ -2004,6 +2004,83 @@ export function createStore(seed = {}, options = {}) {
     return clone(settlement);
   }
 
+  const KNOWN_SETTLEMENT_ADJUSTMENTS = new Set([
+    "rounding", "refund", "chargeback", "dispute", "provider_correction",
+    "reserve", "reserve_release", "incentive", "rebate",
+  ]);
+
+  function normalizeSettlementProvenance(input = {}) {
+    const source = input.provenance && typeof input.provenance === "object" ? input.provenance : {};
+    const normalized = {
+      sourceType: String(source.sourceType || input.sourceType || "").trim().toLowerCase(),
+      sourceReference: String(source.sourceReference || input.sourceReference || "").trim(),
+      sourceRecordId: String(source.sourceRecordId || input.sourceRecordId || "").trim(),
+      providerEvidenceId: String(source.providerEvidenceId || input.providerEvidenceId || "").trim(),
+      payloadHash: String(source.payloadHash || input.payloadHash || "").trim(),
+      adapterVersion: String(source.adapterVersion || input.adapterVersion || "PAY-SETTLE-EVIDENCE-01A").trim(),
+      observedAt: String(source.observedAt || input.observedAt || new Date().toISOString()).trim(),
+      verifiedAt: String(source.verifiedAt || input.verifiedAt || "").trim(),
+      credentialVersionId: String(source.credentialVersionId || input.credentialVersionId || "").trim(),
+    };
+    const hasIdentity = Boolean(normalized.sourceReference || normalized.sourceRecordId || normalized.providerEvidenceId || normalized.payloadHash);
+    return { value: normalized, complete: Boolean(normalized.sourceType && hasIdentity) };
+  }
+
+  function normalizeSettlementTax(input = {}) {
+    const source = input.taxComponents && typeof input.taxComponents === "object" ? input.taxComponents : {};
+    const amounts = {
+      cgstAmount: toNumber(source.cgstAmount ?? input.feeCgstAmount),
+      sgstAmount: toNumber(source.sgstAmount ?? input.feeSgstAmount),
+      igstAmount: toNumber(source.igstAmount ?? input.feeIgstAmount),
+    };
+    const total = Math.round((amounts.cgstAmount + amounts.sgstAmount + amounts.igstAmount) * 100) / 100;
+    const aggregate = toNumber(input.feeTaxAmount);
+    const hasComponents = total > 0 || aggregate === 0;
+    const reasons = [];
+    if (Object.values(amounts).some((amount) => amount < 0)) reasons.push("negative_tax_component");
+    if (hasComponents && Math.abs(total - aggregate) > 0.01) reasons.push("tax_component_total_mismatch");
+    if (amounts.igstAmount > 0 && (amounts.cgstAmount > 0 || amounts.sgstAmount > 0)) reasons.push("mixed_gst_jurisdiction");
+    if (amounts.cgstAmount > 0 && Math.abs(amounts.cgstAmount - amounts.sgstAmount) > 0.01) reasons.push("intra_state_gst_mismatch");
+    return {
+      value: { ...amounts, taxRate: source.taxRate ?? input.feeTaxRate ?? null, taxableAmount: source.taxableAmount ?? input.feeTaxableAmount ?? null, providerGstin: String(source.providerGstin || input.providerGstin || "").trim(), placeOfSupply: String(source.placeOfSupply || input.feePlaceOfSupply || "").trim(), sourceReference: String(source.sourceReference || input.taxSourceReference || "").trim() },
+      supplied: Boolean(input.taxComponents || input.feeCgstAmount !== undefined || input.feeSgstAmount !== undefined || input.feeIgstAmount !== undefined),
+      reasons,
+    };
+  }
+
+  function normalizeSettlementAdjustments(input = {}) {
+    const raw = Array.isArray(input.adjustments) ? input.adjustments : [];
+    const reasons = [];
+    const value = raw.map((adjustment) => {
+      const type = String(adjustment?.type || "").trim().toLowerCase();
+      const amount = toNumber(adjustment?.amount);
+      if (!KNOWN_SETTLEMENT_ADJUSTMENTS.has(type)) reasons.push("unknown_adjustment_type");
+      if (!Number.isFinite(amount) || amount === 0) reasons.push("invalid_adjustment_amount");
+      return { type, amount, currency: String(adjustment?.currency || input.currency || "INR").trim().toUpperCase(), providerReference: String(adjustment?.providerReference || "").trim(), sourceReference: String(adjustment?.sourceReference || "").trim() };
+    });
+    return { value, reasons };
+  }
+
+  function normalizeSettlementWithholding(input = {}) {
+    if (input.withholding === undefined || input.withholding === null) return { value: null, reasons: [] };
+    const withholding = input.withholding && typeof input.withholding === "object" ? input.withholding : {};
+    return {
+      value: { type: String(withholding.type || "").trim().toLowerCase(), amount: toNumber(withholding.amount), currency: String(withholding.currency || input.currency || "INR").trim().toUpperCase(), sourceReference: String(withholding.sourceReference || "").trim() },
+      reasons: ["withholding_contract_unverified"],
+    };
+  }
+
+  function evaluateProviderSettlementReadiness(settlement = {}) {
+    const reasons = [];
+    if (!settlement.provenance?.sourceType || !(settlement.provenance.sourceReference || settlement.provenance.sourceRecordId || settlement.provenance.providerEvidenceId || settlement.provenance.payloadHash)) reasons.push("missing_provenance");
+    if (settlement.taxComponents?.feeTaxAmount > 0 && !settlement.taxComponents?.sourceReference) reasons.push("missing_tax_evidence_reference");
+    if (settlement.evidenceValidationReasons?.length) reasons.push(...settlement.evidenceValidationReasons);
+    if (!settlement.destinationBankAccountId) reasons.push("missing_destination_bank_mapping");
+    if (settlement.evidenceLifecycle === "manual_review") return { evidenceStatus: "manual_review", accountingReadiness: "blocked", reasons: [...new Set(reasons)] };
+    if (reasons.length) return { evidenceStatus: settlement.provenance?.sourceType ? "evidence_verified" : "evidence_pending", accountingReadiness: "blocked", reasons: [...new Set(reasons)] };
+    return { evidenceStatus: "evidence_verified", accountingReadiness: "blocked", reasons: ["tax_document_and_accounting_authority_pending"] };
+  }
+
   function settlementFingerprint(input = {}) {
     return crypto.createHash("sha256").update(JSON.stringify({
       provider: String(input.provider || "").trim().toLowerCase(),
@@ -2022,6 +2099,11 @@ export function createStore(seed = {}, options = {}) {
         paymentId: String(link.paymentId || "").trim(),
         amount: toNumber(link.amount),
       })),
+      provenance: input.provenance || {},
+      taxComponents: input.taxComponents || {},
+      adjustments: input.adjustments || [],
+      withholding: input.withholding || null,
+      destinationBankAccountId: input.destinationBankAccountId || "",
     })).digest("hex");
   }
 
@@ -2065,6 +2147,12 @@ export function createStore(seed = {}, options = {}) {
     const feeAmount = toNumber(input.feeAmount);
     const feeTaxAmount = toNumber(input.feeTaxAmount);
     const adjustmentAmount = toNumber(input.adjustmentAmount);
+    const provenance = normalizeSettlementProvenance(input);
+    const tax = normalizeSettlementTax(input);
+    const adjustments = normalizeSettlementAdjustments(input);
+    const withholding = normalizeSettlementWithholding(input);
+    const evidenceValidationReasons = [...tax.reasons, ...adjustments.reasons, ...withholding.reasons];
+    if (adjustmentAmount !== 0 && adjustments.value.length === 0) evidenceValidationReasons.push("unclassified_aggregate_adjustment");
     const calculatedNet = Math.round((grossAmount - feeAmount - feeTaxAmount + adjustmentAmount) * 100) / 100;
     const netAmount = input.netAmount === undefined ? calculatedNet : toNumber(input.netAmount);
     if (grossAmount <= 0 || feeAmount < 0 || feeTaxAmount < 0 || !Number.isFinite(adjustmentAmount) || netAmount < 0 || Math.round(netAmount * 100) !== Math.round(calculatedNet * 100)) {
@@ -2086,7 +2174,10 @@ export function createStore(seed = {}, options = {}) {
     const destinationBankAccountId = String(input.destinationBankAccountId || "").trim();
     if (destinationBankAccountId) {
       const bankAccount = state.bankAccounts.find((entry) => entry.id === destinationBankAccountId && entry.businessId === businessId && entry.status !== "deleted");
-      if (!bankAccount || !["bank", "cash"].includes(String(bankAccount.accountType || "").toLowerCase())) throw new Error("Provider settlement destination must be an active business bank or cash account.");
+      if (!bankAccount || String(bankAccount.accountType || "").toLowerCase() !== "bank") throw new Error("Provider settlement destination must be an active tenant bank account.");
+      const ledgerAccount = state.ledgerAccounts.find((account) => account.id === bankAccount.ledgerAccountId && account.businessId === businessId && account.status !== "deleted");
+      if (!ledgerAccount) throw new Error("Provider settlement destination must resolve to an active tenant ledger account.");
+      if (ledgerAccount.accountCode === "1110" || ledgerAccount.accountRole === "bank_clearing") throw new Error("Provider settlement destination cannot be the 1110 Provider Clearing account.");
     }
     const now = new Date().toISOString();
     const settlement = {
@@ -2096,9 +2187,20 @@ export function createStore(seed = {}, options = {}) {
       grossAmount, feeAmount, feeTaxAmount, adjustmentAmount, netAmount,
       settlementDate: String(input.settlementDate || "").trim(), providerCreatedAt: String(input.providerCreatedAt || "").trim(),
       destinationBankAccountId, paymentLinks, fingerprint,
+      provenance: provenance.value,
+      taxComponents: { ...tax.value, feeTaxAmount },
+      adjustments: adjustments.value,
+      withholding: withholding.value,
+      evidenceValidationReasons,
+      evidenceLifecycle: evidenceValidationReasons.length ? "manual_review" : (provenance.complete ? "evidence_verified" : "evidence_pending"),
+      accountingReadiness: "blocked",
       accountingStatus: "not_posted", createdAt: now, updatedAt: now,
       metadata: input.metadata && typeof input.metadata === "object" ? clone(input.metadata) : {},
     };
+    const readiness = evaluateProviderSettlementReadiness(settlement);
+    settlement.evidenceLifecycle = readiness.evidenceStatus === "manual_review" ? "manual_review" : settlement.evidenceLifecycle;
+    settlement.accountingReadiness = readiness.accountingReadiness;
+    settlement.readinessReasons = readiness.reasons;
     state.providerSettlements.push(settlement);
     return persistAndReturn({ settlement: providerSettlementView(settlement) });
   }
@@ -7831,6 +7933,7 @@ export function createStore(seed = {}, options = {}) {
     createProviderSettlement,
     getProviderSettlement,
     listProviderSettlements,
+    evaluateProviderSettlementReadiness,
     upsertBusinessSettings,
     validateBusinessEmailSettings,
     recordBusinessEmailDelivery,

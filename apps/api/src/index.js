@@ -821,6 +821,13 @@ export function createApi(deps = {}) {
       return store.listProviderSettlements({ businessId: access.businessId, provider: options.provider });
     },
 
+    evaluateProviderSettlementReadiness(user, id, options = {}) {
+      const access = this.requireBusinessWorkspaceAccess(user, options, "read");
+      const settlement = store.getProviderSettlement(id, { businessId: access.businessId });
+      if (!settlement) return null;
+      return store.evaluateProviderSettlementReadiness(settlement);
+    },
+
     getProviderSettlementForSystem(id, businessId) {
       return store.getProviderSettlement(id, { businessId });
     },
