@@ -1133,6 +1133,12 @@ export function createApi(deps = {}) {
       return getLedgerAccounts(workspace.owner, options);
     },
 
+    getProviderFeeAccountAuthority(user, options = {}) {
+      if (!user?.id) throw new Error("Authentication required");
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return store.getProviderFeeAccountAuthority(workspace.businessId);
+    },
+
     createLedgerAccount(user, input = {}, options = {}) {
       if (!user?.id) throw new Error("Authentication required");
       const workspace = this.resolveRecordsWorkspaceAccess(user, {

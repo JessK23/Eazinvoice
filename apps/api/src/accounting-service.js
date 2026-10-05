@@ -73,9 +73,38 @@ export function ensureDefaultAccountingAccounts(state, business = {}, ownerUserI
       if (!account.accountRole) account.accountRole = key;
       if (!account.balanceSheetCategory) account.balanceSheetCategory = balanceSheetCategory;
     }
-    accounts[key] = account;
+    accounts[key] = key === "provider_fee_expense" && String(account.status || "active").toLowerCase() !== "active"
+      ? null
+      : account;
   });
   return accounts;
+}
+
+export function resolveProviderFeeAccount(state, business = {}) {
+  const businessId = business.id || business.businessId;
+  if (!businessId) return { status: "manual_review", reasonCode: "business_required", account: null };
+  const allCandidates = (state.ledgerAccounts || []).filter((entry) => entry.businessId === businessId && (
+    entry.accountRole === "provider_fee_expense" || entry.accountCode === "5300"
+  ));
+  const lifecycleConflict = allCandidates.find((entry) => String(entry.status || "active").toLowerCase() !== "active");
+  if (lifecycleConflict) {
+    return {
+      status: "manual_review",
+      reasonCode: String(lifecycleConflict.status || "").toLowerCase() === "deleted"
+        ? "provider_fee_account_deleted"
+        : "provider_fee_account_inactive",
+      account: null,
+    };
+  }
+  const candidates = allCandidates.filter((entry) => String(entry.status || "active").toLowerCase() === "active");
+  if (candidates.length !== 1) {
+    return { status: "manual_review", reasonCode: candidates.length === 0 ? "provider_fee_account_missing" : "duplicate_provider_fee_accounts", account: null };
+  }
+  const account = candidates[0];
+  if (account.accountType !== "expense" || account.normalBalance !== "debit" || account.accountRole !== "provider_fee_expense") {
+    return { status: "manual_review", reasonCode: "incompatible_provider_fee_account", account: null };
+  }
+  return { status: "canonical", reasonCode: "canonical_provider_fee_account", account: clone(account) };
 }
 
 function ensureAccountBusiness(account, businessId) {

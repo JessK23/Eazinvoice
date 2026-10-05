@@ -9,6 +9,7 @@ import {
 } from "./compliance-engine.js";
 import {
   ensureDefaultAccountingAccounts,
+  resolveProviderFeeAccount,
   postInvoiceIssued,
   postPaymentCaptured,
   postCustomerReceiptUnapplied,
@@ -6952,6 +6953,20 @@ export function createStore(seed = {}, options = {}) {
     return clone(state.ledgerAccounts.filter((account) => account.businessId === business.id && account.status !== "deleted"));
   }
 
+  function getProviderFeeAccountAuthority(businessId) {
+    const business = findBusinessByIdOrLegacyOwner(businessId);
+    if (!business) return { status: "manual_review", reasonCode: "business_not_found", account: null };
+    const historicalCandidates = state.ledgerAccounts.filter((entry) => entry.businessId === business.id && (
+      entry.accountRole === "provider_fee_expense" || entry.accountCode === "5300"
+    ));
+    const lifecycleConflict = historicalCandidates.find((entry) => String(entry.status || "active").toLowerCase() !== "active");
+    if (lifecycleConflict) {
+      return resolveProviderFeeAccount(state, business);
+    }
+    ensureDefaultAccountingAccounts(state, business, business.ownerUserId);
+    return resolveProviderFeeAccount(state, business);
+  }
+
   function listFinancialEventsForBusiness(businessId) {
     const business = findBusinessByIdOrLegacyOwner(businessId);
     if (!business) return [];
@@ -7951,6 +7966,7 @@ export function createStore(seed = {}, options = {}) {
     listApiKeysForUser,
     revokeApiKey,
     listLedgerAccountsForBusiness,
+    getProviderFeeAccountAuthority,
     listFinancialEventsForBusiness,
     listAccountingJournalsForBusiness,
     createManualAccountingJournal,

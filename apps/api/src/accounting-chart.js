@@ -21,6 +21,7 @@ export const CANONICAL_SYSTEM_ACCOUNTS = Object.freeze([
   { code: "4200", name: "Sales Returns / Adjustments", type: "income", normalBalance: "debit", role: "sales_returns", balanceSheetCategory: "" },
   { code: "5100", name: "Operating Expense", type: "expense", normalBalance: "debit", role: "operating_expense", balanceSheetCategory: "" },
   { code: "5200", name: "Purchase / Expense Adjustments", type: "expense", normalBalance: "credit", role: "purchase_adjustments", balanceSheetCategory: "" },
+  { code: "5300", name: "Payment Provider Fees", type: "expense", normalBalance: "debit", role: "provider_fee_expense", balanceSheetCategory: "" },
 ]);
 
 export const LEGACY_COMPATIBILITY_ACCOUNTS = Object.freeze([
