@@ -98,8 +98,8 @@
           <summary class="nav-item nav-item-toggle">Bank and Cash</summary>
           <div class="nav-subitems">
             <a class="nav-subitem" href="/apps/web/dashboard.html#banking" data-page-link="banking">Banking Overview</a>
-            <a class="nav-subitem" href="/apps/web/dashboard.html#accounting" data-page-link="accounting">Bank Book</a>
-            <a class="nav-subitem" href="/apps/web/dashboard.html#accounting" data-page-link="accounting">Cash Book</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#accounting" data-page-link="accounting" data-nav-owner="accounting" data-owner-decision="accounting-book">Bank Book</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#accounting" data-page-link="accounting" data-nav-owner="accounting" data-owner-decision="accounting-book">Cash Book</a>
             <a class="nav-subitem" href="/apps/web/dashboard.html#banking" data-page-link="banking">Reconciliation</a>
           </div>
         </details>
@@ -803,7 +803,7 @@
           </table>
         </div>
       </section>
-      <section id="invoices" class="panel dashboard-page" data-dashboard-page="invoices">
+      <section id="invoices" class="panel dashboard-page" data-dashboard-page="invoices" data-surface-owner="sales" data-surface-purpose="invoice-operations" data-canonical-route="invoices">
         <div class="panel-head">
           <div>
             <span class="pill blue">Invoice workspace</span>
@@ -866,7 +866,7 @@
           </section>
         </div>
       </section>
-      <section id="purchase-orders" class="panel dashboard-page" data-dashboard-page="purchase-orders">
+      <section id="purchase-orders" class="panel dashboard-page" data-dashboard-page="purchase-orders" data-surface-owner="purchases" data-surface-purpose="purchase-orders" data-canonical-route="purchase-orders">
         <div class="panel-head">
           <div>
             <span class="pill blue">PO workspace</span>
@@ -973,7 +973,7 @@
         </form>
         <div id="vendorBillsList" class="management-list"></div>
       </section>
-      <section id="business-profiles" class="panel dashboard-page" data-dashboard-page="business-profiles">
+      <section id="business-profiles" class="panel dashboard-page" data-dashboard-page="business-profiles" data-surface-owner="business-profile" data-surface-purpose="business-identity" data-canonical-route="business-profiles">
         <div class="panel-head">
           <div>
             <span class="pill blue">Business profiles</span>
@@ -1065,7 +1065,7 @@
         <div class="notice">Vendor records are now maintained separately. Existing PO/WO records still remain visible as spend context below.</div>
         <div id="vendorsList" class="management-list"></div>
       </section>
-      <section id="business-workspace" class="panel dashboard-page" data-dashboard-page="business-workspace">
+      <section id="business-workspace" class="panel dashboard-page" data-dashboard-page="business-workspace" data-surface-owner="workspace" data-surface-purpose="business-configuration" data-canonical-route="business-workspace">
         <div class="panel-head">
           <div>
             <span class="pill blue">Business tier</span>
