@@ -18,6 +18,54 @@
     </nav>
   </header>
 
+  <section id="invoiceDetailPanel" class="panel invoice-detail-panel" data-invoice-detail hidden aria-live="polite">
+    <div class="panel-head">
+      <div>
+        <span class="pill blue">Sales · Invoice detail</span>
+        <h1 id="invoiceDetailTitle">Invoice</h1>
+        <p id="invoiceDetailStatus" class="hint">Loading authoritative invoice details...</p>
+      </div>
+      <div class="row-actions">
+        <a class="ghost" href="/apps/web/dashboard.html#invoices">Back to Invoices</a>
+        <a id="invoiceDetailEdit" class="ghost" href="#" hidden>Edit Draft</a>
+      </div>
+    </div>
+    <div id="invoiceDetailError" class="inline-status" hidden></div>
+    <div id="invoiceDetailBody" class="stack" hidden>
+      <div class="quick-grid">
+        <article class="quick-card"><span>Customer</span><strong id="invoiceDetailCustomer">Unavailable</strong></article>
+        <article class="quick-card"><span>Invoice date</span><strong id="invoiceDetailDate">Unavailable</strong></article>
+        <article class="quick-card"><span>Due date</span><strong id="invoiceDetailDueDate">Unavailable</strong></article>
+        <article class="quick-card"><span>Payment status</span><strong id="invoiceDetailPaymentStatus">Unavailable</strong></article>
+      </div>
+      <div class="panel-subsection">
+        <div class="panel-head compact-head"><div><h2>Amounts</h2><p class="hint">Values are returned by the Invoice authority.</p></div></div>
+        <div class="payment-status-grid">
+          <div><span>Subtotal</span><strong id="invoiceDetailSubtotal">Unavailable</strong></div>
+          <div><span>Discount</span><strong id="invoiceDetailDiscount">Unavailable</strong></div>
+          <div><span>Tax</span><strong id="invoiceDetailTax">Unavailable</strong></div>
+          <div><span>Total</span><strong id="invoiceDetailTotal">Unavailable</strong></div>
+          <div><span>Paid</span><strong id="invoiceDetailPaid">Unavailable</strong></div>
+          <div><span>Outstanding</span><strong id="invoiceDetailOutstanding">Unavailable</strong></div>
+          <div><span>Credit adjustments</span><strong id="invoiceDetailCredits">Unavailable</strong></div>
+          <div><span>Currency</span><strong id="invoiceDetailCurrency">Unavailable</strong></div>
+        </div>
+      </div>
+      <div class="panel-subsection">
+        <div class="panel-head compact-head"><div><h2>Line items</h2><p class="hint">Invoice lines are displayed from the server response.</p></div></div>
+        <div id="invoiceDetailItems" class="stack"></div>
+      </div>
+      <div class="panel-subsection">
+        <div class="panel-head compact-head"><div><h2>Payments and allocations</h2><p class="hint">No payment or allocation is created by this view.</p></div></div>
+        <div id="invoiceDetailPayments" class="stack"></div>
+      </div>
+      <div class="panel-subsection">
+        <div class="panel-head compact-head"><div><h2>Available actions</h2><p id="invoiceDetailActionHint" class="hint">Actions are limited by the backend lifecycle state.</p></div></div>
+        <div id="invoiceDetailActions" class="row-actions"></div>
+      </div>
+    </div>
+  </section>
+
   <main id="invoiceApp" class="invoice-workspace">
     <section class="invoice-builder">
       <form id="invoiceWorkflowForm" class="stack">
@@ -493,6 +541,7 @@
       const token = localStorage.getItem("eazinvoice_token") || new URLSearchParams(location.search).get("token") || "";
       const params = new URLSearchParams(location.search);
       const invoiceIdFromUrl = params.get("invoice") || "";
+      const invoiceDetailMode = params.get("view") === "detail";
       const poIdFromUrl = params.get("po") || "";
       const workflowType = String(params.get("type") || (poIdFromUrl ? "po" : "invoice")).toLowerCase();
       const isPoFlow = Boolean(poIdFromUrl) || workflowType === "po" || workflowType === "wo";
@@ -506,6 +555,10 @@
       let currentUser = null;
       let activePlanKey = "free";
       let fallbackSavedInvoice = null;
+      let detailWorkspaceOptions = null;
+      let detailWorkspaceError = "";
+      let detailContextGeneration = 0;
+      let detailLoadGeneration = 0;
       let saveRedirectUrl = "/apps/web/dashboard.html";
       let formDirty = false;
       let suppressUnsavedPrompt = false;
@@ -1316,11 +1369,219 @@
 
       async function loadInvoiceFromUrl() {
         if (!invoiceIdFromUrl) return;
+        if (invoiceDetailMode) {
+          await loadInvoiceDetail();
+          return;
+        }
         try {
           const invoice = await api(`/invoices/${encodeURIComponent(invoiceIdFromUrl)}`);
           openInvoiceForEdit(invoice);
         } catch (error) {
           if (status) status.textContent = error.message || "Could not open this invoice.";
+        }
+      }
+
+      function detailValue(record, keys, fallback = "Unavailable") {
+        for (const key of keys) {
+          if (record && record[key] !== undefined && record[key] !== null && record[key] !== "") return record[key];
+        }
+        return fallback;
+      }
+
+      function detailMoney(invoice, value) {
+        if (value === "Unavailable") return value;
+        const currency = invoice?.currency || "INR";
+        const symbol = ({ INR: "₹", USD: "$", EUR: "€", GBP: "£", AED: "AED" })[currency] || currency;
+        return `${symbol} ${Number(value || 0).toFixed(2)}`;
+      }
+
+      function setDetailText(id, value) {
+        const node = document.getElementById(id);
+        if (node) node.textContent = String(value ?? "Unavailable");
+      }
+
+      function detailActionButton(label, handler, className = "ghost") {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = className;
+        button.textContent = label;
+        button.addEventListener("click", handler);
+        return button;
+      }
+
+      function detailScopedPath(path) {
+        if (!detailWorkspaceOptions) return path;
+        const query = new URLSearchParams();
+        Object.entries(detailWorkspaceOptions).forEach(([key, value]) => {
+          if (value) query.set(key, value);
+        });
+        const suffix = query.toString();
+        return suffix ? `${path}${path.includes("?") ? "&" : "?"}${suffix}` : path;
+      }
+
+      function detailContextSnapshot() {
+        return detailWorkspaceOptions ? {
+          workspaceOwnerUserId: detailWorkspaceOptions.workspaceOwnerUserId || "",
+          businessId: detailWorkspaceOptions.businessId || "",
+          invoiceId: invoiceIdFromUrl,
+          storedOwner: localStorage.getItem("eazinvoice_business_workspace_owner") || "",
+          generation: detailContextGeneration,
+        } : null;
+      }
+
+      function isDetailContextCurrent(snapshot) {
+        if (!snapshot || snapshot.generation !== detailContextGeneration || snapshot.invoiceId !== invoiceIdFromUrl || !detailWorkspaceOptions) return false;
+        return snapshot.workspaceOwnerUserId === (detailWorkspaceOptions.workspaceOwnerUserId || "")
+          && snapshot.businessId === (detailWorkspaceOptions.businessId || "")
+          && snapshot.storedOwner === (localStorage.getItem("eazinvoice_business_workspace_owner") || "");
+      }
+
+      function invalidateDetailContext(message = "Business workspace context changed. Refresh before continuing.") {
+        detailContextGeneration += 1;
+        detailWorkspaceOptions = null;
+        detailWorkspaceError = message;
+        const body = document.getElementById("invoiceDetailBody");
+        const errorNode = document.getElementById("invoiceDetailError");
+        const statusNode = document.getElementById("invoiceDetailStatus");
+        if (body) body.hidden = true;
+        if (errorNode) {
+          errorNode.hidden = false;
+          errorNode.textContent = message;
+        }
+        if (statusNode) statusNode.textContent = "Invoice unavailable";
+      }
+
+      function detailActionContext(snapshot, invoice, expectedStatus) {
+        if (!isDetailContextCurrent(snapshot) || !invoice?.id || invoice.id !== invoiceIdFromUrl) return false;
+        return String(invoice.status || "draft").toLowerCase() === expectedStatus;
+      }
+
+      async function runDetailLifecycleAction(button, snapshot, invoice, expectedStatus, route, failureMessage) {
+        if (!detailActionContext(snapshot, invoice, expectedStatus) || button.disabled) return;
+        button.disabled = true;
+        try {
+          await api(detailScopedPath(route), { method: "POST", body: "{}" });
+          if (isDetailContextCurrent(snapshot)) await loadInvoiceDetail();
+        } catch (error) {
+          if (isDetailContextCurrent(snapshot)) {
+            const errorNode = document.getElementById("invoiceDetailError");
+            if (errorNode) {
+              errorNode.hidden = false;
+              errorNode.textContent = error.message || failureMessage;
+            }
+          }
+        } finally {
+          if (isDetailContextCurrent(snapshot)) button.disabled = false;
+        }
+      }
+
+      function paymentStateLabel(payment) {
+        const raw = String(payment?.status || payment?.paymentStatus || "unknown").trim().toLowerCase();
+        if (["captured", "verified", "settled"].includes(raw)) return "Captured / verified";
+        if (["pending", "created", "processing", "in_progress", "received", "creating"].includes(raw)) return "Pending / in progress";
+        if (["failed", "rejected", "cancelled", "canceled"].includes(raw)) return "Failed / rejected";
+        return `Unverified / ${raw || "unknown"}`;
+      }
+
+      function paymentStateTone(payment) {
+        const label = paymentStateLabel(payment);
+        return label === "Captured / verified" ? "green" : label.startsWith("Pending") ? "gold" : "red";
+      }
+
+      function paymentRequestStateLabel(request) {
+        const raw = String(request?.status || "unknown").trim().toLowerCase();
+        if (["completed", "fulfilled", "consumed"].includes(raw)) return "Completed / fulfilled";
+        if (["pending", "active", "creating", "created", "open"].includes(raw)) return "Pending / active";
+        if (["failed", "recovery_required"].includes(raw)) return "Failed / recovery required";
+        if (["expired", "cancelled", "canceled"].includes(raw)) return "Expired / cancelled";
+        return `Unknown / ${raw || "unknown"}`;
+      }
+
+      async function loadInvoiceDetail() {
+        const panel = document.getElementById("invoiceDetailPanel");
+        const body = document.getElementById("invoiceDetailBody");
+        const errorNode = document.getElementById("invoiceDetailError");
+        const formWorkspace = document.getElementById("invoiceApp");
+        if (!panel || !body || !formWorkspace) return;
+        const loadGeneration = ++detailLoadGeneration;
+        const snapshot = detailContextSnapshot();
+        const isCurrentLoad = () => loadGeneration === detailLoadGeneration && isDetailContextCurrent(snapshot);
+        panel.hidden = false;
+        formWorkspace.hidden = true;
+        try {
+          if (!snapshot) throw new Error(detailWorkspaceError || "Business workspace context is unavailable. Refresh and select a workspace before opening this Invoice.");
+          const invoice = await api(detailScopedPath(`/invoices/${encodeURIComponent(invoiceIdFromUrl)}`));
+          if (!isCurrentLoad()) return;
+          const [payments, allocations, requests] = await Promise.all([
+            api(detailScopedPath("/payments")).catch(() => null),
+            api(detailScopedPath(`/payment-allocations?documentType=INVOICE&documentId=${encodeURIComponent(invoice.id)}`)).catch(() => null),
+            api(detailScopedPath(`/payment-requests?invoiceId=${encodeURIComponent(invoice.id)}`)).catch(() => null),
+          ]);
+          if (!isCurrentLoad()) return;
+          const statusValue = String(invoice.status || "draft").toLowerCase();
+          const customer = invoice.billToName || invoice.customerName || invoice.customer?.name || "Unavailable";
+          const paid = detailValue(invoice, ["paidAmount", "amountPaid"]);
+          const outstanding = detailValue(invoice, ["outstandingAmount", "balanceAmount", "balanceDue"]);
+          const credit = detailValue(invoice, ["creditAdjustedAmount", "creditNoteAmount", "creditAdjustmentAmount"]);
+          document.title = `Invoice ${invoice.invoiceNumber || invoice.draftNumber || invoice.id}`;
+          setDetailText("invoiceDetailTitle", invoice.invoiceNumber || invoice.draftNumber || "Invoice detail");
+          setDetailText("invoiceDetailStatus", `${String(invoice.status || "draft").toUpperCase()} · ${invoice.currency || "Currency unavailable"}`);
+          setDetailText("invoiceDetailCustomer", customer);
+          setDetailText("invoiceDetailDate", detailValue(invoice, ["invoiceDate", "issueDate"]));
+          setDetailText("invoiceDetailDueDate", detailValue(invoice, ["dueDate"]));
+          setDetailText("invoiceDetailPaymentStatus", detailValue(invoice, ["paymentStatus", "status"]));
+          setDetailText("invoiceDetailSubtotal", detailMoney(invoice, detailValue(invoice, ["subtotal"])));
+          setDetailText("invoiceDetailDiscount", detailMoney(invoice, detailValue(invoice, ["discount", "discountAmount"])));
+          setDetailText("invoiceDetailTax", detailMoney(invoice, detailValue(invoice, ["tax", "taxAmount", "totalTax"])));
+          setDetailText("invoiceDetailTotal", detailMoney(invoice, detailValue(invoice, ["total", "grandTotal"])));
+          setDetailText("invoiceDetailPaid", detailMoney(invoice, paid));
+          setDetailText("invoiceDetailOutstanding", detailMoney(invoice, outstanding));
+          setDetailText("invoiceDetailCredits", detailMoney(invoice, credit));
+          setDetailText("invoiceDetailCurrency", invoice.currency || "Unavailable");
+          const itemsNode = document.getElementById("invoiceDetailItems");
+          const items = Array.isArray(invoice.items) ? invoice.items : [];
+          itemsNode.innerHTML = items.length
+            ? items.map((item) => `<div class="management-card"><div><strong>${escapeHtml(item.description || "Item")}</strong><p class="hint">Qty ${escapeHtml(item.quantity ?? "Unavailable")} · Rate ${escapeHtml(detailMoney(invoice, item.rate))} · Tax ${escapeHtml(item.gstRate ?? item.taxRate ?? "Unavailable")}</p></div><strong>${escapeHtml(detailMoney(invoice, item.total ?? item.amount))}</strong></div>`).join("")
+            : '<div class="notice">No line items were returned by the Invoice authority.</div>';
+          const paymentNode = document.getElementById("invoiceDetailPayments");
+          const linkedPayments = Array.isArray(payments) ? payments.filter((payment) => payment.invoiceId === invoice.id) : null;
+          const linkedAllocations = Array.isArray(allocations) ? allocations : null;
+          const linkedRequests = Array.isArray(requests) ? requests : null;
+          const paymentCards = linkedPayments === null
+            ? ['<div class="notice">Payment history is unavailable from the current API response.</div>']
+            : linkedPayments.map((payment) => `<div class="management-card"><div><div class="badge-row"><span class="pill ${paymentStateTone(payment)}">${escapeHtml(paymentStateLabel(payment))}</span></div><strong>Payment ${escapeHtml(payment.reference || payment.id || "record")}</strong><p class="hint">${escapeHtml(payment.paymentDate || payment.createdAt || "Date unavailable")} · ${escapeHtml(payment.mode || "Payment")}</p></div><strong>${escapeHtml(detailMoney(invoice, payment.amount))}</strong></div>`);
+          if (linkedAllocations === null) paymentCards.push('<div class="notice">Allocation history is unavailable from the current API response.</div>');
+          else if (linkedAllocations.length) linkedAllocations.forEach((allocation) => paymentCards.push(`<div class="management-card"><div><strong>Allocation ${escapeHtml(allocation.id || "record")}</strong><p class="hint">Payment ${escapeHtml(allocation.paymentId || "Unavailable")} · ${escapeHtml(allocation.createdAt || allocation.allocationDate || "Date unavailable")}</p></div><strong>${escapeHtml(detailMoney(invoice, allocation.amount ?? allocation.allocatedAmount))} ${escapeHtml(allocation.currency || invoice.currency || "")}</strong></div>`));
+          if (linkedRequests === null) paymentCards.push('<div class="notice">Payment Request history is unavailable from the current API response.</div>');
+          else if (linkedRequests.length) linkedRequests.forEach((request) => paymentCards.push(`<div class="management-card"><div><div class="badge-row"><span class="pill ${paymentRequestStateLabel(request).startsWith("Completed") ? "green" : paymentRequestStateLabel(request).startsWith("Pending") ? "gold" : "red"}">${escapeHtml(paymentRequestStateLabel(request))}</span></div><strong>Payment Request ${escapeHtml(request.id || request.reference || "record")}</strong><p class="hint">${escapeHtml(request.createdAt || request.updatedAt || "Date unavailable")} · ${escapeHtml(request.currency || invoice.currency || "")}</p></div><strong>${escapeHtml(detailMoney(invoice, request.amount))}</strong></div>`));
+          paymentNode.innerHTML = paymentCards.length ? paymentCards.join("") : '<div class="notice">No linked payments or allocations were returned.</div>';
+          const actions = document.getElementById("invoiceDetailActions");
+          const editDraft = document.getElementById("invoiceDetailEdit");
+          if (!isCurrentLoad()) return;
+          actions.innerHTML = "";
+          editDraft.hidden = statusValue !== "draft";
+          editDraft.href = `/apps/web/invoice.html?invoice=${encodeURIComponent(invoice.id)}`;
+          if (statusValue === "draft") {
+            const button = detailActionButton("Finalize Invoice", () => runDetailLifecycleAction(button, snapshot, invoice, "draft", `/invoices/${encodeURIComponent(invoice.id)}/finalize`, "Could not finalize invoice."), "primary");
+            actions.append(button);
+          } else if (invoice.archivedAt) {
+            const button = detailActionButton("Restore Invoice", () => runDetailLifecycleAction(button, snapshot, invoice, statusValue, `/invoices/${encodeURIComponent(invoice.id)}/restore`, "Could not restore invoice."));
+            actions.append(button);
+          } else {
+            const button = detailActionButton("Archive Invoice", () => runDetailLifecycleAction(button, snapshot, invoice, statusValue, `/invoices/${encodeURIComponent(invoice.id)}/archive`, "Could not archive invoice."));
+            actions.append(button);
+          }
+          document.getElementById("invoiceDetailActionHint").textContent = statusValue === "draft"
+            ? "Drafts can be finalized through the existing backend authority. Edit remains available."
+            : "Finalized invoices are read-only here; lifecycle actions use existing backend authorities.";
+          errorNode.hidden = true;
+          body.hidden = false;
+        } catch (error) {
+          if (!isCurrentLoad()) return;
+          body.hidden = true;
+          errorNode.hidden = false;
+          errorNode.textContent = error.message || "Could not load this Invoice.";
+          document.getElementById("invoiceDetailStatus").textContent = "Invoice unavailable";
         }
       }
 
@@ -1388,17 +1649,50 @@
       async function loadLists() {
         if (!token) return;
         try {
-          const [me, companies, customers, vendors] = await Promise.all([
+          let workspaceLoadError = null;
+          const [me, companies, customers, vendors, workspaces] = await Promise.all([
             api("/me").catch(() => null),
             api("/companies").catch(() => []),
             api("/customers").catch(() => []),
             api("/vendors").catch(() => []),
+            api("/business/workspaces").catch((error) => {
+              workspaceLoadError = error;
+              return [];
+            }),
           ]);
           currentUser = me?.user || null;
           activePlanKey = me?.plan?.active?.plan || currentUser?.plan || "free";
           fallbackCompanies = companies;
           fallbackCustomers = customers;
           fallbackVendors = vendors;
+          const availableWorkspaces = Array.isArray(workspaces) ? workspaces : [];
+          const storedOwner = localStorage.getItem("eazinvoice_business_workspace_owner") || "";
+          detailContextGeneration += 1;
+          detailWorkspaceError = "";
+          if (workspaceLoadError) {
+            detailWorkspaceOptions = null;
+            detailWorkspaceError = "Business workspace membership could not be verified. Refresh before opening this Invoice.";
+          } else if (storedOwner) {
+            const selectedWorkspace = availableWorkspaces.find((entry) => entry.ownerUserId === storedOwner);
+            if (!selectedWorkspace) {
+              detailWorkspaceOptions = null;
+              detailWorkspaceError = "The selected Business workspace is no longer available. Select an authorized workspace before opening this Invoice.";
+            } else {
+              detailWorkspaceOptions = {
+                workspaceOwnerUserId: selectedWorkspace.ownerUserId,
+                businessId: selectedWorkspace.businessId || "",
+              };
+            }
+          } else {
+            const initialWorkspace = availableWorkspaces.find((entry) => entry.source === "team")
+              || availableWorkspaces[0]
+              || (currentUser?.id ? { ownerUserId: currentUser.id, businessId: "" } : null);
+            detailWorkspaceOptions = initialWorkspace?.ownerUserId ? {
+              workspaceOwnerUserId: initialWorkspace.ownerUserId,
+              businessId: initialWorkspace.businessId || "",
+            } : null;
+            if (!detailWorkspaceOptions) detailWorkspaceError = "Select an authorized Business workspace before opening this Invoice.";
+          }
           renderCompanies();
           renderCustomers();
           updateStandardFeatureControls();
@@ -1409,6 +1703,12 @@
           if (status) status.textContent = error.message;
         }
       }
+
+      window.addEventListener("storage", (event) => {
+        if (event.key === "eazinvoice_business_workspace_owner") {
+          invalidateDetailContext("Business workspace selection changed. Refresh before continuing.");
+        }
+      });
 
       async function addCustomer(event) {
         event?.preventDefault();

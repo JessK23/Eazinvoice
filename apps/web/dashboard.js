@@ -4649,7 +4649,7 @@ function renderInvoiceWorkspaceLegacy(invoices) {
         <div class="hint">${escapeHtml(invoice.billToName || "Customer")} - ${escapeHtml(invoice.invoiceDate || "No date")} - ${escapeHtml(invoice.currency || "INR")} ${money(invoice.total || 0)}</div>
       </div>
       <div class="row-actions">
-        <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoice.id || "")}">Open</a>
+        <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoice.id || "")}&view=detail">Open</a>
         <span class="pill ${tone}">${escapeHtml(String(invoice.status || (tone === "gold" ? "draft" : "created")).toUpperCase())}</span>
       </div>
     </div>
@@ -4704,7 +4704,7 @@ function renderInvoiceWorkspace(invoices) {
           ${invoice.paymentLink?.url ? `<div class="hint">Payment link: ${escapeHtml(invoice.paymentLink.url)}</div>` : ""}
         </div>
         <div class="row-actions">
-          <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoiceId)}">${isDraft && canWriteRecords ? "Edit Draft" : "View"}</a>
+          <a class="ghost small" href="/apps/web/invoice.html?invoice=${encodeURIComponent(invoiceId)}${isDraft && canWriteRecords ? "" : "&view=detail"}">${isDraft && canWriteRecords ? "Edit Draft" : "View"}</a>
           ${!isDraft ? `<button class="ghost small" type="button" data-print-invoice="${escapeHtml(invoiceId)}">Print / Save as PDF</button>` : ""}
           ${canWriteRecords && isDraft ? `<button class="ghost small" type="button" data-finalize-invoice="${escapeHtml(invoiceId)}">Finalize</button>` : ""}
           ${canWriteRecords && !isDraft ? `<button class="ghost small" type="button" data-email-invoice="${escapeHtml(invoiceId)}">${activePlanAllows("documentEmailShare") ? "Email" : "Upgrade for Email"}</button>` : ""}
