@@ -1609,11 +1609,12 @@ function createEmailOtpStore() {
       if (!normalizedEmail || !normalizedEmail.includes("@")) {
         throw new Error("Enter a valid email address for OTP verification");
       }
-      const otp = String(Math.floor(100000 + Math.random() * 900000));
+      const otp = String(crypto.randomInt(100000, 1000000));
       otps.set(normalizedEmail, {
         otp,
         mode: mode || "login",
         expiresAt: Date.now() + getEmailOtpExpirySeconds() * 1000,
+        attempts: 0,
       });
       return { email: normalizedEmail, expiresInSeconds: getEmailOtpExpirySeconds(), devOtp: otp };
     },
@@ -1621,9 +1622,15 @@ function createEmailOtpStore() {
       const normalizedEmail = String(email || "").trim().toLowerCase();
       const entry = otps.get(normalizedEmail);
       if (!entry || entry.expiresAt < Date.now()) {
+        otps.delete(normalizedEmail);
         throw new Error("Email OTP has expired. Request a new OTP.");
       }
       if (entry.otp !== String(otp || "").trim()) {
+        entry.attempts += 1;
+        if (entry.attempts >= 5) {
+          otps.delete(normalizedEmail);
+          throw new Error("Too many invalid email OTP attempts. Request a new OTP.");
+        }
         throw new Error("Invalid email OTP");
       }
       if (mode && entry.mode !== mode) {
@@ -1647,6 +1654,13 @@ function isE2eAuthConfigured() {
     && env !== "production"
     && String(process.env.EAZINVOICE_E2E_AUTH || "").trim().toLowerCase() === "true"
     && String(process.env.EAZINVOICE_E2E_AUTH_SECRET || "").trim().length >= 16;
+}
+
+function allowDevelopmentOtpResponse(options = {}) {
+  if (options.exposeDevelopmentOtp === true) return true;
+  if (options.exposeDevelopmentOtp === false) return false;
+  const environment = String(process.env.EAZINVOICE_ENV || process.env.NODE_ENV || "development").trim().toLowerCase();
+  return environment !== "production";
 }
 
 function isLocalRequest(req) {
@@ -1845,6 +1859,7 @@ export function createServer(options = {}) {
   const supabaseEmailOtpVerifier = options.supabaseEmailOtpVerifier ?? verifySupabaseEmailOtp;
   const authEmailOtpSender = options.authEmailOtpSender ?? sendSmtpMail;
   const businessSmtpSender = options.businessSmtpSender ?? sendSmtpMail;
+  const exposeDevelopmentOtp = allowDevelopmentOtpResponse(options);
   const rateBuckets = new Map();
   const corsAllowedOrigins = configuredCorsAllowedOrigins(options);
 
@@ -2933,7 +2948,7 @@ export function createServer(options = {}) {
             mode,
           });
         }
-        sendJson(res, 200, {
+        const response = {
           ok: true,
           provider,
           message: provider === "supabase"
@@ -2941,8 +2956,11 @@ export function createServer(options = {}) {
             : provider === "app-smtp"
               ? "Email OTP sent by EazInvoice email service"
               : "Email OTP requested",
-          ...otp,
-        });
+          email: otp.email,
+          expiresInSeconds: otp.expiresInSeconds,
+        };
+        if (exposeDevelopmentOtp && otp.devOtp) response.devOtp = otp.devOtp;
+        sendJson(res, 200, response);
       } catch (error) {
         const isRateLimit = /rate limit/i.test(error.message || "");
         sendJson(res, isRateLimit ? 429 : 400, {
@@ -2992,27 +3010,34 @@ export function createServer(options = {}) {
         sendJson(res, 400, { error: error.message });
         return;
       }
-      const user = promoteAdmin(existing
-        ? await api.updateUserAuthDetails(existing.id, {
+      let user;
+      try {
+        user = promoteAdmin(existing
+          ? await api.updateUserAuthDetails(existing.id, {
+            phone: normalizedPhone,
+            mobileVerified: false,
+            emailVerified: true,
+            passwordHash,
+            subscriberType: body.subscriberType || existing.subscriberType || "individual",
+            registrant,
+          })
+          : await api.createUser({
+          name: body.name ?? "",
+          email: body.email ?? "",
           phone: normalizedPhone,
           mobileVerified: false,
           emailVerified: true,
           passwordHash,
-          subscriberType: body.subscriberType || existing.subscriberType || "individual",
+          subscriberType: body.subscriberType || "individual",
           registrant,
-        })
-        : await api.createUser({
-        name: body.name ?? "",
-        email: body.email ?? "",
-        phone: normalizedPhone,
-        mobileVerified: false,
-        emailVerified: true,
-        passwordHash,
-        subscriberType: body.subscriberType || "individual",
-        registrant,
-        role: adminRoleForEmail(body.email) ? "admin" : "user",
-        permissions: adminPermissionsForEmail(body.email),
-      }));
+          role: adminRoleForEmail(body.email) ? "admin" : "user",
+          permissions: adminPermissionsForEmail(body.email),
+        }));
+      } catch (error) {
+        console.error("AUTH_SIGNUP_PERSISTENCE_FAILURE", { code: error.code || "REGISTRATION_UNAVAILABLE" });
+        sendJson(res, 503, { error: "Registration is temporarily unavailable. Please try again.", code: "REGISTRATION_UNAVAILABLE" });
+        return;
+      }
       const token = sessions.create(user);
       sendJson(res, 201, { user, token });
       return;

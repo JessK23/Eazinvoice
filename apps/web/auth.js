@@ -28,11 +28,18 @@ let otpExpiresAt = 0;
 let resendAvailableAt = 0;
 
 async function apiRequest(path, body) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    const error = new Error("Unable to connect to EazInvoice. Please check your connection and try again.");
+    error.code = "AUTH_NETWORK_ERROR";
+    throw error;
+  }
   const raw = await response.text().catch(() => "");
   let payload = {};
   try {
@@ -111,9 +118,13 @@ function stopOtpTimers() {
 function updateOtpExpiry() {
   if (!otpExpiry || !otpExpiresAt) return;
   const remaining = otpExpiresAt - Date.now();
-  otpExpiry.textContent = remaining > 0
-    ? `OTP expires in ${formatRemaining(remaining)}`
-    : "OTP expired. Request a fresh code.";
+  if (remaining > 0) {
+    otpExpiry.textContent = `OTP expires in ${formatRemaining(remaining)}`;
+    return;
+  }
+  const otpInput = form?.querySelector('input[name="otp"]');
+  if (otpInput) otpInput.value = "";
+  otpExpiry.textContent = "OTP expired. Request a fresh code.";
 }
 
 function updateResendButton() {
@@ -229,16 +240,15 @@ async function requestEmailOtp() {
   }
   setOtpLoading(true);
   setStatus("Sending email OTP...");
+  const otpInput = form?.querySelector('input[name="otp"]');
+  if (otpInput) otpInput.value = "";
   try {
     const response = await apiRequest("/auth/email-otp/request", {
       email,
       mode: mode === "reset" ? "reset-password" : mode,
     });
-    const otpInput = form?.querySelector('input[name="otp"]');
-    if (otpInput && response.devOtp) otpInput.value = response.devOtp;
-    setStatus(response.devOtp
-      ? `OTP sent to ${response.email}. Local test OTP: ${response.devOtp}`
-      : `OTP sent to ${response.email}. Enter the code you receive.`);
+    if (otpInput) otpInput.value = "";
+    setStatus(`OTP sent to ${response.email}. Enter the code you receive.`);
     setOtpSent();
     startOtpTimers(response.expiresInSeconds);
   } catch (error) {
