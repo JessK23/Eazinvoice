@@ -107,6 +107,7 @@ function sourceRecord(state, journal = {}) {
   const sourceType = String(journal.sourceType || "");
   const sourceId = journal.sourceId;
   if (sourceType === "payment" || sourceType === "vendor_payment") return (state.payments || []).find((entry) => entry.id === sourceId) || {};
+  if (sourceType === "provider_settlement") return (state.providerSettlements || []).find((entry) => entry.id === sourceId) || {};
   if (sourceType === "customer_payment_reversal") return (state.paymentReversals || []).find((entry) => entry.id === sourceId) || {};
   if (sourceType === "vendor_payment_reversal") return (state.vendorPaymentReversals || []).find((entry) => entry.id === sourceId) || {};
   if (sourceType === "customer_refund") return (state.customerRefunds || []).find((entry) => entry.id === sourceId) || {};
@@ -115,17 +116,17 @@ function sourceRecord(state, journal = {}) {
 }
 
 function sourceDate(journal = {}, record = {}) {
-  return record.paymentDate || record.reversalDate || record.refundDate || record.receivedDate || journal.journalDate || String(journal.createdAt || "").slice(0, 10);
+  return record.settlementDate || record.paymentDate || record.reversalDate || record.refundDate || record.receivedDate || journal.journalDate || String(journal.createdAt || "").slice(0, 10);
 }
 
 function sourceReference(record = {}) {
-  return normalizeText(record.reference || record.providerReference || record.gatewayPaymentId || record.gatewayOrderId || record.idempotencyKey || "");
+  return normalizeText(record.reference || record.providerReference || record.providerSettlementId || record.payoutId || record.gatewayPaymentId || record.gatewayOrderId || record.idempotencyKey || "");
 }
 
 export function buildInternalBankTransactions(state = {}, bankAccount = {}, options = {}) {
   const businessId = bankAccount.businessId;
   const accountId = bankAccount.ledgerAccountId;
-  const allowedSources = new Set(["payment", "vendor_payment", "customer_payment_reversal", "vendor_payment_reversal", "customer_refund", "vendor_refund", "manual"]);
+  const allowedSources = new Set(["payment", "vendor_payment", "provider_settlement", "customer_payment_reversal", "vendor_payment_reversal", "customer_refund", "vendor_refund", "manual"]);
   const journalsById = new Map((state.accountingJournals || [])
     .filter((journal) => journal.businessId === businessId && journal.status === "posted" && allowedSources.has(String(journal.sourceType || "")))
     .map((journal) => [journal.id, journal]));
