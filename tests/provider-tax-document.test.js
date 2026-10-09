@@ -132,19 +132,19 @@ test("multi-settlement CGST and SGST allocations require exact component conserv
   const s = scenario();
   const second = secondSettlement(s);
   const exact = s.api.createProviderTaxDocumentForSystem({ ...multiTaxInput(s, [
-    { settlementId: s.settlement.id, feeAmount: 100, componentAmounts: { cgstAmount: 4.5, sgstAmount: 4.5, igstAmount: 0, totalTax: 9 } },
-    { settlementId: second.id, feeAmount: 50, componentAmounts: { cgstAmount: 4.5, sgstAmount: 4.5, igstAmount: 0, totalTax: 9 } },
+    { settlementId: s.settlement.id, feeAmount: 100, taxableFeeAmount: 100, componentAmounts: { cgstAmount: 4.5, sgstAmount: 4.5, igstAmount: 0, totalTax: 9 } },
+    { settlementId: second.id, feeAmount: 50, taxableFeeAmount: 50, componentAmounts: { cgstAmount: 4.5, sgstAmount: 4.5, igstAmount: 0, totalTax: 9 } },
   ]), trustedEvidence: true });
   assert.equal(exact.document.status, "verified");
   const under = s.api.createProviderTaxDocumentForSystem({ ...multiTaxInput(s, [
-    { settlementId: s.settlement.id, feeAmount: 100, componentAmounts: { cgstAmount: 4, sgstAmount: 4.5, igstAmount: 0, totalTax: 8.5 } },
-    { settlementId: second.id, feeAmount: 50, componentAmounts: { cgstAmount: 4.5, sgstAmount: 4.5, igstAmount: 0, totalTax: 9 } },
+    { settlementId: s.settlement.id, feeAmount: 100, taxableFeeAmount: 100, componentAmounts: { cgstAmount: 4, sgstAmount: 4.5, igstAmount: 0, totalTax: 8.5 } },
+    { settlementId: second.id, feeAmount: 50, taxableFeeAmount: 50, componentAmounts: { cgstAmount: 4.5, sgstAmount: 4.5, igstAmount: 0, totalTax: 9 } },
   ]), trustedEvidence: true });
   assert.equal(under.document.status, "manual_review");
   assert.match(under.document.reasons.join(","), /component_allocation_total_mismatch/);
   const over = s.api.createProviderTaxDocumentForSystem({ ...multiTaxInput(s, [
-    { settlementId: s.settlement.id, feeAmount: 100, componentAmounts: { cgstAmount: 5, sgstAmount: 4.5, igstAmount: 0, totalTax: 9.5 } },
-    { settlementId: second.id, feeAmount: 50, componentAmounts: { cgstAmount: 5, sgstAmount: 4.5, igstAmount: 0, totalTax: 9.5 } },
+    { settlementId: s.settlement.id, feeAmount: 100, taxableFeeAmount: 100, componentAmounts: { cgstAmount: 5, sgstAmount: 4.5, igstAmount: 0, totalTax: 9.5 } },
+    { settlementId: second.id, feeAmount: 50, taxableFeeAmount: 50, componentAmounts: { cgstAmount: 5, sgstAmount: 4.5, igstAmount: 0, totalTax: 9.5 } },
   ]), trustedEvidence: true });
   assert.equal(over.document.status, "manual_review");
   assert.match(over.document.reasons.join(","), /component_allocation_total_mismatch/);
@@ -154,14 +154,14 @@ test("multi-settlement aggregate tax cannot hide component mismatch or absent co
   const s = scenario();
   const second = secondSettlement(s);
   const mismatch = s.api.createProviderTaxDocumentForSystem({ ...multiTaxInput(s, [
-    { settlementId: s.settlement.id, feeAmount: 100, componentAmounts: { cgstAmount: 8, sgstAmount: 4, igstAmount: 0, totalTax: 12 } },
-    { settlementId: second.id, feeAmount: 50, componentAmounts: { cgstAmount: 1, sgstAmount: 6, igstAmount: 0, totalTax: 7 } },
+    { settlementId: s.settlement.id, feeAmount: 100, taxableFeeAmount: 100, componentAmounts: { cgstAmount: 8, sgstAmount: 4, igstAmount: 0, totalTax: 12 } },
+    { settlementId: second.id, feeAmount: 50, taxableFeeAmount: 50, componentAmounts: { cgstAmount: 1, sgstAmount: 6, igstAmount: 0, totalTax: 7 } },
   ]), trustedEvidence: true });
   assert.equal(mismatch.document.status, "manual_review");
   assert.match(mismatch.document.reasons.join(","), /component_allocation_total_mismatch/);
   const absent = s.api.createProviderTaxDocumentForSystem({ ...multiTaxInput(s, [
-    { settlementId: s.settlement.id, feeAmount: 100, componentAmounts: { cgstAmount: 9, sgstAmount: 4.5, igstAmount: 1, totalTax: 14.5 } },
-    { settlementId: second.id, feeAmount: 50, componentAmounts: { cgstAmount: 0, sgstAmount: 4.5, igstAmount: 0, totalTax: 4.5 } },
+    { settlementId: s.settlement.id, feeAmount: 100, taxableFeeAmount: 100, componentAmounts: { cgstAmount: 9, sgstAmount: 4.5, igstAmount: 1, totalTax: 14.5 } },
+    { settlementId: second.id, feeAmount: 50, taxableFeeAmount: 50, componentAmounts: { cgstAmount: 0, sgstAmount: 4.5, igstAmount: 0, totalTax: 4.5 } },
   ]), trustedEvidence: true });
   assert.equal(absent.document.status, "manual_review");
   assert.match(absent.document.reasons.join(","), /allocation_for_absent_component/);
@@ -171,8 +171,8 @@ test("multi-settlement IGST conservation is exact and duplicate settlement rows 
   const s = scenario();
   const second = secondSettlement(s);
   const exact = s.api.createProviderTaxDocumentForSystem({ ...multiTaxInput(s, [
-    { settlementId: s.settlement.id, feeAmount: 100, componentAmounts: { cgstAmount: 0, sgstAmount: 0, igstAmount: 10, totalTax: 10 } },
-    { settlementId: second.id, feeAmount: 50, componentAmounts: { cgstAmount: 0, sgstAmount: 0, igstAmount: 8, totalTax: 8 } },
+    { settlementId: s.settlement.id, feeAmount: 100, taxableFeeAmount: 100, componentAmounts: { cgstAmount: 0, sgstAmount: 0, igstAmount: 10, totalTax: 10 } },
+    { settlementId: second.id, feeAmount: 50, taxableFeeAmount: 50, componentAmounts: { cgstAmount: 0, sgstAmount: 0, igstAmount: 8, totalTax: 8 } },
   ], { components: { taxableFeeAmount: 150, cgstAmount: 0, sgstAmount: 0, igstAmount: 18, totalTax: 18, documentTotal: 168 } }), trustedEvidence: true });
   assert.equal(exact.document.status, "verified");
   const under = s.api.createProviderTaxDocumentForSystem({ ...multiTaxInput(s, [
@@ -181,8 +181,8 @@ test("multi-settlement IGST conservation is exact and duplicate settlement rows 
   ], { taxDocumentId: "taxinv_igst_under", components: { taxableFeeAmount: 150, cgstAmount: 0, sgstAmount: 0, igstAmount: 18, totalTax: 18, documentTotal: 168 } }), trustedEvidence: true });
   assert.equal(under.document.status, "manual_review");
   assert.throws(() => s.api.createProviderTaxDocumentForSystem({ ...multiTaxInput(s, [
-    { settlementId: s.settlement.id, feeAmount: 50, componentAmounts: { cgstAmount: 4.5, sgstAmount: 4.5, igstAmount: 0, totalTax: 9 } },
-    { settlementId: s.settlement.id, feeAmount: 50, componentAmounts: { cgstAmount: 4.5, sgstAmount: 4.5, igstAmount: 0, totalTax: 9 } },
+    { settlementId: s.settlement.id, feeAmount: 50, taxableFeeAmount: 50, componentAmounts: { cgstAmount: 4.5, sgstAmount: 4.5, igstAmount: 0, totalTax: 9 } },
+    { settlementId: s.settlement.id, feeAmount: 50, taxableFeeAmount: 50, componentAmounts: { cgstAmount: 4.5, sgstAmount: 4.5, igstAmount: 0, totalTax: 9 } },
   ], { taxDocumentId: "taxinv_duplicate_link" }), trustedEvidence: true }), /linkage must be unique/i);
 });
 

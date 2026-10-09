@@ -107,6 +107,41 @@ export function resolveProviderFeeAccount(state, business = {}) {
   return { status: "canonical", reasonCode: "canonical_provider_fee_account", account: clone(account) };
 }
 
+const INPUT_GST_ACCOUNT_DEFINITIONS = Object.freeze([
+  { key: "cgst", code: "2211", role: "input_cgst" },
+  { key: "sgst", code: "2212", role: "input_sgst" },
+  { key: "igst", code: "2213", role: "input_igst" },
+]);
+
+export function resolveProviderInputGstAccounts(state, business = {}) {
+  const businessId = business.id || business.businessId;
+  if (!businessId) return { status: "manual_review", reasonCode: "business_required", accounts: null };
+  const accounts = {};
+  for (const definition of INPUT_GST_ACCOUNT_DEFINITIONS) {
+    const candidates = (state.ledgerAccounts || []).filter((entry) => (
+      entry.businessId === businessId && entry.accountCode === definition.code
+    ));
+    if (candidates.length === 0) {
+      return { status: "manual_review", reasonCode: `${definition.key}_account_missing`, accounts: null };
+    }
+    if (candidates.length !== 1) {
+      return { status: "manual_review", reasonCode: `${definition.key}_account_ambiguous`, accounts: null };
+    }
+    const account = candidates[0];
+    if (String(account.status || "active").toLowerCase() !== "active") {
+      return { status: "manual_review", reasonCode: `${definition.key}_account_inactive`, accounts: null };
+    }
+    if (account.accountRole !== definition.role
+      || account.accountType !== "asset"
+      || account.normalBalance !== "debit"
+      || account.systemAccount !== true) {
+      return { status: "manual_review", reasonCode: `${definition.key}_account_semantics_invalid`, accounts: null };
+    }
+    accounts[definition.key] = clone(account);
+  }
+  return { status: "canonical", reasonCode: "canonical_input_gst_accounts", accounts };
+}
+
 export function postProviderSettlementSimple(state, settlement = {}, business = {}, destinationBankAccount = {}, options = {}) {
   if (!settlement?.id || !business?.id || settlement.businessId !== business.id) throw new Error("Provider settlement business is invalid.");
   const feeAuthority = resolveProviderFeeAccount(state, business);
@@ -124,6 +159,15 @@ export function postProviderSettlementSimple(state, settlement = {}, business = 
   const bankLedger = state.ledgerAccounts.find((entry) => entry.id === destinationBankAccount.ledgerAccountId && entry.businessId === business.id && entry.status === "active");
   if (!bankLedger || String(bankLedger.accountRole || "") === "bank_clearing" || bankLedger.accountCode === "1110") throw new Error("Settlement destination bank ledger is invalid.");
   const action = String(options.accountingAction || "provider_settlement_posted:v1").trim();
+  const taxComponents = options.taxComponents || { cgstAmount: 0, sgstAmount: 0, igstAmount: 0 };
+  const hasInputGst = toMinor(taxComponents.cgstAmount) > 0
+    || toMinor(taxComponents.sgstAmount) > 0
+    || toMinor(taxComponents.igstAmount) > 0;
+  const taxAccountAuthority = hasInputGst
+    ? resolveProviderInputGstAccounts(state, business)
+    : { status: "canonical", accounts: {} };
+  if (taxAccountAuthority.status !== "canonical") throw new Error(`Provider settlement Input GST account authority is ${taxAccountAuthority.reasonCode}.`);
+  const taxAccounts = taxAccountAuthority.accounts;
   const idempotencyKey = [business.id, settlement.provider, settlement.merchantAccountId, settlement.providerSettlementId, action].join(":");
   const { event, replay } = createFinancialEvent(state, {
     businessId: business.id,
@@ -141,10 +185,13 @@ export function postProviderSettlementSimple(state, settlement = {}, business = 
     journalDate: settlement.settlementDate || settlement.createdAt?.slice(0, 10),
     narration: `Provider settlement ${settlement.providerSettlementId}`,
     currency: settlement.currency,
-    postingRule: "provider_settlement_simple_v1",
+    postingRule: action === "provider_settlement_posted_with_input_gst:v1" ? "provider_settlement_with_input_gst_v1" : "provider_settlement_simple_v1",
     lines: [
       { account: bankLedger, debit: settlement.netAmount, description: "Provider settlement to actual bank" },
       ...(toMinor(settlement.feeAmount) > 0 ? [{ account: feeAuthority.account, debit: settlement.feeAmount, description: "Payment provider processing fee" }] : []),
+      ...(toMinor(taxComponents.cgstAmount) > 0 ? [{ account: taxAccounts.cgst, debit: taxComponents.cgstAmount, description: "Input CGST on provider fee" }] : []),
+      ...(toMinor(taxComponents.sgstAmount) > 0 ? [{ account: taxAccounts.sgst, debit: taxComponents.sgstAmount, description: "Input SGST on provider fee" }] : []),
+      ...(toMinor(taxComponents.igstAmount) > 0 ? [{ account: taxAccounts.igst, debit: taxComponents.igstAmount, description: "Input IGST on provider fee" }] : []),
       { account: accounts.bank_clearing, credit: settlement.grossAmount, description: "Provider clearing settled" },
     ],
   });

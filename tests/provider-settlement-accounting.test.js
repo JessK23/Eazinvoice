@@ -38,6 +38,15 @@ function scenario(overrides = {}) {
   return { store, api, user, business, invoice, payment: payment.payment, bank, settlement: settlement.settlement, setMigration: (value) => { migration = value; }, setBeforeMutation: (fn) => { beforeMutation = fn; } };
 }
 
+async function addCgstSgstEvidence(s) {
+  return s.api.createProviderTaxDocumentForSystem({
+    businessId: s.business.id, provider: "razorpay", merchantAccountId: "acct_settle", taxDocumentId: `tax-account-authority-${Date.now()}-${Math.random()}`, documentVersion: "1", currency: "INR",
+    providerTaxIdentity: "29AAAAA0000A1Z5", components: { taxableFeeAmount: 200, cgstAmount: 18, sgstAmount: 18, igstAmount: 0, totalTax: 36, documentTotal: 236 },
+    jurisdiction: { country: "IN", stateCode: "29", placeOfSupply: "29", sourceReference: "tax-source" },
+    settlementLinks: [{ settlementId: s.settlement.id, feeAmount: 200 }], provenance: { sourceType: "provider_tax_document", sourceReference: "tax-source", payloadHash: "tax-hash" }, trustedEvidence: true,
+  });
+}
+
 test("simple settlement posts bank, 5300 fee, and 1110 clearing atomically", async () => {
   const s = scenario();
   const result = await s.api.postProviderSettlementAccounting(s.user, s.settlement.id, { businessId: s.business.id, previewPlan: "business" });
@@ -68,6 +77,101 @@ test("tax-bearing settlement remains ledger-inert", async () => {
   const after = s.store.exportState();
   assert.equal(after.accountingJournals.length, before.accountingJournals.length);
   assert.equal(after.providerSettlements[0].accountingStatus, "not_posted");
+});
+
+test("verified tax-exclusive CGST/SGST evidence posts one balanced GST settlement journal", async () => {
+  const s = scenario({ feeTaxAmount: 36, netAmount: 9764, taxComponents: { cgstAmount: 18, sgstAmount: 18, sourceReference: "tax-row" } });
+  const evidence = await s.api.createProviderTaxDocumentForSystem({
+    businessId: s.business.id, provider: "razorpay", merchantAccountId: "acct_settle", taxDocumentId: "tax-settle-cgst", documentVersion: "1", currency: "INR",
+    providerTaxIdentity: "29AAAAA0000A1Z5", components: { taxableFeeAmount: 200, cgstAmount: 18, sgstAmount: 18, igstAmount: 0, totalTax: 36, documentTotal: 236 },
+    jurisdiction: { country: "IN", stateCode: "29", placeOfSupply: "29", sourceReference: "tax-source" },
+    settlementLinks: [{ settlementId: s.settlement.id, feeAmount: 200 }], provenance: { sourceType: "provider_tax_document", sourceReference: "tax-source", payloadHash: "tax-hash" }, trustedEvidence: true,
+  });
+  assert.equal(evidence.document.status, "verified");
+  const result = await s.api.postProviderSettlementAccounting(s.user, s.settlement.id, { businessId: s.business.id, previewPlan: "business" });
+  const state = s.store.exportState();
+  const journal = state.accountingJournals.find((entry) => entry.id === result.journal.id);
+  const lines = state.accountingJournalLines.filter((line) => line.journalId === journal.id);
+  const bankCode = state.ledgerAccounts.find((account) => account.id === s.bank.ledgerAccountId).accountCode;
+  assert.equal(journal.totalDebit, 10000);
+  assert.deepEqual(lines.map((line) => [line.accountCode, line.debit, line.credit]), [[bankCode, 9764, 0], ["5300", 200, 0], ["2211", 18, 0], ["2212", 18, 0], ["1110", 0, 10000]]);
+  assert.equal(state.providerSettlements[0].accountingReadiness, "accounting_eligible");
+});
+
+test("verified tax-exclusive IGST evidence posts to Input IGST", async () => {
+  const s = scenario({ feeTaxAmount: 36, netAmount: 9764, taxComponents: { igstAmount: 36, sourceReference: "tax-row" } });
+  await s.api.createProviderTaxDocumentForSystem({
+    businessId: s.business.id, provider: "razorpay", merchantAccountId: "acct_settle", taxDocumentId: "tax-settle-igst", documentVersion: "1", currency: "INR",
+    providerTaxIdentity: "29AAAAA0000A1Z5", components: { taxableFeeAmount: 200, cgstAmount: 0, sgstAmount: 0, igstAmount: 36, totalTax: 36, documentTotal: 236 },
+    jurisdiction: { country: "IN", stateCode: "27", placeOfSupply: "27", sourceReference: "tax-source" },
+    settlementLinks: [{ settlementId: s.settlement.id, feeAmount: 200 }], provenance: { sourceType: "provider_tax_document", sourceReference: "tax-source", payloadHash: "tax-hash" }, trustedEvidence: true,
+  });
+  const result = await s.api.postProviderSettlementAccounting(s.user, s.settlement.id, { businessId: s.business.id, previewPlan: "business" });
+  const lines = s.store.exportState().accountingJournalLines.filter((line) => line.journalId === result.journal.id);
+  assert.ok(lines.some((line) => line.accountCode === "2213" && line.debit === 36));
+  assert.equal(lines.some((line) => line.accountCode === "2211" || line.accountCode === "2212"), false);
+});
+
+test("invalid Input GST account authority never partially posts", async () => {
+  const mutations = [
+    ["duplicate", (state, account) => state.ledgerAccounts.push({ ...account, id: "acct_duplicate_2211" })],
+    ["wrong type", (_state, account) => { account.accountType = "liability"; }],
+    ["wrong normal balance", (_state, account) => { account.normalBalance = "credit"; }],
+    ["wrong role", (_state, account) => { account.accountRole = "output_cgst"; }],
+    ["inactive", (_state, account) => { account.status = "inactive"; }],
+    ["missing", (state) => { state.ledgerAccounts = state.ledgerAccounts.filter((entry) => entry.accountCode !== "2211"); }],
+    ["tenant mismatch", (_state, account) => { account.businessId = "other-business"; }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const s = scenario({ feeTaxAmount: 36, netAmount: 9764, taxComponents: { cgstAmount: 18, sgstAmount: 18, sourceReference: "tax-row" } });
+    await addCgstSgstEvidence(s);
+    s.setBeforeMutation((state) => {
+      const account = state.ledgerAccounts.find((entry) => entry.businessId === s.business.id && entry.accountCode === "2211")
+        || state.ledgerAccounts.find((entry) => entry.accountCode === "2211");
+      mutate(state, account);
+    });
+    const before = s.store.exportState();
+    await assert.rejects(
+      () => s.api.postProviderSettlementAccounting(s.user, s.settlement.id, { businessId: s.business.id, previewPlan: "business" }),
+      /Input GST account authority/i,
+      label,
+    );
+    const after = s.store.exportState();
+    assert.equal(after.accountingJournals.length, before.accountingJournals.length, label);
+    assert.equal(after.providerSettlements[0].accountingStatus, "not_posted", label);
+  }
+});
+
+test("GST settlement rejects stale Migration 025 authority before posting", async () => {
+  const s = scenario({ feeTaxAmount: 36, netAmount: 9764, taxComponents: { cgstAmount: 18, sgstAmount: 18, sourceReference: "tax-row" } });
+  await addCgstSgstEvidence(s);
+  s.setMigration({ status: "completed", fingerprint: "stale" });
+  const before = s.store.exportState();
+  await assert.rejects(
+    () => s.api.postProviderSettlementAccounting(s.user, s.settlement.id, { businessId: s.business.id, previewPlan: "business" }),
+    /accounting authority|migration/i,
+  );
+  const after = s.store.exportState();
+  assert.equal(after.accountingJournals.length, before.accountingJournals.length);
+  assert.equal(after.providerSettlements[0].accountingStatus, "not_posted");
+});
+
+test("tax-bearing settlement without verified tax evidence remains ledger-inert", async () => {
+  const s = scenario({ feeTaxAmount: 36, netAmount: 9764, taxComponents: { cgstAmount: 18, sgstAmount: 18, sourceReference: "tax-row" } });
+  await assert.rejects(() => s.api.postProviderSettlementAccounting(s.user, s.settlement.id, { businessId: s.business.id, previewPlan: "business" }), /tax document|eligibility/i);
+});
+
+test("taxable-fee mismatch blocks GST settlement posting", async () => {
+  const s = scenario({ feeTaxAmount: 36, netAmount: 9764, taxComponents: { cgstAmount: 18, sgstAmount: 18, sourceReference: "tax-row" } });
+  const evidence = await s.api.createProviderTaxDocumentForSystem({
+    businessId: s.business.id, provider: "razorpay", merchantAccountId: "acct_settle", taxDocumentId: "tax-settle-mismatch", currency: "INR",
+    providerTaxIdentity: "29AAAAA0000A1Z5", components: { taxableFeeAmount: 190, cgstAmount: 18, sgstAmount: 18, igstAmount: 0, totalTax: 36, documentTotal: 226 },
+    jurisdiction: { country: "IN", stateCode: "29", placeOfSupply: "29", sourceReference: "tax-source" }, settlementLinks: [{ settlementId: s.settlement.id, feeAmount: 200 }],
+    provenance: { sourceType: "provider_tax_document", sourceReference: "tax-source", payloadHash: "tax-hash" }, trustedEvidence: true,
+  });
+  assert.equal(evidence.document.status, "verified");
+  await assert.rejects(() => s.api.postProviderSettlementAccounting(s.user, s.settlement.id, { businessId: s.business.id, previewPlan: "business" }), /taxable.?fee/i);
+  assert.equal(s.store.exportState().providerSettlements[0].accountingStatus, "not_posted");
 });
 
 test("settlement requires completed current Migration 025 authority", async () => {

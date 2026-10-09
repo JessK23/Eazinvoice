@@ -2057,13 +2057,15 @@ export function createStore(seed = {}, options = {}) {
       if (String(settlement.currency || "INR").toUpperCase() !== currency) throw new Error("Provider tax document settlement currency does not match.");
       const feeAmount = link.feeAmount === undefined ? settlement.feeAmount : toNumber(link.feeAmount);
       if (!Number.isFinite(feeAmount) || feeAmount < 0 || feeAmount > toNumber(settlement.feeAmount)) throw new Error("Provider tax document settlement fee linkage is invalid.");
+      const taxableFeeAmount = link.taxableFeeAmount === undefined ? null : toNumber(link.taxableFeeAmount);
+      if (taxableFeeAmount !== null && (!Number.isFinite(taxableFeeAmount) || taxableFeeAmount < 0 || taxableFeeAmount > feeAmount)) throw new Error("Provider tax document settlement taxable-fee linkage is invalid.");
       const componentAmounts = link.componentAmounts && typeof link.componentAmounts === "object" ? {
         cgstAmount: toNumber(link.componentAmounts.cgstAmount),
         sgstAmount: toNumber(link.componentAmounts.sgstAmount),
         igstAmount: toNumber(link.componentAmounts.igstAmount),
         totalTax: toNumber(link.componentAmounts.totalTax),
       } : null;
-      return { settlementId, feeAmount, currency, componentAmounts };
+      return { settlementId, feeAmount, taxableFeeAmount, currency, componentAmounts };
     });
   }
 
@@ -2122,6 +2124,11 @@ export function createStore(seed = {}, options = {}) {
     if (settlementLinks.length === 0) reasons.push("missing_settlement_linkage");
     const linkedFeeAmount = settlementLinks.reduce((sum, link) => sum + toNumber(link.feeAmount), 0);
     if (components.value.taxableFeeAmount > linkedFeeAmount) reasons.push("taxable_fee_exceeds_linked_settlement_fees");
+    const linkedTaxableFeeAmount = settlementLinks.reduce((sum, link) => sum + (link.taxableFeeAmount === null ? 0 : toNumber(link.taxableFeeAmount)), 0);
+    if (settlementLinks.length > 1 && settlementLinks.some((link) => link.taxableFeeAmount === null)) reasons.push("ambiguous_multi_settlement_taxable_fee_allocation");
+    if (settlementLinks.length === 1 && settlementLinks[0].taxableFeeAmount === null) settlementLinks[0].taxableFeeAmount = components.value.taxableFeeAmount;
+    if (settlementLinks.length > 1 && Math.round(linkedTaxableFeeAmount * 100) !== Math.round(components.value.taxableFeeAmount * 100)) reasons.push("taxable_fee_allocation_total_mismatch");
+    if (settlementLinks.length === 1 && Math.round(toNumber(settlementLinks[0].taxableFeeAmount) * 100) !== Math.round(components.value.taxableFeeAmount * 100)) reasons.push("taxable_fee_allocation_total_mismatch");
     const identity = `${businessId}:${provider}:${merchantAccountId}:${taxDocumentId}:${documentVersion}`;
     const supersedesId = String(input.supersedesId || input.replacesId || "").trim();
     const correctionType = supersedesId ? String(input.correctionType || "replacement").trim() : "";
@@ -2250,6 +2257,38 @@ export function createStore(seed = {}, options = {}) {
     if (settlement.evidenceLifecycle === "manual_review") return { evidenceStatus: "manual_review", accountingReadiness: "blocked", reasons: [...new Set(reasons)] };
     if (reasons.length) return { evidenceStatus: settlement.provenance?.sourceType ? "evidence_verified" : "evidence_pending", accountingReadiness: "blocked", reasons: [...new Set(reasons)] };
     return { evidenceStatus: "evidence_verified", accountingReadiness: "blocked", reasons: ["tax_document_and_accounting_authority_pending"] };
+  }
+
+  function resolveProviderSettlementTaxEligibility(settlement = {}) {
+    const feeTaxAmount = toNumber(settlement.feeTaxAmount);
+    if (feeTaxAmount === 0) return { status: "not_required", taxDocument: null, components: { cgstAmount: 0, sgstAmount: 0, igstAmount: 0, totalTax: 0 } };
+    const candidates = state.providerTaxDocuments.filter((document) => document.status === "verified"
+      && document.businessId === settlement.businessId
+      && document.provider === settlement.provider
+      && document.merchantAccountId === settlement.merchantAccountId
+      && document.currency === settlement.currency
+      && Array.isArray(document.settlementLinks)
+      && document.settlementLinks.some((link) => link.settlementId === settlement.id));
+    if (candidates.length !== 1) return { status: "blocked", reason: candidates.length === 0 ? "verified_provider_tax_document_missing" : "ambiguous_verified_provider_tax_documents" };
+    const document = candidates[0];
+    if (document.supersedesId || state.providerTaxDocuments.some((entry) => entry.supersedesId === document.id)) return { status: "blocked", reason: "tax_document_correction_lineage_not_final" };
+    const link = document.settlementLinks.find((entry) => entry.settlementId === settlement.id);
+    if (!link) return { status: "blocked", reason: "provider_tax_settlement_link_missing" };
+    const taxableFeeAmount = toNumber(link.taxableFeeAmount);
+    const components = {
+      cgstAmount: link.componentAmounts ? toNumber(link.componentAmounts.cgstAmount) : toNumber(document.components?.cgstAmount),
+      sgstAmount: link.componentAmounts ? toNumber(link.componentAmounts.sgstAmount) : toNumber(document.components?.sgstAmount),
+      igstAmount: link.componentAmounts ? toNumber(link.componentAmounts.igstAmount) : toNumber(document.components?.igstAmount),
+    };
+    components.totalTax = Math.round((components.cgstAmount + components.sgstAmount + components.igstAmount) * 100) / 100;
+    if (Math.round(taxableFeeAmount * 100) !== Math.round(toNumber(settlement.feeAmount) * 100)) return { status: "blocked", reason: "taxable_fee_does_not_match_settlement_fee" };
+    if (Math.round(toNumber(document.components?.taxableFeeAmount) * 100) !== Math.round(taxableFeeAmount * 100)) return { status: "blocked", reason: "taxable_fee_document_conservation_mismatch" };
+    if (Math.round(components.totalTax * 100) !== Math.round(feeTaxAmount * 100)) return { status: "blocked", reason: "settlement_fee_tax_mismatch" };
+    if (Math.round(toNumber(document.components?.totalTax) * 100) !== Math.round(feeTaxAmount * 100)) return { status: "blocked", reason: "tax_document_tax_conservation_mismatch" };
+    if (components.igstAmount > 0 && (components.cgstAmount > 0 || components.sgstAmount > 0)) return { status: "blocked", reason: "mixed_gst_jurisdiction" };
+    const claimIds = (document.componentClaims || []).filter((claim) => claim.settlementId === settlement.id).map((claim) => claim.economicIdentity);
+    if (claimIds.length !== new Set(claimIds).size || claimIds.length !== ["cgst", "sgst", "igst"].filter((type) => components[`${type}Amount`] > 0).length) return { status: "blocked", reason: "provider_tax_component_identity_invalid" };
+    return { status: "accounting_eligible", taxDocument: document, taxDocumentId: document.id, components };
   }
 
   function settlementFingerprint(input = {}) {
@@ -2440,7 +2479,8 @@ export function createStore(seed = {}, options = {}) {
       return { posted: true, idempotentReplay: true, settlement: providerSettlementView(settlement), journal: event ? clone(state.accountingJournals.find((entry) => entry.id === event.journalId)) : null };
     }
     if (settlement.evidenceLifecycle !== "evidence_verified") throw new Error("Provider settlement evidence is not verified.");
-    if (settlement.feeTaxAmount !== 0 || settlement.taxComponents?.cgstAmount || settlement.taxComponents?.sgstAmount || settlement.taxComponents?.igstAmount) throw new Error("Provider settlement tax is unsupported by the simple settlement authority.");
+    const taxEligibility = resolveProviderSettlementTaxEligibility(settlement);
+    if (taxEligibility.status === "blocked") throw new Error(`Provider settlement accounting eligibility is blocked: ${taxEligibility.reason}.`);
     if (settlement.withholding || settlement.adjustmentAmount !== 0 || (settlement.adjustments || []).length) throw new Error("Provider settlement adjustments or withholding are unsupported by the simple settlement authority.");
     if (!settlement.provider || !settlement.merchantAccountId || !settlement.providerSettlementId) throw new Error("Provider settlement identity is incomplete.");
     await requireCompletedAccountingAuthority(transactionContext.client, business.id);
@@ -2472,12 +2512,23 @@ export function createStore(seed = {}, options = {}) {
       if (availability.status !== "available") throw new Error(`Provider settlement clearing is ${availability.reason}.`);
       if (linkMinor <= 0 || linkMinor > availability.availableMinor) throw new Error("Provider settlement Payment clearing availability is insufficient.");
     }
-    if (Math.round((toNumber(settlement.netAmount) + toNumber(settlement.feeAmount)) * 100) !== Math.round(toNumber(settlement.grossAmount) * 100)) throw new Error("Provider settlement simple arithmetic is invalid.");
+    const accountedDeduction = toNumber(settlement.netAmount) + toNumber(settlement.feeAmount) + (taxEligibility.status === "accounting_eligible" ? toNumber(settlement.feeTaxAmount) : 0);
+    if (Math.round(accountedDeduction * 100) !== Math.round(toNumber(settlement.grossAmount) * 100)) throw new Error("Provider settlement simple arithmetic is invalid.");
     validateAccountingPosting(business, settlement.settlementDate || new Date().toISOString().slice(0, 10), { sourceType: "provider_settlement", sourceId: settlement.id });
-    const result = postProviderSettlementSimple(state, settlement, business, destination);
+    const result = postProviderSettlementSimple(state, settlement, business, destination, {
+      accountingAction: taxEligibility.status === "accounting_eligible" ? "provider_settlement_posted_with_input_gst:v1" : "provider_settlement_posted:v1",
+      taxDocumentId: taxEligibility.taxDocumentId || "",
+      taxComponents: taxEligibility.components,
+    });
     settlement.accountingStatus = "posted";
     settlement.accountingJournalId = result.journal?.id || result.event?.journalId || "";
     settlement.accountingAction = "provider_settlement_posted:v1";
+    if (taxEligibility.status === "accounting_eligible") {
+      settlement.accountingAction = "provider_settlement_posted_with_input_gst:v1";
+      settlement.accountingTaxDocumentId = taxEligibility.taxDocumentId;
+      settlement.accountingTaxComponentIdentities = (taxEligibility.taxDocument.componentClaims || []).filter((claim) => claim.settlementId === settlement.id).map((claim) => claim.economicIdentity);
+      settlement.accountingReadiness = "accounting_eligible";
+    }
     settlement.updatedAt = new Date().toISOString();
     return { ...result, settlement: providerSettlementView(settlement) };
   }
@@ -8230,6 +8281,7 @@ export function createStore(seed = {}, options = {}) {
     listProviderSettlements,
     evaluateProviderSettlementReadiness,
     createProviderSettlementLocal,
+    createProviderTaxDocumentLocal,
     postProviderSettlementAccountingLocal,
     postProviderSettlementAccounting,
     upsertBusinessSettings,
