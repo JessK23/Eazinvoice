@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eazinvoice Vendor Bill</title>
+  <link rel="stylesheet" href="./styles.css?v=20260723-ui-banner-refresh-4" />
+  <link rel="stylesheet" href="./design-system-v1.css?v=20260924-navigation-ownership" />
+  <script src="./nav.js?v=20260614-responsive-menu" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><div class="mark"><img src="./assets/logo-mark.png?v=20260605-logo-refresh" alt="EazInvoice" /></div></div>
+    <nav class="topnav"><a class="ghost" href="/apps/web/dashboard.html#vendor-bills">Vendor Bills</a><a class="ghost" href="/apps/web/dashboard.html">Dashboard</a></nav>
+  </header>
+  <main class="page-shell">
+    <section id="vendorBillDetailPanel" class="panel invoice-detail-panel" aria-live="polite">
+      <div class="panel-head">
+        <div><span class="pill blue">Purchases · Vendor Bill detail</span><h1 id="vendorBillDetailTitle">Vendor Bill</h1><p id="vendorBillDetailStatus" class="hint">Loading authoritative vendor bill details...</p></div>
+        <div class="row-actions"><a class="ghost" href="/apps/web/dashboard.html#vendor-bills">Back to Vendor Bills</a><a id="vendorBillEdit" class="ghost" href="/apps/web/dashboard.html#vendor-bills" hidden>Edit Draft</a></div>
+      </div>
+      <div id="vendorBillDetailError" class="inline-status" hidden></div>
+      <div id="vendorBillDetailBody" class="stack" hidden>
+        <div class="quick-grid">
+          <article class="quick-card"><span>Vendor</span><strong id="vendorBillDetailVendor">Unavailable</strong></article>
+          <article class="quick-card"><span>Bill date</span><strong id="vendorBillDetailDate">Unavailable</strong></article>
+          <article class="quick-card"><span>Due date</span><strong id="vendorBillDetailDueDate">Unavailable</strong></article>
+          <article class="quick-card"><span>Lifecycle</span><strong id="vendorBillDetailState">Unavailable</strong></article>
+        </div>
+        <div class="panel-subsection"><div class="panel-head compact-head"><div><h2>Payable amounts</h2><p class="hint">Values are returned by the Vendor Bill authority.</p></div></div><div class="payment-status-grid">
+          <div><span>Subtotal</span><strong id="vendorBillDetailSubtotal">Unavailable</strong></div><div><span>Tax</span><strong id="vendorBillDetailTax">Unavailable</strong></div><div><span>Total</span><strong id="vendorBillDetailTotal">Unavailable</strong></div><div><span>Paid</span><strong id="vendorBillDetailPaid">Unavailable</strong></div><div><span>Outstanding</span><strong id="vendorBillDetailOutstanding">Unavailable</strong></div><div><span>Payment status</span><strong id="vendorBillDetailPaymentStatus">Unavailable</strong></div><div><span>Currency</span><strong id="vendorBillDetailCurrency">Unavailable</strong></div>
+        </div></div>
+        <div class="panel-subsection"><div class="panel-head compact-head"><div><h2>Line items</h2><p class="hint">Items are displayed from the persisted response.</p></div></div><div id="vendorBillDetailItems" class="stack"></div></div>
+        <div class="panel-subsection"><div class="panel-head compact-head"><div><h2>Payments</h2><p class="hint">Payments are created only through the existing Vendor Bill payment authority.</p></div></div><div id="vendorBillDetailPayments" class="stack"></div></div>
+        <div id="vendorBillSourceSection" class="panel-subsection" hidden><div class="panel-head compact-head"><div><h2>Source document</h2><p class="hint">Only explicit persisted source references are shown.</p></div></div><div id="vendorBillDetailSource" class="stack"></div></div>
+        <div class="panel-subsection"><div class="panel-head compact-head"><div><h2>Actions</h2><p id="vendorBillDetailActionHint" class="hint">Actions remain constrained by persisted lifecycle and workspace authority.</p></div></div><div id="vendorBillDetailActions" class="row-actions"></div></div>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="./vendor-bill.js?v=20261010-vendor-bill-detail"></script>
+</body>
+</html>

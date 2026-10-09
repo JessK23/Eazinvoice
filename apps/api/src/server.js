@@ -4889,14 +4889,22 @@ if (url.pathname === "/customers" && req.method === "GET") {
       try {
         const id = decodeURIComponent(url.pathname.split("/")[2] || "");
         const body = await readBody(req);
-        sendJson(res, 201, await api.recordVendorBillPayment(id, body, {
+        const result = await api.recordVendorBillPayment(id, body, {
           user,
           previewPlan,
           workspaceOwnerUserId: body.workspaceOwnerUserId || null,
           businessId: body.businessId || null,
-        }));
+        });
+        if (!result) {
+          sendJson(res, 404, { error: "Vendor bill not found.", paymentOutcome: "not_recorded" });
+        } else {
+          sendJson(res, 201, result);
+        }
       } catch (error) {
-        sendJson(res, knownRequestErrorStatus(error), { error: error.message });
+        sendJson(res, knownRequestErrorStatus(error), {
+          error: error.message,
+          paymentOutcome: error.paymentOutcome === "not_recorded" ? "not_recorded" : "unknown",
+        });
       }
       return;
     }

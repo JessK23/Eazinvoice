@@ -2,6 +2,16 @@ const API_BASE = typeof window !== "undefined" && window.location?.origin
   ? window.location.origin
   : "http://localhost:3001";
 
+export class ApiRequestError extends Error {
+  constructor(message, { status, payload, path } = {}) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.payload = payload;
+    this.path = path;
+  }
+}
+
 function authHeaders(token) {
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   if (typeof window !== "undefined") {
@@ -30,7 +40,10 @@ async function request(path, { method = "GET", body, token } = {}) {
     }
   }
   if (!response.ok) {
-    throw new Error(payload.error || payload.message || `Request failed (${response.status})`);
+    throw new ApiRequestError(
+      payload.error || payload.message || `Request failed (${response.status})`,
+      { status: response.status, payload, path },
+    );
   }
   return payload;
 }

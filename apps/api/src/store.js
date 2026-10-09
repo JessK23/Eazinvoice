@@ -91,6 +91,12 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function paymentOutcomeError(message, paymentOutcome = "unknown") {
+  const error = new Error(message);
+  error.paymentOutcome = paymentOutcome;
+  return error;
+}
+
 function canonicalEmail(email) {
   return String(email || "").trim().toLowerCase();
 }
@@ -5547,10 +5553,38 @@ export function createStore(seed = {}, options = {}) {
     const vendorBill = state.vendorBills.find((entry) => entry.id === vendorBillId);
     if (!vendorBill) return null;
     const status = normalizeRecordStatus(vendorBill.status, "draft");
-    if (status === "draft") throw new Error("Post this vendor bill before recording payment.");
-    if (status === "deleted" || status === "cancelled" || status === "void") throw new Error("Deleted/cancelled vendor bills cannot receive payments.");
+    if (status === "draft") throw paymentOutcomeError("Post this vendor bill before recording payment.", "not_recorded");
+    if (status === "deleted" || status === "cancelled" || status === "void") {
+      throw paymentOutcomeError("Deleted/cancelled vendor bills cannot receive payments.", "not_recorded");
+    }
     if (input.businessId && vendorBill.businessId && input.businessId !== vendorBill.businessId) {
-      throw new Error("Payment business does not match vendor bill business.");
+      throw paymentOutcomeError("Payment business does not match vendor bill business.", "not_recorded");
+    }
+    const billCurrency = String(vendorBill.currency || "INR").trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(billCurrency)) {
+      throw paymentOutcomeError("Vendor bill currency is invalid.", "not_recorded");
+    }
+    const requestedCurrency = input.currency === undefined || input.currency === null || input.currency === ""
+      ? billCurrency
+      : input.currency;
+    if (typeof requestedCurrency !== "string" || !requestedCurrency.trim()) {
+      throw paymentOutcomeError("Payment currency is required.", "not_recorded");
+    }
+    const currency = requestedCurrency.trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency) || currency !== billCurrency) {
+      throw paymentOutcomeError("Payment currency must match the vendor bill currency.", "not_recorded");
+    }
+    const rawMode = input.mode;
+    const mode = rawMode === undefined || rawMode === null || (typeof rawMode === "string" && !rawMode.trim())
+      ? "manual"
+      : rawMode;
+    if (typeof mode !== "string") {
+      throw paymentOutcomeError("Payment mode is invalid.", "not_recorded");
+    }
+    const normalizedMode = mode.trim().toLowerCase().replace(/[\s-]+/g, "_");
+    const supportedPaymentModes = new Set(["bank", "bank_transfer", "upi", "cash", "card", "cheque", "other", "manual"]);
+    if (!supportedPaymentModes.has(normalizedMode)) {
+      throw paymentOutcomeError("Payment mode is not supported.", "not_recorded");
     }
     const idempotencyKey = paymentIdempotencyKey(input);
     const existingPayment = idempotencyKey ? state.payments.find((payment) => (
@@ -5562,15 +5596,20 @@ export function createStore(seed = {}, options = {}) {
       return clone({ vendorBill, payment: existingPayment, idempotentReplay: true });
     }
     refreshVendorBillPaymentStatus(vendorBill);
-    const amount = validatePaymentApplication(
-      vendorBill,
-      {
-        ...input,
-        invalidAmountMessage: "Enter a valid vendor payment amount.",
-        overpaymentMessage: "Payment amount cannot be more than the pending vendor bill balance.",
-      },
-      effectiveVendorBillPayments(vendorBill.id),
-    );
+    let amount;
+    try {
+      amount = validatePaymentApplication(
+        vendorBill,
+        {
+          ...input,
+          invalidAmountMessage: "Enter a valid vendor payment amount.",
+          overpaymentMessage: "Payment amount cannot be more than the pending vendor bill balance.",
+        },
+        effectiveVendorBillPayments(vendorBill.id),
+      );
+    } catch (error) {
+      throw paymentOutcomeError(error.message, "not_recorded");
+    }
     const payment = {
       id: nextId("pay", ++state.counters.payment),
       ownerUserId: vendorBill.ownerUserId,
@@ -5579,8 +5618,8 @@ export function createStore(seed = {}, options = {}) {
       vendorId: vendorBill.vendorId || null,
       idempotencyKey,
       amount,
-      currency: input.currency?.trim() || vendorBill.currency || "INR",
-      mode: input.mode?.trim() || "manual",
+      currency,
+      mode: normalizedMode,
       reference: input.reference?.trim() || "",
       notes: input.notes?.trim() || "",
       status: input.status?.trim() || "captured",
@@ -5591,7 +5630,13 @@ export function createStore(seed = {}, options = {}) {
       createdAt: new Date().toISOString(),
     };
     const business = findBusinessByIdOrLegacyOwner(vendorBill.businessId);
-    if (business) validateAccountingPosting(business, payment.paymentDate, { ...input, sourceType: "vendor_payment", sourceId: payment.id });
+    if (business) {
+      try {
+        validateAccountingPosting(business, payment.paymentDate, { ...input, sourceType: "vendor_payment", sourceId: payment.id });
+      } catch (error) {
+        throw paymentOutcomeError(error.message, "not_recorded");
+      }
+    }
     state.payments.push(payment);
     refreshVendorBillPaymentStatus(vendorBill);
     if (business) postVendorPaymentCaptured(state, payment, vendorBill, business);

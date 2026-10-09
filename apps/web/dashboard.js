@@ -4444,7 +4444,10 @@ function renderVendorBills(bills = dashboardVendorBills) {
           <p class="hint">${escapeHtml(bill.currency || "INR")} ${money(bill.total || 0)} · Paid ${money(bill.paidAmount || 0)} · Balance ${money(bill.balanceAmount || 0)}</p>
           <p class="hint">Payment: ${escapeHtml(paymentStatus)} · Items: ${Array.isArray(bill.items) ? bill.items.length : 0}</p>
         </div>
-        <div class="row-actions">${editAction}</div>
+        <div class="row-actions">
+          <a class="ghost small" href="/apps/web/vendor-bill.html?bill=${encodeURIComponent(bill.id)}">View</a>
+          ${editAction}
+        </div>
       </article>`;
     }).join("")
     : '<div class="notice">No Vendor Bills yet. Create the first bill from this Purchases surface.</div>';
