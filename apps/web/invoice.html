@@ -66,6 +66,52 @@
     </div>
   </section>
 
+  <section id="purchaseOrderDetailPanel" class="panel invoice-detail-panel" data-purchase-order-detail hidden aria-live="polite">
+    <div class="panel-head">
+      <div>
+        <span id="purchaseOrderDetailBadge" class="pill blue">Purchases · document detail</span>
+        <h1 id="purchaseOrderDetailTitle">Purchase Order / Work Order</h1>
+        <p id="purchaseOrderDetailStatus" class="hint">Loading authoritative document details...</p>
+      </div>
+      <div class="row-actions">
+        <a class="ghost" href="/apps/web/dashboard.html#purchase-orders">Back to Purchases</a>
+        <a id="purchaseOrderDetailEdit" class="ghost" href="#" hidden>Edit Draft</a>
+      </div>
+    </div>
+    <div id="purchaseOrderDetailError" class="inline-status" hidden></div>
+    <div id="purchaseOrderDetailBody" class="stack" hidden>
+      <div class="quick-grid">
+        <article class="quick-card"><span>Supplier / vendor</span><strong id="purchaseOrderDetailVendor">Unavailable</strong></article>
+        <article class="quick-card"><span>Document date</span><strong id="purchaseOrderDetailDate">Unavailable</strong></article>
+        <article class="quick-card"><span>Due date</span><strong id="purchaseOrderDetailDueDate">Unavailable</strong></article>
+        <article class="quick-card"><span>Document status</span><strong id="purchaseOrderDetailState">Unavailable</strong></article>
+      </div>
+      <div class="panel-subsection">
+        <div class="panel-head compact-head"><div><h2>Document amounts</h2><p class="hint">These are intent-document values; no payable or settlement balance is created here.</p></div></div>
+        <div class="payment-status-grid">
+          <div><span>Subtotal</span><strong id="purchaseOrderDetailSubtotal">Unavailable</strong></div>
+          <div><span>Discount</span><strong id="purchaseOrderDetailDiscount">Unavailable</strong></div>
+          <div><span>Tax</span><strong id="purchaseOrderDetailTax">Unavailable</strong></div>
+          <div><span>Total</span><strong id="purchaseOrderDetailTotal">Unavailable</strong></div>
+          <div><span>Currency</span><strong id="purchaseOrderDetailCurrency">Unavailable</strong></div>
+          <div><span>Payment</span><strong>Not applicable</strong></div>
+        </div>
+      </div>
+      <div class="panel-subsection">
+        <div class="panel-head compact-head"><div><h2>Items</h2><p class="hint">Items and values are displayed from the Purchase Order authority.</p></div></div>
+        <div id="purchaseOrderDetailItems" class="stack"></div>
+      </div>
+      <div class="panel-subsection">
+        <div class="panel-head compact-head"><div><h2>Notes and terms</h2><p class="hint">Optional supplier instructions returned by the document authority.</p></div></div>
+        <div id="purchaseOrderDetailNotes" class="stack"></div>
+      </div>
+      <div class="panel-subsection">
+        <div class="panel-head compact-head"><div><h2>Available actions</h2><p id="purchaseOrderDetailActionHint" class="hint">Actions are limited by the supported PO/WO lifecycle.</p></div></div>
+        <div id="purchaseOrderDetailActions" class="row-actions"></div>
+      </div>
+    </div>
+  </section>
+
   <main id="invoiceApp" class="invoice-workspace">
     <section class="invoice-builder">
       <form id="invoiceWorkflowForm" class="stack">
@@ -545,6 +591,7 @@
       const poIdFromUrl = params.get("po") || "";
       const workflowType = String(params.get("type") || (poIdFromUrl ? "po" : "invoice")).toLowerCase();
       const isPoFlow = Boolean(poIdFromUrl) || workflowType === "po" || workflowType === "wo";
+      const requestedPurchaseDocumentType = workflowType === "wo" ? "wo" : "po";
       if (!token) {
         window.location.replace("/apps/web/auth.html?tab=login");
         return;
@@ -571,6 +618,18 @@
       function documentTypeShort() {
         if (!isPoFlow) return "INV";
         return documentTypeSelect?.value === "wo" ? "WO" : "PO";
+      }
+
+      function persistedPurchaseDocumentType(record) {
+        const type = record?.documentType;
+        return type === "po" || type === "wo" ? type : "";
+      }
+
+      function persistedPurchaseDocumentTypeLabel(record) {
+        const type = persistedPurchaseDocumentType(record);
+        if (type === "wo") return "Work Order";
+        if (type === "po") return "Purchase Order";
+        return "";
       }
 
       function applyWorkflowMode() {
@@ -820,8 +879,14 @@
           return;
         }
         if (!documentEmailModal || !documentEmailRecipient) return;
+        const persistedTypeLabel = isPoFlow ? persistedPurchaseDocumentTypeLabel(documentRecord) : "";
+        if (isPoFlow && invoiceDetailMode && (!persistedTypeLabel || !isPurchaseDocumentTypeCurrent(documentRecord))) {
+          setWorkflowStatus("This document type could not be verified. Refresh before emailing it.", "error");
+          return;
+        }
+        const emailDocumentLabel = persistedTypeLabel || documentTypeLabel();
         const number = documentRecord.invoiceNumber || documentRecord.poNumber || documentTypeLabel();
-        if (documentEmailTitle) documentEmailTitle.textContent = isPoFlow ? `Email ${documentTypeLabel()}` : "Email Invoice";
+        if (documentEmailTitle) documentEmailTitle.textContent = isPoFlow ? `Email ${emailDocumentLabel}` : "Email Invoice";
         if (documentEmailMeta) documentEmailMeta.textContent = `${number} - ${documentRecord.billToName || (isPoFlow ? "Vendor" : "Customer")}`;
         documentEmailRecipient.value = selectedRecipientEmail();
         if (documentEmailNote) documentEmailNote.value = "";
@@ -1368,8 +1433,12 @@
       }
 
       async function loadInvoiceFromUrl() {
-        if (!invoiceIdFromUrl) return;
+        if (!invoiceIdFromUrl && !(isPoFlow && invoiceDetailMode)) return;
         if (invoiceDetailMode) {
+          if (isPoFlow) {
+            await loadPurchaseOrderDetail();
+            return;
+          }
           await loadInvoiceDetail();
           return;
         }
@@ -1423,14 +1492,14 @@
         return detailWorkspaceOptions ? {
           workspaceOwnerUserId: detailWorkspaceOptions.workspaceOwnerUserId || "",
           businessId: detailWorkspaceOptions.businessId || "",
-          invoiceId: invoiceIdFromUrl,
+          recordId: invoiceIdFromUrl || poIdFromUrl,
           storedOwner: localStorage.getItem("eazinvoice_business_workspace_owner") || "",
           generation: detailContextGeneration,
         } : null;
       }
 
       function isDetailContextCurrent(snapshot) {
-        if (!snapshot || snapshot.generation !== detailContextGeneration || snapshot.invoiceId !== invoiceIdFromUrl || !detailWorkspaceOptions) return false;
+        if (!snapshot || snapshot.generation !== detailContextGeneration || snapshot.recordId !== (invoiceIdFromUrl || poIdFromUrl) || !detailWorkspaceOptions) return false;
         return snapshot.workspaceOwnerUserId === (detailWorkspaceOptions.workspaceOwnerUserId || "")
           && snapshot.businessId === (detailWorkspaceOptions.businessId || "")
           && snapshot.storedOwner === (localStorage.getItem("eazinvoice_business_workspace_owner") || "");
@@ -1472,6 +1541,30 @@
           }
         } finally {
           if (isDetailContextCurrent(snapshot)) button.disabled = false;
+        }
+      }
+
+      function purchaseDocumentActionContext(snapshot, documentRecord, expectedStatus) {
+        if (!isPurchaseDocumentContextCurrent(snapshot) || !isPurchaseDocumentTypeCurrent(documentRecord) || !documentRecord?.id || documentRecord.id !== poIdFromUrl) return false;
+        return String(documentRecord.status || "draft").toLowerCase() === expectedStatus;
+      }
+
+      async function runPurchaseDocumentLifecycleAction(button, snapshot, documentRecord, expectedStatus, route, failureMessage, requestBody = "{}") {
+        if (!purchaseDocumentActionContext(snapshot, documentRecord, expectedStatus) || button.disabled) return;
+        button.disabled = true;
+        try {
+          await api(detailScopedPath(route), { method: "POST", body: requestBody });
+          if (isPurchaseDocumentContextCurrent(snapshot)) await loadPurchaseOrderDetail();
+        } catch (error) {
+          if (isPurchaseDocumentContextCurrent(snapshot)) {
+            const errorNode = document.getElementById("purchaseOrderDetailError");
+            if (errorNode) {
+              errorNode.hidden = false;
+              errorNode.textContent = error.message || failureMessage;
+            }
+          }
+        } finally {
+          if (isPurchaseDocumentContextCurrent(snapshot)) button.disabled = false;
         }
       }
 
@@ -1585,8 +1678,157 @@
         }
       }
 
+      function purchaseDocumentSnapshot() {
+        const snapshot = detailContextSnapshot();
+        return snapshot ? { ...snapshot, documentType: requestedPurchaseDocumentType } : null;
+      }
+
+      function isPurchaseDocumentContextCurrent(snapshot) {
+        return isDetailContextCurrent(snapshot) && snapshot?.documentType === requestedPurchaseDocumentType;
+      }
+
+      function isPurchaseDocumentTypeCurrent(documentRecord) {
+        return persistedPurchaseDocumentType(documentRecord) === requestedPurchaseDocumentType;
+      }
+
+      async function deletePurchaseDocumentDetail(button, snapshot, documentRecord) {
+        if (!isPurchaseDocumentContextCurrent(snapshot) || !isPurchaseDocumentTypeCurrent(documentRecord) || button.disabled || documentRecord?.id !== poIdFromUrl) return;
+        if (!window.confirm("Delete this draft PO/WO?")) return;
+        button.disabled = true;
+        try {
+          await api(detailScopedPath(`/purchase-orders/${encodeURIComponent(documentRecord.id)}`), { method: "DELETE" });
+          if (isPurchaseDocumentContextCurrent(snapshot)) window.location.href = "/apps/web/dashboard.html#purchase-orders";
+        } catch (error) {
+          if (isPurchaseDocumentContextCurrent(snapshot)) {
+            const errorNode = document.getElementById("purchaseOrderDetailError");
+            if (errorNode) {
+              errorNode.hidden = false;
+              errorNode.textContent = error.message || "Could not delete this draft.";
+            }
+          }
+        } finally {
+          if (isPurchaseDocumentContextCurrent(snapshot)) button.disabled = false;
+        }
+      }
+
+      async function printPurchaseDocumentDetail(button, snapshot, documentRecord) {
+        if (!isPurchaseDocumentContextCurrent(snapshot) || !isPurchaseDocumentTypeCurrent(documentRecord) || button.disabled || documentRecord?.id !== poIdFromUrl) return;
+        button.disabled = true;
+        try {
+          const response = await fetch(detailScopedPath(`/purchase-orders/${encodeURIComponent(documentRecord.id)}/pdf`), {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          });
+          const html = await response.text();
+          if (!response.ok) throw new Error("Could not open printable PO/WO.");
+          if (!isPurchaseDocumentContextCurrent(snapshot)) return;
+          const preview = window.open("", "_blank", "noopener");
+          if (!preview) throw new Error("Popup blocked. Allow popups to print this document.");
+          preview.document.open();
+          preview.document.write(html);
+          preview.document.close();
+        } catch (error) {
+          if (isPurchaseDocumentContextCurrent(snapshot)) {
+            const errorNode = document.getElementById("purchaseOrderDetailError");
+            if (errorNode) {
+              errorNode.hidden = false;
+              errorNode.textContent = error.message || "Could not open printable PO/WO.";
+            }
+          }
+        } finally {
+          if (isPurchaseDocumentContextCurrent(snapshot)) button.disabled = false;
+        }
+      }
+
+      async function loadPurchaseOrderDetail() {
+        const panel = document.getElementById("purchaseOrderDetailPanel");
+        const body = document.getElementById("purchaseOrderDetailBody");
+        const errorNode = document.getElementById("purchaseOrderDetailError");
+        const formWorkspace = document.getElementById("invoiceApp");
+        if (!panel || !body || !formWorkspace) return;
+        const loadGeneration = ++detailLoadGeneration;
+        const snapshot = purchaseDocumentSnapshot();
+        const isCurrentLoad = () => loadGeneration === detailLoadGeneration && isPurchaseDocumentContextCurrent(snapshot);
+        panel.hidden = false;
+        formWorkspace.hidden = true;
+        fallbackSavedInvoice = null;
+        body.hidden = true;
+        const actions = document.getElementById("purchaseOrderDetailActions");
+        if (actions) actions.innerHTML = "";
+        try {
+          if (!snapshot) throw new Error(detailWorkspaceError || "Business workspace context is unavailable. Refresh and select a workspace before opening this document.");
+          const documentRecord = await api(detailScopedPath(`/purchase-orders/${encodeURIComponent(poIdFromUrl)}`));
+          if (!isCurrentLoad()) return;
+          const actualType = persistedPurchaseDocumentType(documentRecord);
+          if (!actualType) throw new Error("This document type could not be verified. Refresh and try again.");
+          if (actualType !== requestedPurchaseDocumentType) throw new Error(`This link is for a ${actualType === "wo" ? "Work Order" : "Purchase Order"}, not a ${requestedPurchaseDocumentType === "wo" ? "Work Order" : "Purchase Order"}.`);
+          const label = actualType === "wo" ? "Work Order" : "Purchase Order";
+          const statusValue = String(documentRecord.status || "draft").toLowerCase();
+          fallbackSavedInvoice = documentRecord;
+          document.title = `${label} ${documentRecord.poNumber || documentRecord.draftNumber || documentRecord.id}`;
+          setDetailText("purchaseOrderDetailBadge", `Purchases · ${label}`);
+          setDetailText("purchaseOrderDetailTitle", documentRecord.poNumber || documentRecord.draftNumber || `${label} detail`);
+          setDetailText("purchaseOrderDetailStatus", `${String(documentRecord.status || "draft").toUpperCase()} · ${documentRecord.currency || "Currency unavailable"}`);
+          setDetailText("purchaseOrderDetailVendor", documentRecord.billToName || documentRecord.vendorName || documentRecord.vendor?.name || "Unavailable");
+          setDetailText("purchaseOrderDetailDate", documentRecord.poDate || documentRecord.issueDate || documentRecord.createdAt || "Unavailable");
+          setDetailText("purchaseOrderDetailDueDate", documentRecord.dueDate || "Not specified");
+          setDetailText("purchaseOrderDetailState", String(documentRecord.status || "draft").toUpperCase());
+          setDetailText("purchaseOrderDetailSubtotal", detailMoney(documentRecord, detailValue(documentRecord, ["subtotal"])));
+          setDetailText("purchaseOrderDetailDiscount", detailMoney(documentRecord, detailValue(documentRecord, ["discount", "discountAmount"])));
+          setDetailText("purchaseOrderDetailTax", detailMoney(documentRecord, detailValue(documentRecord, ["taxAmount", "tax", "totalTax"])));
+          setDetailText("purchaseOrderDetailTotal", detailMoney(documentRecord, detailValue(documentRecord, ["total", "grandTotal"])));
+          setDetailText("purchaseOrderDetailCurrency", documentRecord.currency || "Unavailable");
+          const itemsNode = document.getElementById("purchaseOrderDetailItems");
+          const items = Array.isArray(documentRecord.items) ? documentRecord.items : [];
+          itemsNode.innerHTML = items.length
+            ? items.map((item) => `<div class="management-card"><div><strong>${escapeHtml(item.description || "Item")}</strong><p class="hint">Qty ${escapeHtml(item.quantity ?? "Unavailable")} · Unit price ${escapeHtml(detailMoney(documentRecord, item.rate))} · Tax ${escapeHtml(item.gstRate ?? item.taxRate ?? "Unavailable")}</p></div><strong>${escapeHtml(detailMoney(documentRecord, item.total ?? item.amount))}</strong></div>`).join("")
+            : '<div class="notice">No items were returned by the Purchase Order authority.</div>';
+          const notesNode = document.getElementById("purchaseOrderDetailNotes");
+          const notes = [documentRecord.notes, documentRecord.terms, documentRecord.paymentTerms].filter(Boolean);
+          notesNode.innerHTML = notes.length
+            ? notes.map((note) => `<div class="notice">${escapeHtml(note)}</div>`).join("")
+            : '<div class="notice">No notes or terms were returned.</div>';
+          if (!isCurrentLoad()) return;
+          const editDraft = document.getElementById("purchaseOrderDetailEdit");
+          actions.innerHTML = "";
+          editDraft.hidden = statusValue !== "draft";
+          editDraft.href = `/apps/web/invoice.html?type=${requestedPurchaseDocumentType}&po=${encodeURIComponent(documentRecord.id)}`;
+          if (statusValue === "draft") {
+            const issueBody = JSON.stringify({
+              workspaceOwnerUserId: snapshot.workspaceOwnerUserId,
+              businessId: snapshot.businessId,
+              idempotencyKey: `detail-issue-${documentRecord.id}`,
+            });
+            const issueButton = detailActionButton(`Issue ${actualType === "wo" ? "Work Order" : "Purchase Order"}`, () => runPurchaseDocumentLifecycleAction(issueButton, snapshot, documentRecord, "draft", `/purchase-orders/${encodeURIComponent(documentRecord.id)}/issue`, `Could not issue this ${label}.`, issueBody), "primary");
+            actions.append(issueButton);
+            const deleteButton = detailActionButton("Delete Draft", () => deletePurchaseDocumentDetail(deleteButton, snapshot, documentRecord), "ghost");
+            actions.append(deleteButton);
+          } else {
+            const printButton = detailActionButton("Print / Save as PDF", () => printPurchaseDocumentDetail(printButton, snapshot, documentRecord));
+            actions.append(printButton);
+            const emailButton = detailActionButton("Email", () => {
+              if (isPurchaseDocumentContextCurrent(snapshot)) {
+                fallbackSavedInvoice = documentRecord;
+                openDocumentEmailModal();
+              }
+            });
+            actions.append(emailButton);
+          }
+          document.getElementById("purchaseOrderDetailActionHint").textContent = statusValue === "draft"
+            ? "Drafts can be issued or deleted through the existing PO/WO authority. No payment or payable action is available."
+            : "Issued documents are read-only here. Print and email use existing document flows; payment and settlement are unavailable.";
+          errorNode.hidden = true;
+          body.hidden = false;
+        } catch (error) {
+          if (!isCurrentLoad()) return;
+          body.hidden = true;
+          errorNode.hidden = false;
+          errorNode.textContent = error.message || "Could not load this PO/WO.";
+          document.getElementById("purchaseOrderDetailStatus").textContent = "Document unavailable";
+        }
+      }
+
       async function loadPurchaseOrderFromUrl() {
-        if (!poIdFromUrl) return;
+        if (!poIdFromUrl || invoiceDetailMode) return;
         try {
           const po = await api(`/purchase-orders/${encodeURIComponent(poIdFromUrl)}`);
           openPurchaseOrderForEdit(po);

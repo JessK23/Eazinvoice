@@ -4952,7 +4952,7 @@ function renderPoWorkspace(purchaseOrders) {
           <div class="hint">${escapeHtml(po.billToName || "Vendor")} - ${escapeHtml(po.poDate || "No date")} - ${escapeHtml(currency)} ${money(po.total || 0)} - ${docType} intent document, no payable posted</div>
         </div>
         <div class="row-actions">
-          <a class="ghost small" href="/apps/web/invoice.html?type=po&po=${encodeURIComponent(poId)}">${isDraft && canWriteRecords ? "Edit Draft" : "View"}</a>
+          <a class="ghost small" href="/apps/web/invoice.html?type=${docType.toLowerCase()}&po=${encodeURIComponent(poId)}${isDraft && canWriteRecords ? "" : "&view=detail"}">${isDraft && canWriteRecords ? "Edit Draft" : "View"}</a>
           ${!isDraft ? `<button class="ghost small" type="button" data-print-po="${escapeHtml(poId)}">Print / Save as PDF</button>` : ""}
           ${canWriteRecords && isDraft ? `<button class="ghost small" type="button" data-issue-po="${escapeHtml(poId)}">Issue ${docType}</button>` : ""}
           ${canWriteRecords && !isDraft ? `<button class="ghost small" type="button" data-email-po="${escapeHtml(poId)}">${activePlanAllows("documentEmailShare") ? "Email" : "Upgrade for Email"}</button>` : ""}
