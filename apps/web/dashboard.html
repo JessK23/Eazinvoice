@@ -74,6 +74,7 @@
           <div class="nav-subitems">
             <a class="nav-subitem" href="/apps/web/dashboard.html#vendors" data-page-link="vendors">Vendors</a>
             <a class="nav-subitem" href="/apps/web/dashboard.html#vendor-bills" data-page-link="vendor-bills">Vendor Bills</a>
+            <a class="nav-subitem" href="/apps/web/dashboard.html#expenses" data-page-link="expenses">Expenses</a>
             <a class="nav-subitem" href="/apps/web/dashboard.html#report-expenses" data-page-link="report-expenses">A/P and Purchase Reporting</a>
             <a class="nav-subitem" href="/apps/web/dashboard.html#accounting" data-page-link="accounting">Vendor Credits and Recoveries <small>Ledger</small></a>
           </div>
@@ -972,6 +973,68 @@
           </div>
         </form>
         <div id="vendorBillsList" class="management-list"></div>
+      </section>
+      <section id="expenses" class="panel dashboard-page" data-dashboard-page="expenses" data-surface-owner="purchases" data-surface-purpose="expenses" data-canonical-route="expenses">
+        <div class="panel-head">
+          <div>
+            <span class="pill blue">Purchases</span>
+            <h2>Expenses</h2>
+          </div>
+          <span class="hint">Read-only view of backend-authoritative Expense records</span>
+        </div>
+        <div class="notice" data-expenses-scope-note>
+          Showing Expenses already recorded in the active business workspace. Search, sorting, pagination, creation and reversal are not available on this surface yet.
+        </div>
+        <div id="expensesList" class="management-list" aria-live="polite">
+          <div class="notice">Loading Expenses...</div>
+        </div>
+        <div class="row-actions" data-expense-create-action hidden>
+          <a class="primary" href="/apps/web/dashboard.html#expense-create" data-page-link="expense-create">Create Expense</a>
+        </div>
+      </section>
+      <section id="expense-create" class="panel dashboard-page" data-dashboard-page="expense-create" data-surface-owner="purchases" data-surface-purpose="expense-create">
+        <div class="panel-head">
+          <div>
+            <span class="pill blue">Purchases</span>
+            <h2>Create Expense</h2>
+          </div>
+          <a class="ghost small" href="/apps/web/dashboard.html#expenses" data-page-link="expenses">Back to Expenses</a>
+        </div>
+        <div id="expenseCreatePermissionNotice" class="notice" hidden></div>
+        <form id="expenseCreateForm" class="stacked-form" data-surface-action="expense.create" novalidate>
+          <div class="form-grid two">
+            <label>Expense Date
+              <input id="expenseDateInput" name="expenseDate" type="date" required />
+            </label>
+            <label>Currency
+              <input id="expenseCurrencyInput" name="currency" value="INR" readonly required />
+            </label>
+            <label>Payee
+              <input id="expensePayeeInput" name="payeeName" maxlength="200" required placeholder="Who was paid" />
+            </label>
+            <label>Amount
+              <input id="expenseAmountInput" name="amount" type="number" min="0.01" step="0.01" required placeholder="0.00" />
+            </label>
+            <label>Expense Account
+              <select id="expenseAccountInput" name="expenseAccountId" required>
+                <option value="">Loading eligible expense accounts...</option>
+              </select>
+            </label>
+            <label>Paid From
+              <select id="expenseFundingAccountInput" name="bankAccountId" required>
+                <option value="">Loading eligible bank/cash accounts...</option>
+              </select>
+            </label>
+          </div>
+          <label>Description or Purpose
+            <textarea id="expenseDescriptionInput" name="description" maxlength="500" rows="3" required placeholder="Why was this expense incurred?"></textarea>
+          </label>
+          <div id="expenseCreateAuthorityStatus" class="hint" aria-live="polite"></div>
+          <div class="row-actions">
+            <button id="expenseCreateSubmit" class="primary" type="submit">Record Expense</button>
+            <span id="expenseCreateStatus" class="hint" aria-live="polite"></span>
+          </div>
+        </form>
       </section>
       <section id="business-profiles" class="panel dashboard-page" data-dashboard-page="business-profiles" data-surface-owner="business-profile" data-surface-purpose="business-identity" data-canonical-route="business-profiles">
         <div class="panel-head">

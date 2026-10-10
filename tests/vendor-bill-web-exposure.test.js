@@ -37,5 +37,6 @@ test("Vendor Bill creation remains scoped and terminal", () => {
 test("Payment is represented as backend state, not an automatic create handoff", () => {
   assert.match(dashboardJs, /Payment: \$\{escapeHtml\(paymentStatus\)\}/);
   assert.match(apiClient, /recordVendorBillPayment\(token, billId, body\)[\s\S]*\/payments/);
-  assert.doesNotMatch(dashboardHtml, /vendorBillForm[\s\S]{0,400}(payment|expense|accounting)/i);
+  const vendorBillSection = dashboardHtml.match(/<section id="vendor-bills"[\s\S]*?<\/section>/)?.[0] || "";
+  assert.doesNotMatch(vendorBillSection, /data-surface-purpose="expenses"|data-page-link="expenses"/i);
 });

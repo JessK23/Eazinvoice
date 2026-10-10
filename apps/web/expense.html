@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eazinvoice Expense</title>
+  <link rel="stylesheet" href="./styles.css?v=20260723-ui-banner-refresh-4" />
+  <link rel="stylesheet" href="./design-system-v1.css?v=20260924-navigation-ownership" />
+  <script src="./nav.js?v=20260614-responsive-menu" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><div class="mark"><img src="./assets/logo-mark.png?v=20260605-logo-refresh" alt="EazInvoice" /></div></div>
+    <nav class="topnav"><a class="ghost" href="/apps/web/dashboard.html#expenses">Expenses</a><a class="ghost" href="/apps/web/dashboard.html">Dashboard</a></nav>
+  </header>
+  <main class="page-shell">
+    <section id="expenseDetailPanel" class="panel invoice-detail-panel" aria-live="polite">
+      <div class="panel-head">
+        <div><span class="pill blue">Purchases · Expense detail</span><h1 id="expenseDetailTitle">Expense</h1><p id="expenseDetailStatus" class="hint">Loading authoritative Expense details...</p></div>
+        <div class="row-actions"><a class="ghost" href="/apps/web/dashboard.html#expenses">Back to Expenses</a></div>
+      </div>
+      <div id="expenseDetailError" class="inline-status" hidden></div>
+      <div id="expenseDetailBody" class="stack" hidden>
+        <div class="quick-grid">
+          <article class="quick-card"><span>Payee</span><strong id="expenseDetailPayee">Unavailable</strong></article>
+          <article class="quick-card"><span>Expense date</span><strong id="expenseDetailDate">Unavailable</strong></article>
+          <article class="quick-card"><span>Lifecycle</span><strong id="expenseDetailState">Unavailable</strong></article>
+          <article class="quick-card"><span>Currency</span><strong id="expenseDetailCurrency">Unavailable</strong></article>
+        </div>
+        <div class="panel-subsection"><div class="panel-head compact-head"><div><h2>Expense record</h2><p class="hint">These values are read-only and returned by the Expense authority.</p></div></div><div class="payment-status-grid">
+          <div><span>Amount</span><strong id="expenseDetailAmount">Unavailable</strong></div><div><span>Description</span><strong id="expenseDetailDescription">Unavailable</strong></div><div><span>Expense account</span><strong id="expenseDetailAccount">Unavailable</strong></div><div><span>Paid from</span><strong id="expenseDetailFunding">Unavailable</strong></div><div><span>Created</span><strong id="expenseDetailCreated">Unavailable</strong></div><div><span>Created by</span><strong id="expenseDetailCreatedBy">Unavailable</strong></div><div><span>Journal</span><strong id="expenseDetailJournal">Unavailable</strong></div><div><span>Financial event</span><strong id="expenseDetailEvent">Unavailable</strong></div>
+        </div></div>
+        <div class="panel-subsection"><div class="panel-head compact-head"><div><h2>Reversal</h2><p id="expenseDetailReversalHint" class="hint">Reversal remains a controlled backend accounting operation.</p></div></div><div id="expenseDetailReversal" class="stack"></div></div>
+        <div class="panel-subsection"><div class="panel-head compact-head"><div><h2>Actions</h2><p class="hint">Posted Expenses cannot be edited or deleted.</p></div></div><div id="expenseDetailActions" class="row-actions"></div></div>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="./expense.js?v=20261011-expense-detail"></script>
+</body>
+</html>

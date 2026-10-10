@@ -43,8 +43,9 @@ test("Reports remains consumption-only and Accounting remains the operational ow
   assert.doesNotMatch(dashboardHtml, /href="\/apps\/web\/invoice\.html\?type=expense"/);
 });
 
-test("Expense backend capability is exposed without adding a Web dashboard surface", () => {
-  assert.doesNotMatch(dashboardHtml, /data-dashboard-page="expenses"/);
+test("Expense backend capability is exposed through the Purchases-owned Web surface", () => {
+  assert.match(dashboardHtml, /data-dashboard-page="expenses"[^>]*data-surface-owner="purchases"/);
+  assert.match(dashboardHtml, /href="\/apps\/web\/dashboard\.html#expenses" data-page-link="expenses">Expenses/);
   assert.doesNotMatch(dashboardHtml, /data-dashboard-page="quotations"/);
   assert.match(apiClient, /createExpense|listExpenses/);
   assert.match(server, /url\.pathname === "\/expenses"/);

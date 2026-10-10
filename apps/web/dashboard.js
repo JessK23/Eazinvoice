@@ -152,6 +152,16 @@ const vendorBillForm = document.getElementById("vendorBillForm");
 const vendorBillVendorId = document.getElementById("vendorBillVendorId");
 const vendorBillFormStatus = document.getElementById("vendorBillFormStatus");
 const vendorBillsList = document.getElementById("vendorBillsList");
+const expensesList = document.getElementById("expensesList");
+const expenseCreateForm = document.getElementById("expenseCreateForm");
+const expenseCreatePermissionNotice = document.getElementById("expenseCreatePermissionNotice");
+const expenseCreateAuthorityStatus = document.getElementById("expenseCreateAuthorityStatus");
+const expenseCreateStatus = document.getElementById("expenseCreateStatus");
+const expenseCreateSubmit = document.getElementById("expenseCreateSubmit");
+const expenseDateInput = document.getElementById("expenseDateInput");
+const expenseCurrencyInput = document.getElementById("expenseCurrencyInput");
+const expenseAccountInput = document.getElementById("expenseAccountInput");
+const expenseFundingAccountInput = document.getElementById("expenseFundingAccountInput");
 const customerForm = document.getElementById("customerForm");
 const customerFormStatus = document.getElementById("customerFormStatus");
 const vendorForm = document.getElementById("vendorForm");
@@ -302,6 +312,10 @@ let dashboardPurchaseOrders = [];
 let dashboardCustomers = [];
 let dashboardVendors = [];
 let dashboardVendorBills = [];
+let dashboardExpenses = [];
+let expenseLedgerAccounts = [];
+let expenseFundingAccounts = [];
+let expenseSubmission = { key: "", fingerprint: "" };
 let dashboardPayments = [];
 let dashboardReportSummary = null;
 let detailReportSummary = null;
@@ -4480,6 +4494,211 @@ function renderVendorBills(bills = dashboardVendorBills) {
   });
 }
 
+function renderExpenses(expenses = dashboardExpenses) {
+  if (!expensesList) return;
+  const createAction = document.querySelector("[data-expense-create-action]");
+  if (createAction) createAction.hidden = !workspaceCanWriteRecords();
+  if (!Array.isArray(expenses) || !expenses.length) {
+    expensesList.innerHTML = `<div class="notice">No Expenses recorded in this workspace.${workspaceCanWriteRecords() ? " Use Create Expense to record a direct-paid expense." : ""}</div>`;
+    return;
+  }
+  expensesList.innerHTML = expenses.map((expense) => {
+    const status = String(expense.status || "posted").toLowerCase();
+    const amount = expense.amount ?? expense.totalAmount ?? 0;
+    const currency = expense.currency || "INR";
+    const payee = expense.payeeName || expense.payee || "Payee not saved";
+    const description = expense.description || expense.notes || "No description saved";
+    const account = expense.accountCode || expense.expenseAccountCode || "Account not provided";
+    const paymentAccount = expense.paymentAccountCode || expense.fundingLedgerAccountCode || "Payment account not provided";
+    return `<article class="management-card" data-expense-id="${escapeHtml(expense.id)}">
+      <div>
+        <div class="badge-row">
+          <span class="pill blue">${escapeHtml(expense.id || "Expense")}</span>
+          <span class="pill ${status === "reversed" ? "red" : "green"}">${escapeHtml(status.toUpperCase())}</span>
+        </div>
+        <h3>${escapeHtml(payee)}</h3>
+        <p>${escapeHtml(expense.expenseDate || expense.date || "Expense date not saved")} · ${escapeHtml(currency)} ${money(amount)}</p>
+        <p class="hint">${escapeHtml(description)}</p>
+        <p class="hint">Expense account: ${escapeHtml(account)} · Paid from: ${escapeHtml(paymentAccount)}</p>
+      </div>
+      <div class="row-actions"><a class="ghost small" href="/apps/web/expense.html?expense=${encodeURIComponent(expense.id || "")}">View</a></div>
+    </article>`;
+  }).join("");
+}
+
+function expenseBusinessCurrency() {
+  const business = dashboardCompanies[0] || {};
+  return String(business.currency || business.baseCurrency || "INR").trim().toUpperCase();
+}
+
+function expenseAccountLabel(account) {
+  return `${account.accountCode || account.id} · ${account.accountName || "Expense account"}`;
+}
+
+function expenseFundingAccountLabel(account) {
+  return `${account.displayName || account.accountName || account.id} · ${String(account.accountType || "bank").toUpperCase()}`;
+}
+
+function renderExpenseCreateForm() {
+  if (!expenseCreateForm) return;
+  const canWrite = workspaceCanWriteRecords();
+  const hasAuthorities = expenseLedgerAccounts.length > 0 && expenseFundingAccounts.length > 0;
+  if (expenseCreatePermissionNotice) {
+    expenseCreatePermissionNotice.hidden = canWrite;
+    expenseCreatePermissionNotice.textContent = canWrite ? "" : workspaceWriteLockMessage("record Expenses");
+  }
+  if (expenseCurrencyInput) expenseCurrencyInput.value = expenseBusinessCurrency();
+  if (expenseDateInput && !expenseDateInput.value) expenseDateInput.value = new Date().toISOString().slice(0, 10);
+  if (expenseAccountInput) {
+    const selected = expenseAccountInput.value;
+    expenseAccountInput.innerHTML = expenseLedgerAccounts.length
+      ? `<option value="">Select an eligible expense account</option>${expenseLedgerAccounts.map((account) => `<option value="${escapeHtml(account.id)}">${escapeHtml(expenseAccountLabel(account))}</option>`).join("")}`
+      : '<option value="">No eligible expense account authority available</option>';
+    if (expenseLedgerAccounts.some((account) => account.id === selected)) expenseAccountInput.value = selected;
+  }
+  if (expenseFundingAccountInput) {
+    const selected = expenseFundingAccountInput.value;
+    expenseFundingAccountInput.innerHTML = expenseFundingAccounts.length
+      ? `<option value="">Select an eligible bank or cash account</option>${expenseFundingAccounts.map((account) => `<option value="${escapeHtml(account.id)}">${escapeHtml(expenseFundingAccountLabel(account))}</option>`).join("")}`
+      : '<option value="">No eligible bank/cash account authority available</option>';
+    if (expenseFundingAccounts.some((account) => account.id === selected)) expenseFundingAccountInput.value = selected;
+  }
+  if (expenseCreateAuthorityStatus) {
+    expenseCreateAuthorityStatus.textContent = hasAuthorities
+      ? "Accounts are supplied by the existing accounting and bank authorities. Cash sufficiency and posting remain backend checks."
+      : "Expense posting is unavailable until the backend exposes eligible expense and actual bank/cash account authorities for this workspace.";
+    expenseCreateAuthorityStatus.dataset.tone = hasAuthorities ? "success" : "error";
+  }
+  if (expenseCreateSubmit) expenseCreateSubmit.disabled = !canWrite || !hasAuthorities;
+}
+
+async function loadExpenseCreateAuthorities() {
+  if (!expenseCreateForm) return;
+  renderExpenseCreateForm();
+  if (!workspaceCanWriteRecords()) return;
+  const workspaceOptions = selectedWorkspaceOptions();
+  if (expenseCreateAuthorityStatus) expenseCreateAuthorityStatus.textContent = "Loading account authorities...";
+  try {
+    const [ledgerResult, bankAccounts] = await Promise.all([
+      apiClient.listLedgerAccounts(token, workspaceOptions),
+      apiClient.listBankAccounts(token, workspaceOptions),
+    ]);
+    const currentOptions = selectedWorkspaceOptions();
+    if (currentOptions.workspaceOwnerUserId !== workspaceOptions.workspaceOwnerUserId
+      || currentOptions.businessId !== workspaceOptions.businessId) return;
+    const accounts = Array.isArray(ledgerResult) ? ledgerResult : ledgerResult?.accounts;
+    expenseLedgerAccounts = (Array.isArray(accounts) ? accounts : []).filter((account) => (
+      String(account.status || "active").toLowerCase() === "active"
+      && String(account.accountType || "").toLowerCase() === "expense"
+      && String(account.normalBalance || "").toLowerCase() === "debit"
+    ));
+    expenseFundingAccounts = (Array.isArray(bankAccounts) ? bankAccounts : []).filter((account) => (
+      String(account.status || "active").toLowerCase() === "active"
+      && ["bank", "cash"].includes(String(account.accountType || "").toLowerCase())
+      && String(account.accountType || "").toLowerCase() !== "clearing"
+      && String(account.ledgerAccountCode || account.accountCode || "") !== "1110"
+    ));
+    renderExpenseCreateForm();
+  } catch (error) {
+    expenseLedgerAccounts = [];
+    expenseFundingAccounts = [];
+    renderExpenseCreateForm();
+    if (expenseCreateAuthorityStatus) expenseCreateAuthorityStatus.textContent = backendErrorMessage(error);
+  }
+}
+
+function expenseFormFingerprint(payload) {
+  return JSON.stringify({
+    workspaceOwnerUserId: payload.workspaceOwnerUserId,
+    businessId: payload.businessId,
+    expenseDate: payload.expenseDate,
+    payeeName: payload.payeeName,
+    description: payload.description,
+    amount: payload.amount,
+    currency: payload.currency,
+    expenseAccountId: payload.expenseAccountId,
+    bankAccountId: payload.bankAccountId,
+  });
+}
+
+function nextExpenseSubmissionKey() {
+  if (!globalThis.crypto?.randomUUID) throw new Error("Secure Expense submission identity is unavailable. Refresh and try again.");
+  return `expense-${globalThis.crypto.randomUUID()}`;
+}
+
+expenseCreateForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!workspaceCanWriteRecords()) {
+    setInlineStatus(expenseCreateStatus, workspaceWriteLockMessage("record Expenses"), "error");
+    return;
+  }
+  const workspaceSnapshot = selectedWorkspaceOptions();
+  const formData = new FormData(expenseCreateForm);
+  const payload = {
+    ...workspaceSnapshot,
+    expenseDate: String(formData.get("expenseDate") || "").trim(),
+    payeeName: String(formData.get("payeeName") || "").trim(),
+    description: String(formData.get("description") || "").trim(),
+    amount: String(formData.get("amount") || "").trim(),
+    currency: String(formData.get("currency") || expenseBusinessCurrency()).trim().toUpperCase(),
+    expenseAccountId: String(formData.get("expenseAccountId") || "").trim(),
+    bankAccountId: String(formData.get("bankAccountId") || "").trim(),
+  };
+  if (!payload.expenseDate || !/^\d{4}-\d{2}-\d{2}$/.test(payload.expenseDate)) return setInlineStatus(expenseCreateStatus, "Choose a valid Expense date.", "error");
+  if (!payload.payeeName) return setInlineStatus(expenseCreateStatus, "Payee is required.", "error");
+  if (!payload.description) return setInlineStatus(expenseCreateStatus, "Description or purpose is required.", "error");
+  if (!Number.isFinite(Number(payload.amount)) || Number(payload.amount) <= 0) return setInlineStatus(expenseCreateStatus, "Enter a positive Expense amount.", "error");
+  if (!payload.expenseAccountId || !expenseLedgerAccounts.some((account) => account.id === payload.expenseAccountId)) return setInlineStatus(expenseCreateStatus, "Select an eligible Expense account.", "error");
+  if (!payload.bankAccountId || !expenseFundingAccounts.some((account) => account.id === payload.bankAccountId)) return setInlineStatus(expenseCreateStatus, "Select an eligible bank or cash account.", "error");
+  const fingerprint = expenseFormFingerprint(payload);
+  if (expenseSubmission.fingerprint !== fingerprint) expenseSubmission = { key: nextExpenseSubmissionKey(), fingerprint };
+  const requestPayload = { ...payload, idempotencyKey: expenseSubmission.key };
+  if (expenseCreateSubmit) expenseCreateSubmit.disabled = true;
+  setInlineStatus(expenseCreateStatus, "Recording Expense...", "");
+  try {
+    const result = await apiClient.createExpense(token, requestPayload);
+    const currentOptions = selectedWorkspaceOptions();
+    if (currentOptions.workspaceOwnerUserId !== workspaceSnapshot.workspaceOwnerUserId
+      || currentOptions.businessId !== workspaceSnapshot.businessId) {
+      setInlineStatus(expenseCreateStatus, "Workspace changed while the Expense was being recorded. Refresh the active workspace before continuing.", "error");
+      return;
+    }
+    expenseSubmission = { key: "", fingerprint: "" };
+    expenseCreateForm.reset();
+    renderExpenseCreateForm();
+    setInlineStatus(expenseCreateStatus, `Expense ${result?.expense?.id || "record"} recorded successfully.`, "success");
+    await loadDashboardExpenses();
+    window.location.hash = "expenses";
+  } catch (error) {
+    setInlineStatus(expenseCreateStatus, backendErrorMessage(error), "error");
+  } finally {
+    if (expenseCreateSubmit) expenseCreateSubmit.disabled = !workspaceCanWriteRecords() || !(expenseLedgerAccounts.length && expenseFundingAccounts.length);
+  }
+});
+
+async function loadDashboardExpenses() {
+  if (!expensesList) return;
+  const workspaceOptions = selectedWorkspaceOptions();
+  expensesList.innerHTML = '<div class="notice">Loading Expenses...</div>';
+  try {
+    const expenses = await apiClient.listExpenses(token, workspaceOptions);
+    const currentOptions = selectedWorkspaceOptions();
+    if (currentOptions.workspaceOwnerUserId !== workspaceOptions.workspaceOwnerUserId
+      || currentOptions.businessId !== workspaceOptions.businessId) return;
+    dashboardExpenses = Array.isArray(expenses) ? expenses : [];
+    renderExpenses(dashboardExpenses);
+  } catch (error) {
+    expensesList.innerHTML = `<div class="notice error" role="alert">
+      <p>${escapeHtml(error.message || "Could not load Expenses for this workspace.")}</p>
+      <button class="ghost small" type="button" data-retry-expenses>Retry</button>
+    </div>`;
+  }
+}
+
+expensesList?.addEventListener("click", (event) => {
+  if (event.target.closest("[data-retry-expenses]")) loadDashboardExpenses();
+});
+
 function setPaymentModalStatus(message, tone = "") {
   if (!paymentModalStatus) return;
   paymentModalStatus.textContent = message || "";
@@ -6621,6 +6840,8 @@ async function initializeDashboard() {
   renderCustomers(dashboardCustomers);
   renderVendors(dashboardVendors, dashboardPurchaseOrders);
   renderVendorBills(dashboardVendorBills);
+  await loadDashboardExpenses();
+  await loadExpenseCreateAuthorities();
   renderProfile(currentUser, activeOrg);
   if (activeOrg) {
     if (orgName) orgName.textContent = activeOrg.entityType === "freelancer" || activeOrg.entityType === "consultant" ? activeOrg.name : activeOrg.legalName || activeOrg.name;
