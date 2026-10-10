@@ -62,8 +62,13 @@ test("payment and KYC actions reference existing authorities and business scope"
   assert.equal(kyc.businessScopeRequirement, "required");
 });
 
-test("Expense and Quotation remain unavailable while Vendor Bill backend capability is represented", () => {
-  for (const actionId of ["expense.create", "quotation.create"]) {
+test("Expense is implemented while Quotation remains unavailable", () => {
+  const expense = describeActionContract("expense.create");
+  assert.equal(expense.status, ACTION_STATUS.IMPLEMENTED);
+  assert.deepEqual(expense.entryPoints, ["POST /expenses"]);
+  assert.equal(expense.idempotencyPolicy, IDEMPOTENCY_POLICIES.ACCOUNTING_EVENT_KEY);
+  assert.equal(expense.sideEffectClass, "financial-event");
+  for (const actionId of ["quotation.create"]) {
     const action = describeActionContract(actionId);
     assert.equal(action.status, ACTION_STATUS.PLANNED);
     assert.deepEqual(action.entryPoints, []);
@@ -75,7 +80,7 @@ test("Expense and Quotation remain unavailable while Vendor Bill backend capabil
   assert.deepEqual(vendorBill.entryPoints, ["POST /vendor-bills"]);
   assert.equal(vendorBill.surfaceStatus, "dedicated target surface pending");
   assert.equal(vendorBill.failureOutcome.includes("unavailable"), false);
-  assert.equal(listActionContracts({ includePlanned: false }).some((action) => action.actionId === "expense.create"), false);
+  assert.equal(listActionContracts({ includePlanned: false }).some((action) => action.actionId === "expense.create"), true);
 });
 
 test("archive and restore preserve business status while changing archive metadata", () => {

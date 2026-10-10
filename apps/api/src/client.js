@@ -142,6 +142,18 @@ export const apiClient = {
   recordVendorBillPayment(token, billId, body) {
     return request(`/vendor-bills/${billId}/payments`, { method: "POST", token, body });
   },
+  listExpenses(token, options = {}) {
+    return request(`/expenses${queryString(options)}`, { token });
+  },
+  createExpense(token, body) {
+    return request("/expenses", { method: "POST", token, body });
+  },
+  getExpense(token, expenseId, options = {}) {
+    return request(`/expenses/${expenseId}${queryString(options)}`, { token });
+  },
+  reverseExpense(token, expenseId, body = {}) {
+    return request(`/expenses/${expenseId}/reverse`, { method: "POST", token, body });
+  },
   listInvoices(token, options = {}) {
     return request(`/invoices${queryString(options)}`, { token });
   },

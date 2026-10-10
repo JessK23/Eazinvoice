@@ -799,6 +799,75 @@ export function postVendorPaymentReversed(state, reversal = {}, payment = {}, bi
   }
 }
 
+export function postExpenseRecorded(state, expense = {}, business = {}, options = {}) {
+  if (!expense?.id || !business?.id || expense.businessId !== business.id) throw new Error("Expense and business are required for posting.");
+  const { event, replay } = createFinancialEvent(state, {
+    businessId: business.id,
+    eventType: "expense_recorded",
+    sourceType: "expense",
+    sourceId: expense.id,
+    sourceStatus: "recorded",
+    eventTimestamp: expense.expenseDate || expense.createdAt,
+    idempotencyKey: eventKey(business.id, "expense_recorded", expense.idempotencyKey || expense.id),
+    metadata: { expenseId: expense.id, payeeName: expense.payeeName, idempotencyKey: expense.idempotencyKey },
+  });
+  if (event.postingStatus === "posted") return { posted: true, replay: true, event: clone(event), journal: clone(state.accountingJournals.find((entry) => entry.id === event.journalId)) };
+  try {
+    const journal = persistJournal(state, event, {
+      ownerUserId: expense.ownerUserId || business.ownerUserId,
+      journalDate: expense.accountingDate || expense.expenseDate,
+      narration: `Expense ${expense.id}`,
+      currency: expense.currency || "INR",
+      postingRule: "expense_recorded_v1",
+      lines: [
+        { account: options.expenseAccount, debit: expense.amount, description: `Business expense for ${expense.payeeName}` },
+        { account: options.bankAccount, credit: expense.amount, description: "Paid from authorized bank or cash account" },
+      ],
+    });
+    return { posted: true, replay, event: clone(event), journal: clone(journal) };
+  } catch (error) {
+    failEvent(event, error);
+    throw error;
+  }
+}
+
+export function postExpenseReversed(state, reversal = {}, expense = {}, business = {}, options = {}) {
+  if (!reversal?.id || !expense?.id || !business?.id || reversal.businessId !== business.id || expense.businessId !== business.id) {
+    throw new Error("Expense reversal, expense and business are required for posting.");
+  }
+  const { event, replay } = createFinancialEvent(state, {
+    businessId: business.id,
+    eventType: "expense_reversed",
+    sourceType: "expense_reversal",
+    sourceId: reversal.id,
+    sourceStatus: "reversed",
+    eventTimestamp: reversal.reversalDate || reversal.createdAt,
+    idempotencyKey: eventKey(business.id, "expense_reversed", reversal.idempotencyKey || reversal.id),
+    metadata: { expenseId: expense.id, reversesJournalId: reversal.reversesJournalId || "", reason: reversal.reason || "" },
+  });
+  if (event.postingStatus === "posted") return { posted: true, replay: true, event: clone(event), journal: clone(state.accountingJournals.find((entry) => entry.id === event.journalId)) };
+  try {
+    const journal = persistJournal(state, event, {
+      ownerUserId: reversal.ownerUserId || expense.ownerUserId || business.ownerUserId,
+      journalDate: reversal.reversalDate,
+      narration: `Reversal of expense ${expense.id}`,
+      currency: reversal.currency || expense.currency || "INR",
+      postingRule: "expense_reversed_v1",
+      lines: [
+        { account: options.bankAccount, debit: reversal.amount, description: "Expense reversal returned to bank or cash" },
+        { account: options.expenseAccount, credit: reversal.amount, description: `Reverse expense ${expense.id}` },
+      ],
+    });
+    journal.correctsDocumentId = expense.id;
+    journal.reversesJournalId = reversal.reversesJournalId || "";
+    event.reversesJournalId = reversal.reversesJournalId || "";
+    return { posted: true, replay, event: clone(event), journal: clone(journal) };
+  } catch (error) {
+    failEvent(event, error);
+    throw error;
+  }
+}
+
 export function postCustomerRefundProcessed(state, refund = {}, creditNote = {}, business = {}, options = {}) {
   if (!refund?.id || !creditNote?.id) throw new Error("Customer refund and source credit note are required for posting.");
   if (!business?.id || refund.businessId !== business.id || creditNote.businessId !== business.id) {

@@ -112,11 +112,13 @@ function sourceRecord(state, journal = {}) {
   if (sourceType === "vendor_payment_reversal") return (state.vendorPaymentReversals || []).find((entry) => entry.id === sourceId) || {};
   if (sourceType === "customer_refund") return (state.customerRefunds || []).find((entry) => entry.id === sourceId) || {};
   if (sourceType === "vendor_refund") return (state.vendorRefunds || []).find((entry) => entry.id === sourceId) || {};
+  if (sourceType === "expense") return (state.expenses || []).find((entry) => entry.id === sourceId) || {};
+  if (sourceType === "expense_reversal") return (state.expenseReversals || []).find((entry) => entry.id === sourceId) || {};
   return {};
 }
 
 function sourceDate(journal = {}, record = {}) {
-  return record.settlementDate || record.paymentDate || record.reversalDate || record.refundDate || record.receivedDate || journal.journalDate || String(journal.createdAt || "").slice(0, 10);
+  return record.settlementDate || record.paymentDate || record.reversalDate || record.refundDate || record.expenseDate || record.receivedDate || journal.journalDate || String(journal.createdAt || "").slice(0, 10);
 }
 
 function sourceReference(record = {}) {
@@ -126,7 +128,7 @@ function sourceReference(record = {}) {
 export function buildInternalBankTransactions(state = {}, bankAccount = {}, options = {}) {
   const businessId = bankAccount.businessId;
   const accountId = bankAccount.ledgerAccountId;
-  const allowedSources = new Set(["payment", "vendor_payment", "provider_settlement", "customer_payment_reversal", "vendor_payment_reversal", "customer_refund", "vendor_refund", "manual"]);
+  const allowedSources = new Set(["payment", "vendor_payment", "provider_settlement", "customer_payment_reversal", "vendor_payment_reversal", "customer_refund", "vendor_refund", "expense", "expense_reversal", "manual"]);
   const journalsById = new Map((state.accountingJournals || [])
     .filter((journal) => journal.businessId === businessId && journal.status === "posted" && allowedSources.has(String(journal.sourceType || "")))
     .map((journal) => [journal.id, journal]));

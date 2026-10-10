@@ -43,11 +43,13 @@ test("Reports remains consumption-only and Accounting remains the operational ow
   assert.doesNotMatch(dashboardHtml, /href="\/apps\/web\/invoice\.html\?type=expense"/);
 });
 
-test("3C.7 does not implement future Expense or Quotation workflows", () => {
+test("Expense backend capability is exposed without adding a Web dashboard surface", () => {
   assert.doesNotMatch(dashboardHtml, /data-dashboard-page="expenses"/);
   assert.doesNotMatch(dashboardHtml, /data-dashboard-page="quotations"/);
-  assert.doesNotMatch(apiClient, /createExpense|listExpenses|createQuotation|listQuotations/);
-  assert.doesNotMatch(server, /url\.pathname === "\/expenses"|url\.pathname === "\/quotations"/);
+  assert.match(apiClient, /createExpense|listExpenses/);
+  assert.match(server, /url\.pathname === "\/expenses"/);
+  assert.doesNotMatch(apiClient, /createQuotation|listQuotations/);
+  assert.doesNotMatch(server, /url\.pathname === "\/quotations"/);
 });
 
 test("Accounting loading remains read-only", () => {

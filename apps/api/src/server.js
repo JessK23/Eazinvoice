@@ -4943,6 +4943,60 @@ if (url.pathname === "/customers" && req.method === "GET") {
       return;
     }
 
+    if (url.pathname === "/expenses" && req.method === "GET") {
+      try {
+        sendJson(res, 200, api.listExpenses(user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        }));
+      } catch (error) { sendJson(res, knownRequestErrorStatus(error), { error: error.message }); }
+      return;
+    }
+
+    if (url.pathname === "/expenses" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        sendJson(res, 201, await api.createExpense(user, body, {
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        }));
+      } catch (error) { sendJson(res, knownRequestErrorStatus(error), { error: error.message }); }
+      return;
+    }
+
+    if (url.pathname.startsWith("/expenses/") && url.pathname.endsWith("/reverse") && req.method === "POST") {
+      try {
+        const parts = url.pathname.split("/");
+        const id = decodeURIComponent(parts[2] || "");
+        const body = await readBody(req);
+        const result = await api.reverseExpense(id, body, {
+          user,
+          previewPlan,
+          workspaceOwnerUserId: body.workspaceOwnerUserId || null,
+          businessId: body.businessId || null,
+        });
+        if (!result) sendJson(res, 404, { error: "Expense not found" });
+        else sendJson(res, 200, result);
+      } catch (error) { sendJson(res, knownRequestErrorStatus(error), { error: error.message }); }
+      return;
+    }
+
+    if (url.pathname.startsWith("/expenses/") && req.method === "GET") {
+      try {
+        const id = decodeURIComponent(url.pathname.split("/")[2] || "");
+        const expense = api.getExpense(id, user, {
+          previewPlan,
+          workspaceOwnerUserId: url.searchParams.get("workspaceOwnerUserId") || null,
+          businessId: url.searchParams.get("businessId") || null,
+        });
+        if (!expense) sendJson(res, 404, { error: "Expense not found" });
+        else sendJson(res, 200, expense);
+      } catch (error) { sendJson(res, knownRequestErrorStatus(error), { error: error.message }); }
+      return;
+    }
+
     if (url.pathname === "/credit-notes" && req.method === "GET") {
       try {
         sendJson(res, 200, api.listCreditNotes(user, {

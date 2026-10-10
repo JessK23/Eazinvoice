@@ -74,8 +74,10 @@ test("Banking actions remain in Banking and Advanced Workflows redirects operati
 
 test("Future domains and protected surfaces remain outside this package", () => {
   assert.match(html, /Quotation Coming Later/);
-  assert.doesNotMatch(client, /createExpense|listExpenses|createQuotation|listQuotations/);
-  assert.doesNotMatch(server, /url\.pathname === "\/expenses"|url\.pathname === "\/quotations"/);
+  assert.match(client, /createExpense|listExpenses/);
+  assert.match(server, /url\.pathname === "\/expenses"/);
+  assert.doesNotMatch(client, /createQuotation|listQuotations/);
+  assert.doesNotMatch(server, /url\.pathname === "\/quotations"/);
   assert.match(html, /data-dashboard-page="accounting"[^>]*data-surface-owner="accounting"/);
   assert.match(html, /data-dashboard-page="reports"[^>]*data-surface-owner="reports"/);
 });

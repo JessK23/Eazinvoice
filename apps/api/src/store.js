@@ -26,6 +26,8 @@ import {
   postSalesCreditNotePosted,
   postVendorCreditPosted,
   postProviderSettlementSimple,
+  postExpenseRecorded,
+  postExpenseReversed,
   publicJournalWithLines,
   reconcileAccountingPostings,
   validateBalancedJournal,
@@ -296,6 +298,8 @@ export function createStore(seed = {}, options = {}) {
     customers: [],
     vendors: [],
     vendorBills: [],
+    expenses: [],
+    expenseReversals: [],
     creditNotes: [],
     vendorCredits: [],
     paymentReversals: [],
@@ -350,6 +354,8 @@ export function createStore(seed = {}, options = {}) {
       customer: 0,
       vendor: 0,
       vendorBill: 0,
+      expense: 0,
+      expenseReversal: 0,
       creditNote: 0,
       vendorCredit: 0,
       paymentReversal: 0,
@@ -408,6 +414,8 @@ export function createStore(seed = {}, options = {}) {
     customer: 0,
     vendor: 0,
     vendorBill: 0,
+    expense: 0,
+    expenseReversal: 0,
     creditNote: 0,
     vendorCredit: 0,
     paymentReversal: 0,
@@ -476,6 +484,8 @@ export function createStore(seed = {}, options = {}) {
       customers: state.customers,
       vendors: state.vendors,
       vendorBills: state.vendorBills,
+      expenses: state.expenses,
+      expenseReversals: state.expenseReversals,
       creditNotes: state.creditNotes,
       vendorCredits: state.vendorCredits,
       paymentReversals: state.paymentReversals,
@@ -7272,6 +7282,8 @@ export function createStore(seed = {}, options = {}) {
       customers: state.customers.length,
       vendors: state.vendors.length,
       vendorBills: state.vendorBills.length,
+      expenses: state.expenses.length,
+      expenseReversals: state.expenseReversals.length,
       creditNotes: state.creditNotes.length,
       vendorCredits: state.vendorCredits.length,
       paymentReversals: state.paymentReversals.length,
@@ -7794,6 +7806,203 @@ export function createStore(seed = {}, options = {}) {
     return ["posted", "recognized", "approved"].includes(normalizeRecordStatus(vendorBill?.status, "draft"));
   }
 
+  function expenseActorCanPost(business, actorUserId) {
+    const actor = actorUserId ? state.users.find((entry) => entry.id === actorUserId) : null;
+    if (!actorUserId || !actor) throw new Error("Expense posting authorization is required.");
+    if (actor.role === "admin" || business.ownerUserId === actorUserId) return true;
+    const member = state.teamMembers.find((entry) => entry.businessId === business.id
+      && entry.acceptedUserId === actorUserId
+      && isEmailLinkedTeamMember(entry));
+    if (!member || !["owner", "admin", "accountant"].includes(String(member.role || "").toLowerCase())) {
+      throw new Error("This user is not authorized to post expenses.");
+    }
+    if (!getTeamRolePermissions(member.role).writeRecords) throw new Error("This team role cannot post expenses.");
+    return true;
+  }
+
+  function resolveExpenseAccounts(business, input = {}) {
+    const expenseCandidates = state.ledgerAccounts.filter((account) => account.businessId === business.id
+      && (input.expenseAccountId ? account.id === input.expenseAccountId : account.accountCode === String(input.expenseAccountCode || "5100").trim()));
+    if (expenseCandidates.length !== 1) throw new Error("Expense ledger account is missing or ambiguous.");
+    const expenseAccount = expenseCandidates[0];
+    if (expenseAccount.status !== "active" || expenseAccount.accountType !== "expense" || expenseAccount.normalBalance !== "debit") {
+      throw new Error("Expense ledger account is not eligible for debit posting.");
+    }
+    const bankAccount = state.bankAccounts.find((entry) => entry.id === input.bankAccountId && entry.businessId === business.id && entry.status === "active");
+    if (!bankAccount || !["bank", "cash"].includes(String(bankAccount.accountType || "").toLowerCase())) {
+      throw new Error("An active bank or cash account in this business is required.");
+    }
+    const bankLedger = state.ledgerAccounts.find((account) => account.id === bankAccount.ledgerAccountId && account.businessId === business.id);
+    if (!bankLedger || bankLedger.status !== "active" || bankLedger.accountType !== "asset" || bankLedger.normalBalance !== "debit" || bankLedger.accountCode === "1110" || bankLedger.accountRole === "bank_clearing") {
+      throw new Error("The selected bank or cash account is not an eligible actual funding account.");
+    }
+    return { expenseAccount, bankAccount, bankLedger };
+  }
+
+  function availableCashMinor(business, bankAccount, asOf) {
+    const ledger = state.ledgerAccounts.find((account) => account.id === bankAccount.ledgerAccountId && account.businessId === business.id);
+    if (!ledger || ledger.status !== "active" || ledger.accountType !== "asset" || ledger.normalBalance !== "debit" || ledger.bankAccountType !== "cash") {
+      throw new Error("The selected account is not an eligible cash account.");
+    }
+    const postedJournals = state.accountingJournals.filter((journal) => (
+      journal.businessId === business.id
+      && journal.status === "posted"
+      && String(journal.journalDate || "").slice(0, 10) <= asOf
+    ));
+    const hasOpeningBalanceJournal = postedJournals.some((journal) => (
+      journal.sourceType === "opening_balance"
+      && state.accountingJournalLines.some((line) => line.journalId === journal.id && line.accountId === ledger.id)
+    ));
+    const ledgerMinor = state.accountingJournalLines
+      .filter((line) => line.businessId === business.id && line.accountId === ledger.id && postedJournals.some((journal) => journal.id === line.journalId))
+      .reduce((sum, line) => sum + Math.round(toNumber(line.debit) * 100) - Math.round(toNumber(line.credit) * 100), 0);
+    return ledgerMinor + (hasOpeningBalanceJournal ? 0 : Math.round(toNumber(bankAccount.openingBalance) * 100));
+  }
+
+  function enforceCashExpenseAvailability(business, accounts, expenseDate, amountMinor) {
+    if (String(accounts.bankAccount.accountType || "").toLowerCase() !== "cash") return;
+    const availableMinor = availableCashMinor(business, accounts.bankAccount, expenseDate);
+    if (availableMinor < amountMinor) {
+      throw new Error(`Cash balance is insufficient for this Expense. Available: ${fromMinor(availableMinor)}.`);
+    }
+  }
+
+  function expenseFingerprint(input = {}) {
+    return JSON.stringify({
+      businessId: input.businessId,
+      expenseDate: input.expenseDate,
+      payeeName: String(input.payeeName || "").trim(),
+      description: String(input.description || input.reference || "").trim(),
+      amount: Math.round(toNumber(input.amount) * 100),
+      currency: String(input.currency || "INR").trim().toUpperCase(),
+      expenseAccountId: input.expenseAccountId || "",
+      expenseAccountCode: input.expenseAccountCode || "5100",
+      bankAccountId: input.bankAccountId || "",
+    });
+  }
+
+  function rejectNonZeroExpenseTax(input = {}) {
+    for (const field of ["taxRate", "taxAmount", "gstAmount", "cgstAmount", "sgstAmount", "igstAmount", "inputGstAmount"]) {
+      if (input[field] !== undefined && input[field] !== null && input[field] !== "" && toNumber(input[field]) !== 0) {
+        throw new Error("Expense MVP accepts zero-tax expenses only.");
+      }
+    }
+    if (input.tax || input.gst || input.inputGst) throw new Error("Expense MVP accepts zero-tax expenses only.");
+  }
+
+  function createExpenseLocal(input = {}) {
+    const business = findBusinessByIdOrLegacyOwner(input.businessId);
+    if (!business) throw new Error("Business is required for expense.");
+    expenseActorCanPost(business, input.actorUserId || input.createdByUserId);
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    if (!idempotencyKey) throw new Error("Expense idempotency key is required.");
+    const payeeName = String(input.payeeName || input.payee || "").trim();
+    const description = String(input.description || input.reference || "").trim();
+    if (!payeeName || payeeName.length > 200) throw new Error("Expense payee name is required and must be at most 200 characters.");
+    if (!description || description.length > 500) throw new Error("Expense description is required and must be at most 500 characters.");
+    const amountMinor = Math.round(toNumber(input.amount) * 100);
+    if (amountMinor <= 0) throw new Error("Expense amount must be greater than zero.");
+    const expenseDate = String(input.expenseDate || input.accountingDate || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(expenseDate) || Number.isNaN(Date.parse(`${expenseDate}T00:00:00Z`))) throw new Error("Expense date must be a valid ISO date.");
+    if (input.accountingDate && String(input.accountingDate).slice(0, 10) !== expenseDate) throw new Error("Accounting date must equal expense date.");
+    const currency = String(input.currency || business.currency || business.baseCurrency || "INR").trim().toUpperCase();
+    const businessCurrency = String(business.currency || business.baseCurrency || "INR").trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency) || currency !== businessCurrency) throw new Error("Expense currency must match the business currency.");
+    rejectNonZeroExpenseTax(input);
+    const accounts = resolveExpenseAccounts(business, input);
+    validateAccountingPosting(business, expenseDate, { ...input, actorUserId: input.actorUserId, sourceType: "expense", sourceId: idempotencyKey });
+    const fingerprint = expenseFingerprint({ ...input, businessId: business.id, expenseDate, payeeName, description, currency });
+    const existing = state.expenses.find((entry) => entry.businessId === business.id && entry.idempotencyKey === idempotencyKey);
+    if (existing) {
+      if (existing.idempotencyFingerprint !== fingerprint) throw new Error("Expense idempotency key was already used for a different request.");
+      return { expense: clone(existing), idempotentReplay: true };
+    }
+    enforceCashExpenseAvailability(business, accounts, expenseDate, amountMinor);
+    const now = new Date().toISOString();
+    const expense = {
+      id: nextId("exp", ++state.counters.expense), businessId: business.id, ownerUserId: business.ownerUserId,
+      expenseDate, accountingDate: expenseDate, payeeName, description, amount: fromMinor(amountMinor), currency,
+      expenseAccountId: accounts.expenseAccount.id, expenseAccountCode: accounts.expenseAccount.accountCode,
+      bankAccountId: accounts.bankAccount.id, fundingLedgerAccountId: accounts.bankLedger.id,
+      status: "recorded", journalId: "", financialEventId: "", idempotencyKey,
+      idempotencyFingerprint: fingerprint, createdByUserId: input.actorUserId || input.createdByUserId, reversedById: "",
+      createdAt: now, updatedAt: now,
+    };
+    state.expenses.push(expense);
+    const accounting = postExpenseRecorded(state, expense, business, { expenseAccount: accounts.expenseAccount, bankAccount: accounts.bankLedger });
+    if (!accounting?.posted) throw new Error("Expense accounting did not post.");
+    expense.journalId = accounting.journal?.id || accounting.event?.journalId || "";
+    expense.financialEventId = accounting.event?.id || "";
+    return { expense: clone(expense), accounting: clone(accounting) };
+  }
+
+  function createExpense(input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") {
+      const before = exportState();
+      try { const result = createExpenseLocal(input); persist(); return result; } catch (error) { applyAuthoritativeState(before); throw error; }
+    }
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.createExpenseLocal(input);
+      return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
+    }).then((outcome) => { if (outcome.state) applyAuthoritativeState(outcome.state); return outcome.result; });
+  }
+
+  function reverseExpenseLocal(expenseId, input = {}) {
+    const expense = state.expenses.find((entry) => entry.id === expenseId);
+    if (!expense) return null;
+    if (input.businessId && expense.businessId !== input.businessId) throw new Error("Expense was not found in this business.");
+    const business = findBusinessByIdOrLegacyOwner(expense.businessId);
+    expenseActorCanPost(business, input.actorUserId || input.createdByUserId);
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    if (!idempotencyKey) throw new Error("Expense reversal idempotency key is required.");
+    const existing = state.expenseReversals.find((entry) => entry.businessId === business.id && entry.idempotencyKey === idempotencyKey);
+    if (existing) return { reversal: clone(existing), idempotentReplay: true };
+    if (expense.status === "reversed" || expense.reversedById) throw new Error("Expense has already been reversed.");
+    const reconciled = state.bankReconciliationMatches.some((match) => (
+      match.businessId === business.id
+      && match.status === "matched"
+      && (match.sourceType === "expense" && match.sourceId === expense.id || match.journalId === expense.journalId)
+    ));
+    if (reconciled) throw new Error("Reconciled Expense cannot be reversed through the ordinary Expense reversal command.");
+    const reason = String(input.reason || "").trim();
+    if (!reason) throw new Error("Expense reversal reason is required.");
+    const reversalDate = String(input.reversalDate || input.accountingDate || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    validateAccountingPosting(business, reversalDate, { ...input, actorUserId: input.actorUserId, sourceType: "expense_reversal", sourceId: idempotencyKey });
+    const accounts = resolveExpenseAccounts(business, { expenseAccountId: expense.expenseAccountId, bankAccountId: expense.bankAccountId });
+    const now = new Date().toISOString();
+    const reversal = { id: nextId("exprev", ++state.counters.expenseReversal), businessId: business.id, ownerUserId: business.ownerUserId, expenseId: expense.id, amount: expense.amount, currency: expense.currency, reversalDate, reason, idempotencyKey, status: "reversed", reversesJournalId: expense.journalId, journalId: "", financialEventId: "", createdByUserId: input.actorUserId || input.createdByUserId, createdAt: now };
+    state.expenseReversals.push(reversal);
+    const accounting = postExpenseReversed(state, reversal, expense, business, { expenseAccount: accounts.expenseAccount, bankAccount: accounts.bankLedger });
+    if (!accounting?.posted) throw new Error("Expense reversal accounting did not post.");
+    reversal.journalId = accounting.journal?.id || accounting.event?.journalId || "";
+    reversal.financialEventId = accounting.event?.id || "";
+    expense.status = "reversed";
+    expense.reversedById = reversal.id;
+    expense.updatedAt = now;
+    return { reversal: clone(reversal), expense: clone(expense), accounting: clone(accounting) };
+  }
+
+  function reverseExpense(expenseId, input = {}) {
+    if (typeof persistenceAdapter.mutateState !== "function") {
+      const before = exportState();
+      try { const result = reverseExpenseLocal(expenseId, input); persist(); return result; } catch (error) { applyAuthoritativeState(before); throw error; }
+    }
+    return persistenceAdapter.mutateState((authoritativeState) => {
+      const transactionStore = createStore(authoritativeState, { persist: false, useSupabaseEmailOtp: false });
+      const result = transactionStore.reverseExpenseLocal(expenseId, input);
+      return { result, state: transactionStore.exportState(), persist: !result?.idempotentReplay };
+    }).then((outcome) => { if (outcome.state) applyAuthoritativeState(outcome.state); return outcome.result; });
+  }
+
+  function listExpensesForUser(user, businessId = "") {
+    return clone(state.expenses.filter((entry) => (!businessId || entry.businessId === businessId) && (!user || user.role === "admin" || entry.ownerUserId === user.id || state.teamMembers.some((member) => member.businessId === entry.businessId && member.acceptedUserId === user.id && isEmailLinkedTeamMember(member)))));
+  }
+
+  function getExpense(id, user, businessId = "") {
+    return listExpensesForUser(user, businessId).find((entry) => entry.id === id) || null;
+  }
+
   function createVendorBill(input, limits) {
     const ownerUserId = input.ownerUserId ?? null;
     const business = input.businessId
@@ -8224,6 +8433,8 @@ export function createStore(seed = {}, options = {}) {
     createInvoice,
     createPurchaseOrder,
     createVendorBill,
+    createExpense,
+    reverseExpense,
     createSalesCreditNote,
     createVendorCredit,
     createCustomerPaymentReversal,
@@ -8273,6 +8484,7 @@ export function createStore(seed = {}, options = {}) {
     listInvoicesForUser,
     listPurchaseOrdersForUser,
     listVendorBillsForUser,
+    listExpensesForUser,
     listCreditNotesForUser,
     listVendorCreditsForUser,
     listPaymentReversalsForUser,
@@ -8282,6 +8494,7 @@ export function createStore(seed = {}, options = {}) {
     listBankAccountsForUser,
     listBankStatementLinesForUser,
     getVendorBill,
+    getExpense,
     getCreditNote,
     getVendorCredit,
     getPaymentReversal,

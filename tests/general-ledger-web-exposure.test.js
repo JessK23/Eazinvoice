@@ -51,7 +51,9 @@ test("Existing Accounting, drill-down, Reports, Banking, Compliance, and future 
   assert.match(dashboardHtml, /data-dashboard-page="reports"[^>]*data-surface-owner="reports"/);
   assert.match(dashboardHtml, /data-advanced-tab="banking" data-surface-owner="banking"/);
   assert.match(dashboardHtml, /data-advanced-tab="gst" data-surface-owner="compliance"/);
-  assert.doesNotMatch(apiClient, /createExpense|listExpenses|createQuotation|listQuotations/);
-  assert.doesNotMatch(server, /url\.pathname === "\/expenses"|url\.pathname === "\/quotations"/);
+  assert.match(apiClient, /createExpense|listExpenses/);
+  assert.match(server, /url\.pathname === "\/expenses"/);
+  assert.doesNotMatch(apiClient, /createQuotation|listQuotations/);
+  assert.doesNotMatch(server, /url\.pathname === "\/quotations"/);
   assert.match(dashboardJs, /getLedgerAccountEntries\(token, accountId, selectedWorkspaceOptions\(\)\)/);
 });

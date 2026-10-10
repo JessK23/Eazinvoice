@@ -2507,6 +2507,33 @@ export function createApi(deps = {}) {
       if (!visible) return null;
       return store.recordVendorBillPayment(id, input);
     },
+    createExpense(user, input = {}, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || user?.id,
+        businessId: input.businessId || options.businessId || null,
+      }, "writeRecords");
+      return store.createExpense({ ...input, businessId: workspace.businessId, actorUserId: user?.id || input.actorUserId || "" });
+    },
+    listExpenses(user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return store.listExpensesForUser(workspace.owner, workspace.businessId);
+    },
+    getExpense(id, user, options = {}) {
+      const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
+      return store.getExpense(id, workspace.owner, workspace.businessId);
+    },
+    reverseExpense(id, input = {}, options = {}) {
+      const current = store.getExpense(id, null, input.businessId || options.businessId || "");
+      if (!current) return null;
+      const workspace = this.resolveRecordsWorkspaceAccess(options.user || store.getUserById(current.ownerUserId), {
+        ...options,
+        workspaceOwnerUserId: input.workspaceOwnerUserId || options.workspaceOwnerUserId || current.ownerUserId,
+        businessId: input.businessId || options.businessId || current.businessId,
+      }, "writeRecords");
+      if (!store.getExpense(id, workspace.owner, workspace.businessId)) return null;
+      return store.reverseExpense(id, { ...input, businessId: workspace.businessId, actorUserId: options.user?.id || input.actorUserId || "" });
+    },
     listCreditNotes(user, options = {}) {
       const workspace = this.resolveRecordsWorkspaceAccess(user, options, "read");
       if (workspace.businessId) {
