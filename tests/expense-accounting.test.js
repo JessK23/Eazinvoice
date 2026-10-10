@@ -46,6 +46,31 @@ test("records one atomic zero-tax Expense and balanced bank-funded journal", asy
   assert.deepEqual(lines.map((line) => [line.accountCode, line.debit, line.credit]), [["5100", 1000, 0], [s.bank.ledgerAccountCode, 0, 1000]]);
 });
 
+test("transaction-store persistence path exposes local Expense mutations", async () => {
+  const seed = scenario();
+  let authoritativeState = seed.store.exportState();
+  const persistenceAdapter = {
+    load: () => authoritativeState,
+    async mutateState(mutation) {
+      const outcome = await mutation(authoritativeState);
+      authoritativeState = outcome.state;
+      return { ...outcome, version: 1 };
+    },
+  };
+  const store = createStore(authoritativeState, { persistenceAdapter, useSupabaseEmailOtp: false });
+  const api = createApi({ store });
+  const result = await api.createExpense(seed.user, input({ ...seed, store }, { idempotencyKey: "postgres-contract-expense" }));
+  assert.equal(result.expense.status, "recorded");
+  assert.equal(authoritativeState.expenses.length, 1);
+  const reversed = await api.reverseExpense(result.expense.id, {
+    idempotencyKey: "postgres-contract-reversal",
+    reversalDate: "2026-10-10",
+    reason: "Contract regression reversal",
+  }, { user: seed.user, businessId: seed.business.id });
+  assert.equal(reversed.expense.status, "reversed");
+  assert.equal(authoritativeState.expenseReversals.length, 1);
+});
+
 test("same idempotency key replays, but a changed payload is rejected", async () => {
   const s = scenario();
   const body = input(s, { idempotencyKey: "stable-expense-key" });
